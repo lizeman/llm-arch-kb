@@ -10,7 +10,7 @@ arxiv_id: "2401.04088"
 paper_url: "https://arxiv.org/abs/2401.04088"
 status: "production-adopted"
 problem_solved: "Sparsely activate a small number of large experts per token. Coarser than DeepSeekMoE but operationally simpler — the workhorse design that introduced production MoE to most open-weights users."
-predecessors: []
+predecessors: ["switch-transformer"]
 successors: ["deepseek-moe"]
 adopted_by: []
 summary: "Eight full-sized SwiGLU experts per MoE layer; top-2 routing with a standard load-balancing auxiliary loss. The Mistral-org variant that brought open-weights MoE into wide use, sitting on the coarse end of the granularity spectrum that DeepSeekMoE later contested."

@@ -1,0 +1,108 @@
+---
+title: "Switch Transformer"
+abbreviation: "Switch"
+category: "ffn-moe"
+year: 2021
+month: 1
+introduced_by: "William Fedus, Barret Zoph, Noam Shazeer"
+paper_title: "Switch Transformer: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity"
+arxiv_id: "2101.03961"
+paper_url: "https://arxiv.org/abs/2101.03961"
+status: "foundational"
+problem_solved: "Strip the MoE routing decision down to its simplest possible form: route each token to a single expert. Demonstrate that this 'simplification' actually trains stably at trillion-parameter scale."
+predecessors: []
+successors: ["mixtral-moe"]
+adopted_by: []
+summary: "Top-1 expert routing — each token goes to exactly one expert. Simpler than GShard's top-2 baseline. Trillion-parameter Switch-C model proved sparse MoE was tractable at unprecedented scale; established the load-balancing loss formulation everyone uses."
+tags: ["moe", "foundational"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Before Switch
+
+GShard (Lepikhin et al. 2020) was the canonical sparse MoE at the time, using top-2 routing
+across hundreds of experts. The design rationale: top-2 routing is differentiable through both
+selected experts, giving the gating network gradient signal for the unselected-but-runner-up
+expert too. Top-1 was assumed to be unstable — if the gate consistently routes a token to
+expert A, the gradient through expert B never adjusts, and the gate can never learn that B
+might have been better.
+
+Fedus, Zoph, and Shazeer's bet: this reasoning is wrong empirically. Top-1 routing works fine
+if you size the experts appropriately and use a calibrated auxiliary loss.
+
+<p class="section-eyebrow">§ 2 · The simplification</p>
+## Top-1 routing
+
+A Switch layer routes each token to the single highest-scoring expert:
+
+$$\mathrm{Switch}(\mathbf{x}) = g_{i^*}(\mathbf{x}) \cdot f_{i^*}(\mathbf{x}),\quad i^* = \arg\max_i g(\mathbf{x})_i.$$
+
+The selected gate value $g_{i^*}$ multiplies the expert output — this multiplicative factor is
+what gives the gating network a gradient signal even though only one expert was selected. The
+gradient with respect to $g_{i^*}$ is $f_{i^*}(\mathbf{x})$, which encodes whether routing to
+$i^*$ was a "good" decision.
+
+```python
+def switch_layer(x, experts, gate):
+    logits = gate(x)                          # [B, T, E]
+    top_idx = logits.argmax(dim=-1)           # [B, T]
+    top_w = logits.softmax(-1).gather(-1, top_idx.unsqueeze(-1)).squeeze(-1)
+    # Dispatch each token to its single expert; multiply output by top_w.
+    return dispatch_and_combine(x, experts, top_idx.unsqueeze(-1), top_w.unsqueeze(-1))
+```
+
+<p class="section-eyebrow">§ 3 · The balance loss everyone copies</p>
+## Switch's auxiliary objective
+
+The auxiliary load-balancing loss the paper introduces (eq. 4):
+
+$$\mathcal{L}_{\text{aux}} = \alpha \cdot E \cdot \sum_{i=1}^{E} f_i \cdot P_i,$$
+
+where:
+
+- $f_i$ is the fraction of tokens in the batch routed to expert $i$ (a count, post-argmax).
+- $P_i$ is the mean softmax probability assigned to expert $i$ by the gate.
+
+The product $f_i \cdot P_i$ is minimized when both quantities are uniform ($1/E$), so summing
+penalizes deviations from uniform utilization. The $\alpha$ scaling is small (typically 0.01)
+because the gating signal is itself noisy.
+
+This is the same formula used by every subsequent top-K MoE — Mixtral, GShard variants,
+DeepSeekMoE (until V3 ditched it for the aux-loss-free scheme). Switch's lasting contribution
+is at least as much this loss as the top-1 routing itself.
+
+<p class="section-eyebrow">§ 4 · Capacity factor and dropping</p>
+## What "expert capacity" means
+
+Top-1 routing has a problem GShard didn't: a popular expert can be selected by more tokens than
+it has compute capacity to handle in one step. The Switch paper formalizes this with an
+**expert capacity** parameter $C$: each expert handles at most $C \cdot T / E$ tokens per batch.
+Excess tokens are *dropped* — their output is the identity (residual passes through unchanged).
+
+In practice $C \approx 1.25$ trades a small amount of dropping for a much more parallelizable
+dispatch step. The dropping policy is what makes Switch tractable on hardware that requires
+fixed-size compute per expert; otherwise the slowest expert gates the wall-clock.
+
+<p class="section-eyebrow">§ 5 · Results and legacy</p>
+## What Switch proved
+
+The headline (Table 9 in the paper): **Switch-C with 1.6T parameters and 64B active** matches
+or exceeds dense T5-XXL on multilingual translation and span corruption. The trillion-parameter
+threshold was crossed by a model with 7× fewer FLOPs per token than the dense equivalent —
+this was the moment "sparse MoE at frontier scale" went from research curiosity to credible.
+
+Production MoE has since moved toward top-2 (Mixtral) and top-K with fine-grained experts
+(DeepSeekMoE), partly because the dropping policy makes Switch's top-1 hard to tune and partly
+because subsequent work showed top-2 quality justifies the doubled compute. But Switch's
+auxiliary loss formula, capacity-factor framing, and "trillion parameters is tractable" demo
+are all load-bearing in the modern MoE recipe.
+
+<Summary>
+**Switch in one breath.** Top-1 expert routing with a load-balancing aux loss and a capacity
+factor. The first trillion-parameter MoE that worked at production-relevant quality. Successor
+designs (Mixtral, DeepSeekMoE) restored top-K routing for quality but kept Switch's load-balancing
+math.
+</Summary>

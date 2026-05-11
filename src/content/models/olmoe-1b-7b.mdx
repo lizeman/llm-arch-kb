@@ -1,0 +1,45 @@
+---
+name: "OLMoE 1B/7B"
+organization: "Allen Institute for AI (AI2)"
+release_date: "2024-09-04"
+parameters_total: "6.9B"
+parameters_active: "1.3B"
+context_length: 4096
+open_weights: true
+paper_url: "https://arxiv.org/abs/2409.02060"
+model_card_url: "https://huggingface.co/allenai/OLMoE-1B-7B-0924"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA"
+  moe: "Top-8 routing across 64 routed experts; no shared expert; Switch-style aux balance loss"
+  other:
+    - "16 layers, 2048 d_model"
+    - "Fully open: weights, training data (Dolma 1.7 + custom MoE mix), training code, intermediate checkpoints"
+source_urls:
+  - "https://arxiv.org/abs/2409.02060"
+  - "https://huggingface.co/allenai/OLMoE-1B-7B-0924"
+  - "https://github.com/allenai/OLMoE"
+notes: "AI2's first open-weights MoE. Uses Mixtral-style coarse routing without DeepSeekMoE's shared-expert isolation. The fully-open counterpart to Mixtral 8x7B at similar active-parameter count."
+---
+
+OLMoE 1B/7B is AI2's first open-weights mixture-of-experts model, released September 2024 with
+the same openness pledge as OLMo 1 and 2: weights, training data, training code, and
+intermediate checkpoints all public. Architecturally it's a 16-layer transformer with 64
+small experts per MoE layer; each token routes to 8 of them (top-8 of 64 is a higher K than
+Mixtral's top-2 of 8, with much smaller experts).
+
+The choices here line up with the [Mixtral MoE](/llm-arch-kb/ffn-moe/mixtral-moe/) family
+rather than [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/): no shared expert, standard
+Switch-style auxiliary load-balancing loss. The paper explicitly evaluates DeepSeekMoE-style
+shared experts in its ablations (Table 7) and reports them as net-neutral at this scale — a
+notably different empirical conclusion than DeepSeek's own ablations, possibly due to scale or
+training data differences. The "should you use shared experts" question therefore remains
+genuinely contested in the literature.
+
+Context length is 4K base (later extended in derivatives). The dense Pre-Norm + RMSNorm + RoPE
++ GQA + SwiGLU stack matches the rest of the OLMo lineage.

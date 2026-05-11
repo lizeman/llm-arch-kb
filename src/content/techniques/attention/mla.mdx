@@ -1,0 +1,98 @@
+---
+title: "Multi-Head Latent Attention"
+abbreviation: "MLA"
+category: "attention"
+year: 2024
+month: 5
+introduced_by: "DeepSeek-AI"
+paper_title: "DeepSeek-V2: A Strong, Economical, and Efficient MoE Language Model"
+arxiv_id: "2405.04434"
+paper_url: "https://arxiv.org/abs/2405.04434"
+status: "production-adopted"
+problem_solved: "Cut KV cache memory below MQA/GQA while preserving or improving quality."
+predecessors: ["mha", "mqa", "gqa"]
+successors: ["dsa"]
+adopted_by:
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "Same MLA design as V2 across 61 layers."
+figure_component: "MhaMqaGqaMla"
+figure_caption: "Slider over group count G shows MHA→MQA→GQA; toggle MLA's latent d_c to see cache shrink further."
+summary: "Compress K and V to a small per-token latent; reconstruct heads at attention time. ~5–7× smaller KV cache than MHA on DeepSeek-V2 ablations."
+tags: ["attention", "kv-cache", "deepseek"]
+last_verified: "2026-05-11"
+---
+
+import MhaMqaGqaMla from "~/components/figures/MhaMqaGqaMla";
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Why KV cache is the bottleneck
+
+Attention's KV cache is the dominant inference-time memory cost in long-context generation.
+At each new token, every prior key and value vector for every layer must be in memory. For a
+typical 64-head model at 128 head-dim that is 16 KB per token per layer in fp16, or about 1 GB
+at 64K context for a 30-layer model — comparable to the parameters themselves.
+
+Group-Query Attention (GQA) reduces this by letting groups of query heads share a single K, V
+pair. Multi-Query Attention (MQA) is the extreme: one K, V for all heads. Both trade KV memory
+for some quality. MLA changes the shape of the tradeoff.
+
+<p class="section-eyebrow">§ 2 · The compression</p>
+## Down-project to a latent
+
+MLA replaces per-head K, V projections with a down-projection to a small latent vector
+$\mathbf{c}^{KV}_t \in \mathbb{R}^{d_c}$ per token:
+
+$$\mathbf{c}^{KV}_t = W_{DKV}\,\mathbf{h}_t,\quad d_c \ll H \cdot d_h.$$
+
+The latent is what gets cached. At attention time, we up-project to per-head K and V:
+
+$$\mathbf{k}^{(i)}_t = W^{(i)}_{UK}\,\mathbf{c}^{KV}_t,\quad \mathbf{v}^{(i)}_t = W^{(i)}_{UV}\,\mathbf{c}^{KV}_t.$$
+
+The compression ratio is the cache savings. On DeepSeek-V2, $H d_h = 16384$ while $d_c = 512$ — a
+32× ratio at the projection level (a smaller ratio at the cache level once decoupled RoPE is added).
+
+<MhaMqaGqaMla client:visible />
+
+```python
+# Down-project K,V to a single latent vector
+c_kv = x @ W_DKV                       # [B, T, d_c]
+
+# At attention time, up-project (typically absorbed into W_Q at inference)
+k = c_kv @ W_UK                         # [B, T, H, d_h]
+v = c_kv @ W_UV
+
+# Decoupled RoPE head carries position (see §3)
+k_rope = rope(x @ W_KR)                 # [B, T, d_R]
+k = concat([k, k_rope], dim=-1)
+```
+
+<p class="section-eyebrow">§ 3 · Decoupled RoPE</p>
+## Why RoPE doesn't fit in the latent
+
+RoPE rotates per-head K vectors before attention. If we apply RoPE *after* the up-projection,
+the rotation matrix has to be applied at every attention step — which kills the inference
+trick of absorbing $W_{UK}$ into $W_Q$.
+
+If we apply RoPE *before* compression, the rotation entangles the down-projection with position
+in a way that can't be inverted at inference. MLA solves this by adding a small decoupled RoPE
+head: a single position-aware K head of dimension $d_R$ (typically 64) concatenated with the
+reconstructed per-head K.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+On DeepSeek-V2's reported ablations (Table 9), MLA outperforms MHA on BBH and MMLU while
+cutting KV cache 5.5–6.5×; GQA on their setup underperforms MHA. DeepSeek-V3 keeps the same MLA
+configuration across 61 layers.
+
+The two costs are: (a) an extra rotary head adds slight overhead per layer; (b) implementing MLA
+efficiently in a kernel is harder than GQA, since you have to fuse the up-projection with the
+attention compute to avoid materializing the per-head K, V.
+
+<Summary>
+**MLA in one breath.** Compress K and V to a per-token latent; reconstruct heads at attention time.
+5–7× smaller cache than MHA, on-par or better quality. Costs: an extra rotary head, harder to
+implement than GQA. Seen in: DeepSeek V2 / V3.
+</Summary>

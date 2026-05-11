@@ -1,0 +1,87 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import AdoptionList from "~/components/AdoptionList.astro";
+import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+
+interface Props {
+  frontmatter: {
+    title: string;
+    abbreviation: string;
+    category: keyof typeof CATEGORY_LABELS;
+    year: number;
+    month?: number;
+    introduced_by: string;
+    paper_title: string;
+    arxiv_id: string;
+    paper_url: string;
+    status: string;
+    problem_solved: string;
+    summary: string;
+    adopted_by: { model: string; source_url: string; notes?: string }[];
+    last_verified: string;
+  };
+}
+
+const { frontmatter } = Astro.props;
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const monthName = frontmatter.month
+  ? new Date(2000, frontmatter.month - 1, 1).toLocaleString("en-US", { month: "long" })
+  : null;
+const date = monthName ? `${monthName} ${frontmatter.year}` : `${frontmatter.year}`;
+---
+
+<BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary}>
+  <article class="prose">
+    <header class="entry-header">
+      <p class="section-eyebrow">
+        <a href={`${base}/${frontmatter.category}/`}>{CATEGORY_LABELS[frontmatter.category]}</a>
+        &nbsp;·&nbsp;{date}
+      </p>
+      <h1>{frontmatter.title}</h1>
+      <p class="entry-meta">
+        Introduced by <strong>{frontmatter.introduced_by}</strong> in
+        &nbsp;<a href={frontmatter.paper_url} rel="noopener noreferrer"><cite>{frontmatter.paper_title}</cite></a>
+        &nbsp;(<span class="arxiv">arXiv:{frontmatter.arxiv_id}</span>)
+      </p>
+      <p class="entry-problem">{frontmatter.problem_solved}</p>
+    </header>
+
+    <slot />
+
+    <AdoptionList adopted_by={frontmatter.adopted_by} />
+
+    <footer class="entry-footer">
+      <p>Last verified {frontmatter.last_verified}.</p>
+    </footer>
+  </article>
+</BaseLayout>
+
+<style>
+  .entry-header {
+    margin: 48px 0 56px;
+  }
+  .entry-header h1 {
+    margin-top: 8px;
+    margin-bottom: 24px;
+  }
+  .entry-meta {
+    color: var(--text-soft);
+    font-size: var(--t-small);
+    margin-bottom: 16px;
+  }
+  .entry-meta cite { font-style: italic; }
+  .arxiv { font-family: var(--mono); font-size: 0.85em; }
+  .entry-problem {
+    font-size: 1.125rem;
+    color: var(--text-soft);
+    font-style: italic;
+    line-height: 1.6;
+  }
+  .entry-footer {
+    color: var(--text-faint);
+    font-size: var(--t-small);
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+</style>

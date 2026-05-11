@@ -1,0 +1,58 @@
+---
+import { getCollection } from "astro:content";
+
+interface Props {
+  adopted_by: { model: string; source_url: string; notes?: string }[];
+}
+
+const { adopted_by } = Astro.props;
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+
+const models = await getCollection("models");
+const lookup = new Map(models.map((m) => [m.slug, m.data]));
+---
+
+{adopted_by.length > 0 && (
+  <section class="adoption">
+    <p class="section-eyebrow">Adopted by</p>
+    <ul>
+      {adopted_by.map(({ model, source_url, notes }) => {
+        const data = lookup.get(model);
+        const name = data?.name ?? model;
+        const org = data?.organization;
+        return (
+          <li>
+            <a href={`${base}/models/${model}/`}><strong>{name}</strong></a>
+            {org && <span class="org"> · {org}</span>}
+            {notes && <span class="notes"> — {notes}</span>}
+            &nbsp;<a class="cite" href={source_url} rel="noopener noreferrer">[source]</a>
+          </li>
+        );
+      })}
+    </ul>
+  </section>
+)}
+
+<style>
+  .adoption {
+    margin: 56px 0 32px;
+  }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  li {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  li:last-child { border-bottom: none; }
+  .org, .notes { color: var(--text-soft); }
+  .cite {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .cite:hover { text-decoration: underline; }
+</style>

@@ -1,0 +1,69 @@
+---
+import BaseLayout from "~/layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const models = await getCollection("models");
+type ModelEntry = (typeof models)[number];
+
+const grouped = new Map<string, ModelEntry[]>();
+for (const m of models) {
+  const arr = grouped.get(m.data.organization) ?? [];
+  arr.push(m);
+  grouped.set(m.data.organization, arr);
+}
+const orgs = [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
+---
+
+<BaseLayout title="Production models" description="Per-model architecture spec sheets with strict citation discipline.">
+  <article class="prose">
+    <header class="entry-header">
+      <p class="section-eyebrow">Models</p>
+      <h1>Production models</h1>
+      <p class="lede">
+        Architecture spec sheets for disclosed production LLMs. Closed or undocumented models appear with
+        empty architecture fields per <a href={`${base}/about/`}>§9 citation policy</a>.
+      </p>
+    </header>
+
+    {orgs.length === 0 ? (
+      <p class="empty">No model spec sheets yet.</p>
+    ) : orgs.map(([org, ms]) => (
+      <section class="org-block">
+        <h2>{org}</h2>
+        <ul>
+          {ms
+            .sort((a, b) => a.data.release_date.localeCompare(b.data.release_date))
+            .map((m) => (
+              <li>
+                <a href={`${base}/models/${m.slug}/`}>
+                  <strong>{m.data.name}</strong>
+                  <span class="meta">
+                    {m.data.release_date} · {m.data.parameters_total}
+                    {m.data.parameters_active ? ` (${m.data.parameters_active} active)` : ""}
+                    &nbsp;·&nbsp;{m.data.disclosure_level}
+                  </span>
+                </a>
+              </li>
+            ))}
+        </ul>
+      </section>
+    ))}
+  </article>
+</BaseLayout>
+
+<style>
+  .entry-header { margin: 48px 0 56px; }
+  .lede { color: var(--text-soft); font-size: 1.125rem; line-height: 1.55; }
+  .empty { color: var(--text-soft); font-style: italic; }
+  .org-block { margin: 48px 0; }
+  .org-block h2 { margin: 0 0 16px; }
+  .org-block ul { list-style: none; padding: 0; margin: 0; }
+  .org-block li { border-bottom: 1px solid var(--border); }
+  .org-block a {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 18px 0; color: var(--text); text-decoration: none;
+  }
+  .org-block a:hover strong { color: var(--accent); }
+  .meta { color: var(--text-soft); font-size: var(--t-small); }
+</style>

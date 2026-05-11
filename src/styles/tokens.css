@@ -1,0 +1,52 @@
+/* Design tokens — Calm Editorial (plan §3.3, §3.5).
+   Nine color tokens. One accent. Resist adding more. */
+
+:root {
+  /* Surfaces */
+  --bg:           #fafaf7;
+  --bg-soft:      #f1f1ec;
+  --border:       #e3e3dc;
+
+  /* Text */
+  --text:         #1a1a1a;
+  --text-soft:    #5a5a55;
+  --text-faint:   #8a8a85;
+
+  /* The one accent */
+  --accent:       #1a4f7a;
+  --accent-soft:  #e8eef4;
+
+  /* Typography */
+  --serif: "Source Serif 4", "Iowan Old Style", Georgia, serif;
+  --mono:  "JetBrains Mono", "SF Mono", Menlo, ui-monospace, monospace;
+
+  /* Type scale */
+  --t-body:    1.0625rem;
+  --t-small:   0.875rem;
+  --t-h3:      1.25rem;
+  --t-h2:      1.6875rem;
+  --t-h1:      2.625rem;
+  --t-display: clamp(2.5rem, 5vw, 4rem);
+
+  --lh-body:  1.7;
+  --lh-tight: 1.25;
+
+  /* Vertical rhythm */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

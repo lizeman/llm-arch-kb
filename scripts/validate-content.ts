@@ -1,0 +1,231 @@
+#!/usr/bin/env tsx
+/**
+ * Citation policy enforcer (plan §9, §6.3).
+ *
+ * Hard rules:
+ *   - every adopted_by.model must resolve to /models/<slug>
+ *   - every adopted_by entry has a non-empty source_url
+ *   - every model with disclosure_level: undisclosed has ALL architecture.* fields = null
+ *   - figure_component refers to a real file in src/components/figures/
+ *   - arxiv_id is consistent with paper_url when both reference arXiv
+ */
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, "..");
+const TECH_DIR = path.join(ROOT, "src", "content", "techniques");
+const MODELS_DIR = path.join(ROOT, "src", "content", "models");
+const FIGURES_DIR = path.join(ROOT, "src", "components", "figures");
+
+type Issue = { file: string; message: string };
+const issues: Issue[] = [];
+
+function readFrontmatter(filePath: string): Record<string, unknown> | null {
+  const text = fs.readFileSync(filePath, "utf8");
+  const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!match) return null;
+  return parseYaml(match[1]!);
+}
+
+function parseYaml(yaml: string): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  const lines = yaml.split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (!line.trim() || line.trim().startsWith("#")) { i++; continue; }
+    const indent = line.match(/^(\s*)/)?.[1]?.length ?? 0;
+    if (indent > 0) { i++; continue; }
+    const kvMatch = line.match(/^([\w-]+):\s*(.*)$/);
+    if (!kvMatch) { i++; continue; }
+    const key = kvMatch[1]!;
+    const raw = kvMatch[2]!.trim();
+    if (raw === "" || raw === "|" || raw === ">") {
+      const items: unknown[] = [];
+      let nested = "";
+      i++;
+      while (i < lines.length && (lines[i]!.startsWith("  ") || lines[i]!.trim() === "")) {
+        const childLine = lines[i]!;
+        if (childLine.trim().startsWith("- ")) {
+          const itemContent = childLine.replace(/^\s*-\s*/, "");
+          if (itemContent.includes(":")) {
+            const obj: Record<string, unknown> = {};
+            const firstKv = itemContent.match(/^([\w-]+):\s*(.*)$/);
+            if (firstKv) obj[firstKv[1]!] = stripQuotes(firstKv[2]!);
+            i++;
+            while (i < lines.length && lines[i]!.startsWith("    ")) {
+              const sub = lines[i]!.match(/^\s+([\w-]+):\s*(.*)$/);
+              if (sub) obj[sub[1]!] = stripQuotes(sub[2]!);
+              i++;
+            }
+            items.push(obj);
+            continue;
+          } else {
+            items.push(stripQuotes(itemContent));
+          }
+        } else {
+          nested += childLine + "\n";
+        }
+        i++;
+      }
+      result[key] = items.length > 0 ? items : nested.trim();
+      continue;
+    }
+    result[key] = parseScalar(raw);
+    i++;
+  }
+  return result;
+}
+
+function stripQuotes(s: string): string {
+  const t = s.trim();
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+function parseScalar(raw: string): unknown {
+  const v = stripQuotes(raw);
+  if (v === "true") return true;
+  if (v === "false") return false;
+  if (v === "null" || v === "~") return null;
+  if (/^-?\d+$/.test(v)) return parseInt(v, 10);
+  if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
+  if (v.startsWith("[") && v.endsWith("]")) {
+    return v.slice(1, -1).split(",").map((x) => stripQuotes(x.trim())).filter(Boolean);
+  }
+  return v;
+}
+
+function walk(dir: string, exts = [".mdx", ".md"]): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...walk(p, exts));
+    else if (exts.some((e) => entry.name.endsWith(e))) out.push(p);
+  }
+  return out;
+}
+
+function rel(p: string): string {
+  return path.relative(ROOT, p);
+}
+
+function loadModels(): { slug: string; data: Record<string, unknown>; file: string }[] {
+  return walk(MODELS_DIR).map((file) => {
+    const slug = path.basename(file).replace(/\.mdx?$/, "");
+    const data = readFrontmatter(file);
+    if (!data) {
+      issues.push({ file: rel(file), message: "missing frontmatter" });
+      return { slug, data: {}, file };
+    }
+    return { slug, data, file };
+  });
+}
+
+function loadTechniques(): { slug: string; data: Record<string, unknown>; file: string }[] {
+  return walk(TECH_DIR).map((file) => {
+    const slug = path.basename(file).replace(/\.mdx?$/, "");
+    const data = readFrontmatter(file);
+    if (!data) {
+      issues.push({ file: rel(file), message: "missing frontmatter" });
+      return { slug, data: {}, file };
+    }
+    return { slug, data, file };
+  });
+}
+
+function listFigureComponents(): Set<string> {
+  if (!fs.existsSync(FIGURES_DIR)) return new Set();
+  return new Set(
+    fs.readdirSync(FIGURES_DIR)
+      .filter((f) => /\.(tsx|jsx|ts)$/.test(f))
+      .map((f) => f.replace(/\.(tsx|jsx|ts)$/, "")),
+  );
+}
+
+function validate() {
+  const models = loadModels();
+  const techniques = loadTechniques();
+  const modelSlugs = new Set(models.map((m) => m.slug));
+  const figureComponents = listFigureComponents();
+
+  // 1. Closed-model policy: undisclosed → null architecture fields
+  for (const m of models) {
+    const level = m.data.disclosure_level;
+    if (level === "undisclosed") {
+      const arch = (m.data.architecture ?? {}) as Record<string, unknown>;
+      const archFields = ["positional", "normalization_placement", "normalization_type", "qk_norm", "activation", "attention", "moe"];
+      for (const f of archFields) {
+        if (arch[f] !== null && arch[f] !== undefined && arch[f] !== "null") {
+          issues.push({
+            file: rel(m.file),
+            message: `disclosure_level=undisclosed but architecture.${f} is set (must be null per §9)`,
+          });
+        }
+      }
+    }
+    if (!Array.isArray(m.data.source_urls) || m.data.source_urls.length === 0) {
+      issues.push({ file: rel(m.file), message: "models must declare source_urls[] (§9)" });
+    }
+  }
+
+  // 2. adopted_by → must resolve + must have source_url
+  for (const t of techniques) {
+    const adopted = (t.data.adopted_by ?? []) as Array<Record<string, unknown>>;
+    for (const a of adopted) {
+      const ref = String(a.model ?? "");
+      if (!ref) {
+        issues.push({ file: rel(t.file), message: "adopted_by entry missing 'model'" });
+        continue;
+      }
+      if (!modelSlugs.has(ref)) {
+        issues.push({
+          file: rel(t.file),
+          message: `adopted_by.model "${ref}" does not resolve to a model at src/content/models/${ref}.mdx`,
+        });
+      }
+      if (!a.source_url || String(a.source_url).trim() === "") {
+        issues.push({
+          file: rel(t.file),
+          message: `adopted_by entry for "${ref}" is missing source_url (§9)`,
+        });
+      }
+    }
+
+    const fig = t.data.figure_component;
+    if (fig && typeof fig === "string" && !figureComponents.has(fig)) {
+      issues.push({
+        file: rel(t.file),
+        message: `figure_component "${fig}" not found in src/components/figures/`,
+      });
+    }
+
+    const arxiv = String(t.data.arxiv_id ?? "");
+    const paperUrl = String(t.data.paper_url ?? "");
+    if (arxiv && paperUrl.includes("arxiv.org") && !paperUrl.includes(arxiv)) {
+      issues.push({
+        file: rel(t.file),
+        message: `arxiv_id "${arxiv}" does not match paper_url "${paperUrl}"`,
+      });
+    }
+  }
+
+  // 3. Reporting
+  if (issues.length === 0) {
+    console.log(`[validate-content] ok — ${techniques.length} technique(s), ${models.length} model(s)`);
+    process.exit(0);
+  }
+
+  console.error(`[validate-content] ${issues.length} issue(s):\n`);
+  for (const issue of issues) {
+    console.error(`  ${issue.file}: ${issue.message}`);
+  }
+  process.exit(1);
+}
+
+validate();

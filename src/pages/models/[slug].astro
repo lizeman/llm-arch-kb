@@ -1,0 +1,17 @@
+---
+import { getCollection } from "astro:content";
+import ModelLayout from "~/layouts/ModelLayout.astro";
+
+export async function getStaticPaths() {
+  const all = await getCollection("models");
+  return all.map((entry) => ({ params: { slug: entry.slug }, props: { entry } }));
+}
+
+type Props = { entry: Awaited<ReturnType<typeof getCollection<"models">>>[number] };
+const { entry } = Astro.props as Props;
+const { Content } = await entry.render();
+---
+
+<ModelLayout frontmatter={entry.data} slug={entry.slug}>
+  <Content />
+</ModelLayout>

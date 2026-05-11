@@ -1,0 +1,78 @@
+/* Layout primitives — plan §3.6. Four total. */
+
+.prose {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 0 var(--space-6);
+}
+
+.prose-wide {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 var(--space-6);
+}
+
+.summary {
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  padding: var(--space-6) var(--space-8);
+  margin: var(--space-12) 0;
+  border-radius: 2px;
+}
+.summary > :first-child { margin-top: 0; }
+.summary > :last-child { margin-bottom: 0; }
+
+.figure {
+  margin: var(--space-12) 0;
+}
+.figure > figcaption {
+  font-size: var(--t-small);
+  color: var(--text-soft);
+  font-style: italic;
+  margin-top: var(--space-3);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.figure svg {
+  width: 100%;
+  height: auto;
+  max-height: 60vh;
+}
+
+.figure .controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+  padding: var(--space-4) 0 0 0;
+  border-top: 1px solid var(--border);
+}
+.figure .controls label {
+  display: grid;
+  grid-template-columns: max-content 1fr max-content;
+  align-items: center;
+  gap: var(--space-4);
+  font-size: var(--t-small);
+  color: var(--text-soft);
+}
+.figure .controls input[type="range"] {
+  width: 100%;
+  min-height: 44px;
+  accent-color: var(--accent);
+}
+
+@media (min-width: 720px) {
+  .figure .controls {
+    flex-direction: row;
+    gap: var(--space-8);
+    flex-wrap: wrap;
+  }
+  .figure .controls label {
+    flex: 1 1 240px;
+  }
+}
+
+@media (max-width: 480px) {
+  .prose, .prose-wide { padding: 0 20px; }
+}

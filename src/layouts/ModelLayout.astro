@@ -1,0 +1,150 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import { techniquesAdoptedBy } from "~/utils/adoption-graph";
+
+interface ArchitectureSpec {
+  positional: string | null;
+  normalization_placement: string | null;
+  normalization_type: string | null;
+  qk_norm: boolean | null;
+  activation: string | null;
+  attention: string | null;
+  moe: string | null;
+  other: string[];
+}
+
+interface Props {
+  frontmatter: {
+    name: string;
+    organization: string;
+    release_date: string;
+    parameters_total: string;
+    parameters_active?: string;
+    context_length: number;
+    open_weights: boolean;
+    paper_url?: string;
+    model_card_url?: string;
+    disclosure_level: "open" | "documented" | "partial" | "undisclosed";
+    architecture: ArchitectureSpec;
+    source_urls: string[];
+    notes?: string;
+  };
+  slug: string;
+}
+
+const { frontmatter, slug } = Astro.props;
+const arch = frontmatter.architecture;
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const undisclosed = frontmatter.disclosure_level === "undisclosed";
+const adopts = await techniquesAdoptedBy(slug);
+
+type ArchKey = keyof Omit<ArchitectureSpec, "other">;
+const archSlots: { key: ArchKey; label: string }[] = [
+  { key: "positional", label: "Positional encoding" },
+  { key: "normalization_placement", label: "Norm placement" },
+  { key: "normalization_type", label: "Norm type" },
+  { key: "qk_norm", label: "QK-Norm" },
+  { key: "activation", label: "Activation" },
+  { key: "attention", label: "Attention" },
+  { key: "moe", label: "MoE" },
+];
+
+function display(v: string | boolean | null | undefined): string {
+  if (v === null || v === undefined || v === "" || v === "null") return "—";
+  if (typeof v === "boolean") return v ? "yes" : "no";
+  return String(v);
+}
+
+const archRows = archSlots.map(({ key, label }) => ({
+  label,
+  value: display(arch[key]),
+}));
+
+const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
+---
+
+<BaseLayout title={frontmatter.name} description={`${frontmatter.name} — architecture spec sheet.`}>
+  <article class="prose">
+    <header class="entry-header">
+      <p class="section-eyebrow">Production model</p>
+      <h1>{frontmatter.name}</h1>
+      <p class="entry-meta">
+        <strong>{frontmatter.organization}</strong> · Released {frontmatter.release_date}
+        &nbsp;·&nbsp; {frontmatter.parameters_total} parameters
+        {frontmatter.parameters_active && (<span> ({frontmatter.parameters_active} active)</span>)}
+        &nbsp;·&nbsp; {frontmatter.context_length.toLocaleString()} ctx
+        &nbsp;·&nbsp; {frontmatter.open_weights ? "open weights" : "closed weights"}
+      </p>
+    </header>
+
+    {undisclosed && (
+      <div class="undisclosed-note" role="note">
+        <strong>Architecture details are not publicly documented.</strong>
+        &nbsp;Per the <a href={`${base}/about/`}>citation policy</a>, we list only confirmed public facts and refrain from inferring architectural choices.
+      </div>
+    )}
+
+    <h2>Architecture</h2>
+    <table>
+      <tbody>
+        {archRows.map((row) => (
+          <tr>
+            <th scope="row">{row.label}</th>
+            <td>{row.value}</td>
+          </tr>
+        ))}
+        {hasOther && (
+          <tr>
+            <th scope="row">Other</th>
+            <td>{arch.other.join(", ")}</td>
+          </tr>
+        )}
+      </tbody>
+    </table>
+
+    {adopts.length > 0 && (
+      <section class="techniques-used">
+        <h2>Techniques used</h2>
+        <ul class="adopts-list">
+          {adopts.map((e) => {
+            const parts = e.technique.split("/");
+            const cat = parts[0];
+            const last = parts.slice(1).join("/") || parts[0];
+            return (
+              <li>
+                <a href={`${base}/${cat}/${last}/`}>{e.technique_title}</a>
+                {e.notes && <span class="notes"> — {e.notes}</span>}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    )}
+
+    <slot />
+
+    <h2>Sources</h2>
+    <ul class="sources">
+      {frontmatter.source_urls.map((u) => (
+        <li><a href={u} rel="noopener noreferrer">{u}</a></li>
+      ))}
+    </ul>
+  </article>
+</BaseLayout>
+
+<style>
+  .entry-header { margin: 48px 0 32px; }
+  .entry-header h1 { margin: 8px 0 16px; }
+  .entry-meta { color: var(--text-soft); font-size: var(--t-small); }
+  .undisclosed-note {
+    background: var(--bg-soft);
+    border-left: 3px solid var(--text-faint);
+    padding: 16px 20px;
+    margin: 32px 0;
+    color: var(--text-soft);
+  }
+  .adopts-list { list-style: none; padding: 0; margin: 0 0 32px; }
+  .adopts-list li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .adopts-list .notes { color: var(--text-soft); }
+  .sources { font-size: var(--t-small); word-break: break-all; }
+</style>

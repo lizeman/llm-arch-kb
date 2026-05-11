@@ -1,0 +1,107 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+
+interface Props {
+  category: keyof typeof CATEGORY_LABELS;
+  description: string;
+  entries: {
+    slug: string;
+    data: {
+      title: string;
+      abbreviation: string;
+      year: number;
+      month?: number;
+      summary: string;
+      status: string;
+    };
+  }[];
+}
+
+const { category, description, entries } = Astro.props;
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const label = CATEGORY_LABELS[category];
+---
+
+<BaseLayout title={label} description={description}>
+  <article class="prose">
+    <header class="cat-header">
+      <p class="section-eyebrow">Category</p>
+      <h1>{label}</h1>
+      <p class="lede">{description}</p>
+    </header>
+
+    {entries.length === 0 ? (
+      <p class="empty">No entries yet — this category is on the v1 → v3 roadmap.</p>
+    ) : (
+      <ul class="entry-list">
+        {entries.map((e) => (
+          <li>
+            <a href={`${base}/${category}/${e.slug.split("/").pop()}/`}>
+              <div class="entry-list__title">
+                <strong>{e.data.title}</strong>
+                <span class="abbr">{e.data.abbreviation}</span>
+              </div>
+              <div class="entry-list__meta">
+                <span>{e.data.year}{e.data.month ? `-${String(e.data.month).padStart(2, "0")}` : ""}</span>
+                <span class="entry-list__summary">{e.data.summary}</span>
+              </div>
+            </a>
+          </li>
+        ))}
+      </ul>
+    )}
+  </article>
+</BaseLayout>
+
+<style>
+  .cat-header { margin: 48px 0 56px; }
+  .cat-header h1 { margin: 8px 0 24px; }
+  .lede {
+    font-size: 1.125rem;
+    color: var(--text-soft);
+    line-height: 1.6;
+  }
+  .empty {
+    color: var(--text-soft);
+    font-style: italic;
+    padding: 32px 0;
+  }
+  .entry-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .entry-list li {
+    border-bottom: 1px solid var(--border);
+  }
+  .entry-list a {
+    display: block;
+    padding: 24px 0;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .entry-list a:hover .entry-list__title strong { color: var(--accent); }
+  .entry-list__title {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+  .entry-list__title strong { font-size: 1.25rem; font-weight: 600; }
+  .abbr {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+  }
+  .entry-list__meta {
+    color: var(--text-soft);
+    font-size: var(--t-small);
+    display: flex;
+    gap: 16px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .entry-list__summary { line-height: 1.55; }
+</style>

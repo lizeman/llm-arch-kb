@@ -1,0 +1,33 @@
+---
+name: "Llama 3.1 70B"
+organization: "Meta"
+release_date: "2024-07-23"
+parameters_total: "70B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2407.21783"
+model_card_url: "https://huggingface.co/meta-llama/Llama-3.1-70B"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (theta scaled for 128K context)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA (8 key-value heads, 64 query heads)"
+  moe: null
+  other:
+    - "Tied word embeddings: no"
+    - "Tokenizer: tiktoken-based, 128K vocabulary"
+source_urls:
+  - "https://arxiv.org/abs/2407.21783"
+  - "https://huggingface.co/meta-llama/Llama-3.1-70B"
+notes: "Dense (non-MoE) 80-layer transformer. RoPE base scaled to extend context from 8K to 128K."
+---
+
+Llama 3.1 70B is Meta's flagship dense decoder from the Llama 3 family. Architecturally it is
+the canonical "consensus stack" for dense models in 2024–25: **Pre-Norm RMSNorm + RoPE + GQA +
+SwiGLU**. The 70B model has 80 layers, 64 query heads sharing 8 KV heads (GQA group count 8).
+
+Llama 3.1's training extends context from 8K to 128K via continued pre-training with a scaled
+RoPE base rather than a parameter-free interpolation scheme like YaRN.

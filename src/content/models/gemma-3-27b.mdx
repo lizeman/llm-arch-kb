@@ -1,0 +1,35 @@
+---
+name: "Gemma 3 27B"
+organization: "Google DeepMind"
+release_date: "2025-03-12"
+parameters_total: "27B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2503.19786"
+model_card_url: "https://huggingface.co/google/gemma-3-27b-it"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (local SWA layers at 10K base, global layers at 1M base)"
+  normalization_placement: "Pre-Norm + Post-Norm (norm-everywhere)"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "GeGLU"
+  attention: "Interleaved SWA + global (5 local : 1 global)"
+  moe: null
+  other:
+    - "Soft attention logit cap"
+    - "Multilingual + multimodal vision encoder (text-only entry omits vision)"
+source_urls:
+  - "https://arxiv.org/abs/2503.19786"
+  - "https://huggingface.co/google/gemma-3-27b-it"
+notes: "27B dense. Notable for QK-Norm and aggressive interleaving of sliding-window attention."
+---
+
+Gemma 3 27B is Google's open weights dense decoder. Notable architectural choices:
+**QK-Norm** (RMSNorm applied to Q and K before the attention dot product), an aggressive **5:1
+interleaving** of local sliding-window attention with global attention layers, and a "norm
+everywhere" placement that adds a Post-Norm after each block in addition to the standard
+Pre-Norm.
+
+The interleaved SWA + global pattern is the defining long-context move: most layers see only a
+local 4K window, with every 6th layer doing full attention at a much higher RoPE base.

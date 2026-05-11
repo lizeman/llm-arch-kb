@@ -1,0 +1,154 @@
+---
+import BaseLayout from "~/layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+import { sortChronological } from "~/utils/chronological-sort";
+import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const all = await getCollection("techniques");
+type TechniqueEntry = (typeof all)[number];
+const sorted = sortChronological(all as unknown as TechniqueEntry[]);
+
+const featured = ["mla", "rope", "rmsnorm", "gqa", "deepseek-moe"]
+  .map((slug) => sorted.find((t) => t.slug.endsWith(slug)))
+  .filter((t): t is TechniqueEntry => Boolean(t));
+
+const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
+  const items = sorted.filter((t) => t.data.category === slug);
+  const newest = items[items.length - 1];
+  return { slug, label, count: items.length, newest };
+});
+---
+
+<BaseLayout title="LLM Architecture Knowledge Base">
+  <article>
+    <section class="prose hero">
+      <h1>LLM Architecture Knowledge Base</h1>
+      <p class="lede">
+        A chronologically-organized reference of decoder-only LLM architecture innovations.
+        Each entry: the math, a simple implementation sketch, tradeoffs, ablation results,
+        and which <em>disclosed</em> production models adopt it — with citations.
+      </p>
+    </section>
+
+    <section class="prose">
+      <p>
+        This site catalogs meaningful architectural innovations in decoder-only LLMs from 2017 to today.
+        Coverage stays at "medium deep-dive" depth: enough to understand the move and reimplement a sketch,
+        not enough to be a paper substitute.
+      </p>
+      <p>
+        We follow a strict <a href={`${base}/about/`}>closed-model policy</a>: no inferred architecture
+        claims about undocumented models. Every adoption claim links to a paper, model card, or official report.
+      </p>
+    </section>
+
+    {featured.length > 0 && (
+      <section class="prose featured">
+        <p class="section-eyebrow">Featured</p>
+        <h2>Start here</h2>
+        <ul class="cards">
+          {featured.map((t) => (
+            <li>
+              <a href={`${base}/${t.data.category}/${t.slug.split("/").pop()}/`}>
+                <strong>{t.data.title}</strong>
+                <span class="abbr">{t.data.abbreviation}</span>
+                <p>{t.data.summary}</p>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </section>
+    )}
+
+    <section class="prose categories">
+      <p class="section-eyebrow">Browse</p>
+      <h2>By category</h2>
+      <ul class="cat-grid">
+        {byCategory.map(({ slug, label, count, newest }) => (
+          <li>
+            <a href={`${base}/${slug}/`}>
+              <strong>{label}</strong>
+              <span class="count">{count} {count === 1 ? "entry" : "entries"}</span>
+              {newest && <span class="newest">most recent: {newest.data.title}</span>}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  </article>
+</BaseLayout>
+
+<style>
+  .hero {
+    padding: 80px 24px 32px;
+    text-align: left;
+  }
+  .hero h1 {
+    font-size: var(--t-display);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    margin-bottom: 24px;
+  }
+  .lede {
+    font-size: 1.25rem;
+    color: var(--text-soft);
+    line-height: 1.55;
+  }
+  .featured, .categories { margin-top: 64px; }
+  .featured h2, .categories h2 { margin-top: 8px; }
+
+  .cards {
+    list-style: none;
+    padding: 0;
+    margin: 32px 0 0;
+  }
+  .cards li { border-bottom: 1px solid var(--border); }
+  .cards a {
+    display: block;
+    padding: 24px 0;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .cards a:hover strong { color: var(--accent); }
+  .cards strong { font-size: 1.25rem; font-weight: 600; }
+  .cards .abbr {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    margin-left: 12px;
+    letter-spacing: 0.04em;
+  }
+  .cards p { color: var(--text-soft); margin: 4px 0 0; line-height: 1.55; }
+
+  .cat-grid {
+    list-style: none;
+    padding: 0;
+    margin: 32px 0 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .cat-grid li { border-bottom: 1px solid var(--border); }
+  .cat-grid a {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    flex-wrap: wrap;
+    padding: 20px 0;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .cat-grid a:hover strong { color: var(--accent); }
+  .cat-grid strong { font-size: 1.0625rem; flex: 0 0 auto; }
+  .cat-grid .count {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+  }
+  .cat-grid .newest {
+    color: var(--text-soft);
+    font-size: var(--t-small);
+    margin-left: auto;
+  }
+</style>

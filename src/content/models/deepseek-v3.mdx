@@ -1,0 +1,37 @@
+---
+name: "DeepSeek V3"
+organization: "DeepSeek-AI"
+release_date: "2024-12-26"
+parameters_total: "671B"
+parameters_active: "37B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2412.19437"
+model_card_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (decoupled head for MLA)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "MLA"
+  moe: "DeepSeekMoE with aux-loss-free routing"
+  other:
+    - "Multi-Token Prediction auxiliary objective"
+    - "FP8 training"
+source_urls:
+  - "https://arxiv.org/abs/2412.19437"
+  - "https://huggingface.co/deepseek-ai/DeepSeek-V3"
+  - "https://github.com/deepseek-ai/DeepSeek-V3"
+notes: "61 layers, 128 attention heads. Same MLA configuration as DeepSeek-V2."
+---
+
+DeepSeek V3 is a 671B-parameter MoE language model with 37B active parameters per token, trained
+on 14.8T tokens. It uses **MLA** for attention compression, **DeepSeekMoE** with an
+**auxiliary-loss-free** load-balancing scheme, and a **multi-token-prediction** training objective
+on top of the standard next-token loss.
+
+The architecture inherits MLA and DeepSeekMoE from V2 unchanged. The two notable V3 additions are
+the aux-loss-free router bias (avoids the usual MoE quality cost of an auxiliary balancing term)
+and FP8 mixed-precision training at scale.

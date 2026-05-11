@@ -1,0 +1,29 @@
+---
+import { getCollection } from "astro:content";
+import CategoryLayout from "~/layouts/CategoryLayout.astro";
+import { sortChronological } from "~/utils/chronological-sort";
+import { TECHNIQUE_CATEGORIES } from "~/content/config";
+
+type Category = (typeof TECHNIQUE_CATEGORIES)[number];
+
+const DESCRIPTIONS: Record<string, string> = {
+  positional: "How tokens learn where they are — from sinusoidal embeddings to RoPE and beyond.",
+  normalization: "LayerNorm to RMSNorm to QK-Norm; the placement debates that shaped frontier models.",
+  residual: "Skip-connection geometry — from standard residuals to hyper-connections.",
+  "ffn-moe": "Dense MLPs to gated SwiGLU to sparse mixtures of experts.",
+  attention: "MHA → MQA → GQA → MLA; full, sliding-window, linear, and lightning attention.",
+  "long-context": "YaRN, LongRoPE, attention sinks, beacons, and the rest of the long-context toolbox.",
+};
+
+export async function getStaticPaths() {
+  return TECHNIQUE_CATEGORIES.map((category) => ({ params: { category } }));
+}
+
+const { category } = Astro.params as { category: Category };
+const all = await getCollection("techniques", (e) => e.data.category === category);
+type TechniqueEntry = (typeof all)[number];
+const entries = sortChronological(all as unknown as TechniqueEntry[]);
+const description = DESCRIPTIONS[category] ?? "";
+---
+
+<CategoryLayout category={category} description={description} entries={entries} />

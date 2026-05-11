@@ -1,0 +1,48 @@
+{
+  "name": "llm-arch-kb",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "description": "LLM Architecture Knowledge Base — chronological reference of decoder-only LLM architecture innovations.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build && pagefind --site dist",
+    "preview": "astro preview",
+    "astro": "astro",
+    "validate-content": "tsx scripts/validate-content.ts",
+    "check": "astro check",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit && astro check",
+    "qa": "pnpm validate-content && pnpm check && pnpm test && pnpm build"
+  },
+  "dependencies": {
+    "@astrojs/check": "^0.9.4",
+    "@astrojs/mdx": "^4.2.5",
+    "@astrojs/sitemap": "^3.4.0",
+    "@astrojs/solid-js": "^5.0.7",
+    "astro": "^5.13.5",
+    "astro-pagefind": "^1.8.3",
+    "katex": "^0.16.21",
+    "pagefind": "^1.4.0",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0",
+    "solid-js": "^1.9.7",
+    "typescript": "^5.7.3"
+  },
+  "devDependencies": {
+    "@solidjs/testing-library": "^0.8.10",
+    "@testing-library/jest-dom": "^6.6.3",
+    "jsdom": "^25.0.1",
+    "tsx": "^4.20.0",
+    "vite-plugin-solid": "^2.11.0",
+    "vitest": "^2.1.8",
+    "zod": "^3.24.1"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

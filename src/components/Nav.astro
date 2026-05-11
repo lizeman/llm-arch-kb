@@ -1,0 +1,86 @@
+---
+import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+
+const path = Astro.url.pathname;
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+
+function isActive(href: string): boolean {
+  const target = `${base}${href}`;
+  if (href === "/") return path === `${base}/` || path === base;
+  return path.startsWith(target);
+}
+
+const sections = Object.entries(CATEGORY_LABELS).map(([slug, label]) => ({
+  href: `/${slug}/`,
+  label,
+}));
+sections.push({ href: "/models/", label: "Models" });
+sections.push({ href: "/about/", label: "About" });
+---
+
+<header class="site-nav">
+  <div class="site-nav__inner">
+    <a href={`${base}/`} class="site-nav__title">LLM Architecture KB</a>
+    <nav aria-label="Primary">
+      <ul>
+        {sections.map(({ href, label }) => (
+          <li>
+            <a
+              href={`${base}${href}`}
+              class:list={["site-nav__link", { "is-active": isActive(href) }]}
+            >{label}</a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<style>
+  .site-nav {
+    border-bottom: 1px solid var(--border);
+    padding: 18px 24px;
+    background: var(--bg);
+  }
+  .site-nav__inner {
+    max-width: 1080px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+  .site-nav__title {
+    font-family: var(--serif);
+    font-weight: 600;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 1.0625rem;
+    letter-spacing: -0.005em;
+  }
+  nav ul {
+    display: flex;
+    gap: 18px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    flex-wrap: wrap;
+  }
+  .site-nav__link {
+    color: var(--text-soft);
+    text-decoration: none;
+    font-size: var(--t-small);
+    padding: 4px 2px;
+    border-bottom: 2px solid transparent;
+  }
+  .site-nav__link:hover { color: var(--text); }
+  .site-nav__link.is-active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  @media (max-width: 720px) {
+    .site-nav__inner { gap: 12px; }
+    nav ul { gap: 14px; }
+  }
+</style>

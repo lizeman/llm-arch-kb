@@ -1,6 +1,7 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
 import AdoptionList from "~/components/AdoptionList.astro";
+import Lineage from "~/components/Lineage.astro";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
 
 interface Props {
@@ -18,6 +19,8 @@ interface Props {
     problem_solved: string;
     summary: string;
     adopted_by: { model: string; source_url: string; notes?: string }[];
+    predecessors?: string[];
+    successors?: string[];
     last_verified: string;
   };
 }
@@ -49,6 +52,11 @@ const date = monthName ? `${monthName} ${frontmatter.year}` : `${frontmatter.yea
     <slot />
 
     <AdoptionList adopted_by={frontmatter.adopted_by} />
+
+    <Lineage
+      predecessors={frontmatter.predecessors ?? []}
+      successors={frontmatter.successors ?? []}
+    />
 
     <footer class="entry-footer">
       <p>Last verified {frontmatter.last_verified}.</p>

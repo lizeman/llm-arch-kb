@@ -1,0 +1,120 @@
+---
+import { getCollection } from "astro:content";
+
+interface Props {
+  predecessors: string[];
+  successors: string[];
+}
+
+const { predecessors, successors } = Astro.props;
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+
+// Build slug -> {title, abbreviation, category} index across all techniques.
+const all = await getCollection("techniques");
+const lookup = new Map<string, { title: string; abbreviation: string; category: string }>();
+for (const t of all) {
+  const tail = t.slug.split("/").pop()!;
+  lookup.set(tail, {
+    title: t.data.title,
+    abbreviation: t.data.abbreviation,
+    category: t.data.category,
+  });
+}
+
+type Item = { slug: string; title: string; abbreviation: string; category: string };
+function resolve(slugs: string[]): Item[] {
+  return slugs
+    .map((s) => {
+      const meta = lookup.get(s);
+      if (!meta) return null;
+      return { slug: s, ...meta };
+    })
+    .filter((x): x is Item => x !== null);
+}
+
+const pre = resolve(predecessors);
+const post = resolve(successors);
+const empty = pre.length === 0 && post.length === 0;
+---
+
+{!empty && (
+  <section class="lineage">
+    <p class="section-eyebrow">Lineage</p>
+    <dl>
+      {pre.length > 0 && (
+        <div class="row">
+          <dt>Predecessors</dt>
+          <dd>
+            {pre.map((p, idx) => (
+              <>
+                <a href={`${base}/${p.category}/${p.slug}/`}>
+                  {p.title}<span class="abbr">{p.abbreviation}</span>
+                </a>{idx < pre.length - 1 ? <span class="sep">·</span> : null}
+              </>
+            ))}
+          </dd>
+        </div>
+      )}
+      {post.length > 0 && (
+        <div class="row">
+          <dt>Successors</dt>
+          <dd>
+            {post.map((s, idx) => (
+              <>
+                <a href={`${base}/${s.category}/${s.slug}/`}>
+                  {s.title}<span class="abbr">{s.abbreviation}</span>
+                </a>{idx < post.length - 1 ? <span class="sep">·</span> : null}
+              </>
+            ))}
+          </dd>
+        </div>
+      )}
+    </dl>
+  </section>
+)}
+
+<style>
+  .lineage {
+    margin: 48px 0 32px;
+  }
+  dl {
+    margin: 0;
+    border-top: 1px solid var(--border);
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    column-gap: 24px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  dt {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0;
+  }
+  dd {
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+  }
+  .abbr {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    margin-left: 6px;
+    letter-spacing: 0.04em;
+  }
+  .sep {
+    color: var(--text-faint);
+    padding-right: 6px;
+  }
+  @media (max-width: 640px) {
+    .row { grid-template-columns: 1fr; row-gap: 6px; }
+  }
+</style>

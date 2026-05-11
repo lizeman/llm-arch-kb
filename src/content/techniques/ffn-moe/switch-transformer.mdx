@@ -10,7 +10,7 @@ arxiv_id: "2101.03961"
 paper_url: "https://arxiv.org/abs/2101.03961"
 status: "foundational"
 problem_solved: "Strip the MoE routing decision down to its simplest possible form: route each token to a single expert. Demonstrate that this 'simplification' actually trains stably at trillion-parameter scale."
-predecessors: []
+predecessors: ["gshard"]
 successors: ["mixtral-moe"]
 adopted_by: []
 summary: "Top-1 expert routing — each token goes to exactly one expert. Simpler than GShard's top-2 baseline. Trillion-parameter Switch-C model proved sparse MoE was tractable at unprecedented scale; established the load-balancing loss formulation everyone uses."

@@ -1,0 +1,108 @@
+---
+title: "nGPT — Normalized Transformer on the Hypersphere"
+abbreviation: "nGPT"
+category: "normalization"
+year: 2024
+month: 10
+introduced_by: "Ilya Loshchilov et al. (NVIDIA)"
+paper_title: "nGPT: Normalized Transformer with Representation Learning on the Hypersphere"
+arxiv_id: "2410.01131"
+paper_url: "https://arxiv.org/abs/2410.01131"
+status: "research"
+problem_solved: "Constrain every vector in the network — embeddings, attention outputs, FFN outputs, weight rows — to the unit hypersphere. Replace the standard normalize-once-per-block recipe with normalization-everywhere as a structural invariant."
+predecessors: ["rmsnorm"]
+successors: []
+adopted_by: []
+summary: "Project every vector to unit norm at every step. Eliminates LayerNorm/RMSNorm by structural construction; cosine similarity replaces inner product everywhere. Trains 4-20× faster than baseline GPT at matched quality, per the paper."
+tags: ["normalization", "geometry"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Normalization as a structural property
+
+Standard transformers normalize at a few specific places (Pre-Norm before attention, Pre-Norm
+before FFN, final norm before unembedding). Between those normalizations, activation norms
+drift — sometimes growing across depth, sometimes shrinking — and the model is asked to learn
+weights that produce well-conditioned next-block inputs from poorly-conditioned previous-block
+outputs.
+
+Loshchilov et al.'s 2024 proposal: don't ask the model to manage activation norms at all.
+Constrain *every* vector in the network — token embeddings, attention K/Q/V projections,
+attention output, FFN intermediate, FFN output — to lie on the unit hypersphere. The model
+operates entirely on unit vectors; activation norms cannot drift because they are always 1.
+
+<p class="section-eyebrow">§ 2 · The construction</p>
+## Project after every operation
+
+Every linear map is followed by an L2 normalization. The block becomes:
+
+$$\mathrm{Norm}(\mathbf{x}) = \frac{\mathbf{x}}{\|\mathbf{x}\|},\qquad \mathrm{Block}(\mathbf{x}) = \mathrm{Norm}\bigl(\mathbf{x} + \alpha_a \cdot (\mathrm{Norm}(\mathrm{Attn}(\mathbf{x})) - \mathbf{x})\bigr),$$
+
+where $\alpha_a$ is a per-layer learnable scalar controlling how far the residual stream moves
+toward the (normalized) attention output. The same construction wraps the FFN sub-layer.
+
+Geometrically: each block defines a target unit vector (the normalized attention output) and
+the residual moves a fraction $\alpha$ of the way from the current state toward the target,
+then renormalizes back to the sphere. The model lives on the unit sphere and never leaves it.
+
+Weight matrices are also normalized: each row of $W$ is constrained to unit norm, so $W\mathbf{x}$
+produces outputs whose components are bounded cosine similarities rather than arbitrary inner
+products.
+
+```python
+def n_block_attn(x, attn, alpha):
+    # x is unit-norm on the hypersphere
+    a = attn(x)
+    a_unit = a / a.norm(-1, keepdim=True)
+    update = a_unit - x
+    return (x + alpha * update).renormalize_unit()
+```
+
+<p class="section-eyebrow">§ 3 · What it replaces</p>
+## No LayerNorm, no RMSNorm
+
+The standard normalization sub-layers (Pre-Norm RMSNorm before attention/FFN) become
+unnecessary — every vector is already unit-norm by construction. nGPT removes them entirely.
+The architecture has fewer learnable parameters than baseline GPT at matched parameter count
+(or equivalently, more "capacity-relevant" parameters at matched total parameter count).
+
+Cosine similarity replaces dot product in attention: $\mathbf{q}\mathbf{k}^\top / \sqrt{d}$
+becomes $\cos(\mathbf{q}, \mathbf{k}) \cdot s$ for a learnable temperature $s$, since both
+vectors are unit-norm and their dot product *is* their cosine similarity.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+The headline (Table 1 in the paper): **nGPT-1B trains to a target perplexity in 4-20× fewer
+steps than equally-sized baseline GPT** across context lengths from 1K to 16K. The speedup is
+largest at long contexts; at 1K context the advantage is closer to 4×, while at 16K it is
+nearly 20×. The cause the authors propose: the hypersphere constraint regularizes the
+optimization landscape, so the loss surface is closer to convex over the operating regime than
+the standard architecture's.
+
+The paper is research-stage as of late 2024; no production model has yet shipped using the full
+nGPT recipe. The mechanistic claim — that constraining vectors to the sphere makes optimization
+easier — is theoretically clean enough to attract follow-up work, and the construction is
+mechanically simple.
+
+<p class="section-eyebrow">§ 5 · What might keep it research-only</p>
+## The kernel question
+
+The largest practical obstacle is kernel-level: standard GEMM kernels do not natively support
+the per-row weight normalization or the per-step output normalization that nGPT requires. A
+production implementation needs custom kernels (or careful fusion of existing primitives) to
+avoid leaving the speedup on the table. Until that infrastructure exists at the same maturity
+as FlashAttention-3, nGPT's training-step speedup may not translate to wall-clock or dollar
+speedup.
+
+Worth tracking. Worth not committing to yet.
+
+<Summary>
+**nGPT in one breath.** Constrain every vector to the unit hypersphere; cosine similarity
+replaces inner product everywhere; LayerNorm/RMSNorm are deleted as structurally redundant.
+4-20× faster training convergence at matched parameter count. Research-stage; production
+adoption gated on custom-kernel maturity rather than on the architecture's correctness.
+</Summary>

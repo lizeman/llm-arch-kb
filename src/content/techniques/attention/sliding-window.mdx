@@ -1,0 +1,100 @@
+---
+title: "Sliding Window Attention"
+abbreviation: "SWA"
+category: "attention"
+year: 2020
+month: 4
+introduced_by: "Iz Beltagy, Matthew E. Peters, Arman Cohan"
+paper_title: "Longformer: The Long-Document Transformer"
+arxiv_id: "2004.05150"
+paper_url: "https://arxiv.org/abs/2004.05150"
+status: "production-adopted"
+problem_solved: "Make per-layer attention compute and KV cache scale linearly with sequence length instead of quadratically — by restricting each query to a fixed window of recent keys."
+predecessors: []
+successors: []
+adopted_by:
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "Interleaved 5 SWA layers (window 4096) : 1 global attention layer; the dominant long-context strategy in Gemma 3."
+figure_component: "SlidingWindow"
+figure_caption: "Drag W to change the window size. Drag the layer count to see how the effective receptive field grows linearly with depth, even though each individual layer is local."
+summary: "Restrict each query to the last W keys. Per-layer compute becomes O(W) per token; stacked layers still cover the full context because the receptive field grows linearly with depth."
+tags: ["attention", "long-context"]
+last_verified: "2026-05-11"
+---
+
+import SlidingWindow from "~/components/figures/SlidingWindow";
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Full attention is quadratic
+
+Standard causal attention computes $\mathbf{q}_t \cdot \mathbf{k}_s$ for every $s \leq t$. The
+work per layer is $O(T^2 \cdot d_h)$, and the KV cache holds $T \cdot 2 d_h$ floats. At long
+context this becomes the dominant cost — quadratic compute, linear memory in $T$ but with a
+large constant.
+
+The observation behind sliding-window attention: in practice, attention weights are dominated
+by a small local window of recent tokens for most heads, most of the time. The long-range
+signal is real but sparse. A local window approximation should sacrifice little at greatly
+reduced cost.
+
+<p class="section-eyebrow">§ 2 · The mask</p>
+## Attend to the last W keys
+
+For a window size $W$, replace the causal mask with a causal-and-windowed mask:
+
+$$\mathrm{Attn}_t(\mathbf{q}_t, K, V) = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \cdot K_{t-W+1\,:\,t+1}^\top}{\sqrt{d_h}}\right) V_{t-W+1\,:\,t+1}.$$
+
+Query $t$ sees keys in the half-open interval $[t - W + 1,\ t]$. Compute per layer drops to
+$O(T \cdot W \cdot d_h)$. KV cache per token is unchanged in shape but can be pruned in inference
+because keys older than $W$ are dead — see the [streaming-llm entry](/llm-arch-kb/long-context/streaming-llm/)
+for the subtle case where the first few tokens must stay pinned.
+
+<SlidingWindow client:visible />
+
+<p class="section-eyebrow">§ 3 · Receptive field grows with depth</p>
+## Why local layers still see the full sequence
+
+A token at layer $\ell$ depends on tokens in the previous layer within a window of size $W$
+behind it. Stacked, layer $\ell$ at position $t$ depends on layer $0$ tokens in a band of width
+$\ell \cdot W$. For a 32-layer model at $W = 4096$, every token's layer-32 representation
+depends on roughly 131K predecessors — well past the model's training context.
+
+This is the central trick: local-only attention does not mean local-only information flow.
+The receptive field grows multiplicatively across depth, much like a stack of small-kernel
+convolutions in vision.
+
+<p class="section-eyebrow">§ 4 · Interleaved local + global</p>
+## What Gemma 3 actually does
+
+Pure SWA gives up the cheap-to-reach long-range signal — for tokens past $L \cdot W$ to the left,
+the model has to route information through many intermediate hops. Several modern designs
+interleave occasional *global* attention layers (full causal attention) between SWA layers to
+restore direct long-range access while keeping most layers cheap.
+
+Gemma 3's published configuration uses a 5:1 SWA-to-global ratio, with the SWA layers running
+at RoPE base 10K and a 4096-token window, and the global layers at RoPE base 1M for the full
+context. The compute split is roughly 80% local : 20% global at long context — far cheaper than
+a pure-global stack.
+
+<p class="section-eyebrow">§ 5 · Results</p>
+## Empirical evidence
+
+Longformer (Beltagy et al. 2020) reported SWA matching full attention on WikiHop and TriviaQA
+while reducing peak memory by ~6× at 4K context (Table 1). For decoder-only LLMs, Mistral 7B
+(Jiang et al. 2023, arXiv 2310.06825) was the high-profile re-introduction — its `W = 4096`
+window plus 32 layers gives an effective receptive field of 131K tokens at a per-layer cost
+that scales as $O(T)$.
+
+Gemma 3 reports the interleaved variant matching or exceeding pure-global ablations at long
+context on RULER and Needle-in-a-Haystack benchmarks while training ~30% faster at 128K context.
+The technique is now standard for context-extension recipes that want to avoid the full
+quadratic cost.
+
+<Summary>
+**SWA in one breath.** Each query sees only the last W keys; per-layer cost becomes $O(T \cdot W)$;
+the effective receptive field grows linearly with depth so the full context is still reachable.
+Interleaving an occasional global layer (Gemma 3's 5:1 recipe) restores direct long-range routing
+nearly for free.
+</Summary>

@@ -1,0 +1,104 @@
+---
+title: "Activation Beacon"
+abbreviation: "Activation Beacon"
+category: "long-context"
+year: 2024
+month: 1
+introduced_by: "Peitian Zhang, Zheng Liu, Shitao Xiao, Ninglu Shao, Qiwei Ye, Zhicheng Dou"
+paper_title: "Soaring from 4K to 400K: Extending LLM's Context with Activation Beacon"
+arxiv_id: "2401.03462"
+paper_url: "https://arxiv.org/abs/2401.03462"
+status: "research"
+problem_solved: "Extend a pretrained 4K-context model to 400K context by training a small set of 'beacon' tokens that compress past activations into a compact summary — without retraining the base model."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Insert learned 'beacon' tokens that summarize past activation windows. The model attends to beacons instead of the full long-context activations; 100× context extension with a tiny fine-tune of just the beacon parameters."
+tags: ["long-context", "compression"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Long context without retraining
+
+YaRN and similar RoPE-extension recipes extend the context window by rescaling positional
+embeddings. They work, but require fine-tuning the whole base model — typically a few hundred
+steps over the new positional range. Activation Beacon takes a different route: leave the base
+model untouched, and train a *separate* set of compression parameters that summarize past
+activations into a compact form.
+
+The intuition: the model's attention does not need access to the *literal* past tokens, only to
+their *information content*. If a small learned compressor can pack the information from 4K
+past tokens into ~32 "beacon" activation vectors, attention can read from the beacons instead
+of from the full past.
+
+<p class="section-eyebrow">§ 2 · The mechanism</p>
+## Compress every chunk into a few beacons
+
+Partition the input into chunks of size $L$ (e.g., $L = 1024$). At the end of each chunk,
+insert $K$ learnable beacon tokens. During the forward pass:
+
+1. Run standard attention within the chunk plus its beacons.
+2. The beacon tokens, by virtue of attending to the full chunk, develop activations that
+   summarize the chunk.
+3. Discard the chunk's per-token activations; keep only the $K$ beacons.
+4. Concatenate this chunk's beacons with the next chunk's input.
+
+After $N$ chunks the model has seen $N \cdot L$ tokens of context but only retains $N \cdot K$
+beacons. With $L = 1024, K = 32$, that is a $32\times$ compression — letting a 4K-context base
+model handle effectively 128K via the beacon path.
+
+```python
+def beacon_forward(chunks, model, beacons_per_chunk=32):
+    memory = []
+    for chunk in chunks:
+        beacon_tokens = beacon_params.repeat(beacons_per_chunk, 1)
+        input = concat([memory, chunk, beacon_tokens])
+        hidden = model(input)
+        # extract only the beacon positions from this chunk's output
+        new_beacons = hidden[-beacons_per_chunk:]
+        memory = concat([memory, new_beacons])
+    return memory
+```
+
+Critically, **only the beacon-token parameters and the cross-attention into beacons are
+trained**. The base model's weights are frozen. A few thousand training steps on long-document
+data is sufficient.
+
+<p class="section-eyebrow">§ 3 · Results</p>
+## Empirical evidence
+
+Zhang et al. (Table 2) report Llama-2-7B-Chat extended from 4K to **400K** context via Activation
+Beacon, with PPL on PG-19 staying within 0.2 points of the 4K baseline — a ~100× context
+extension at a ~10% wall-clock overhead per token. On long-document QA (NarrativeQA), the
+Activation-Beacon variant outperforms YaRN-extended versions of the same base.
+
+The cost: information *is* lost in the compression. Tasks that need exact recall from the
+distant past — counting specific tokens, exact citations — degrade noticeably. Tasks that need
+distilled semantics — summary, QA, retrieval-assisted reasoning — retain quality well.
+
+<p class="section-eyebrow">§ 4 · Where it fits in the long-context toolbox</p>
+## A different axis from YaRN and SWA
+
+The three long-context approaches in this knowledge base trade on different axes:
+
+- **YaRN** ([entry](/llm-arch-kb/positional/yarn/)): Rescale the positional encoding so the
+  base attention can see all of a longer sequence. Lossless but requires retraining at the
+  full longer length.
+- **Sliding Window Attention** ([entry](/llm-arch-kb/attention/sliding-window/)): Each query
+  sees only the last $W$ keys. Linear-in-T per-layer cost; depth grows the receptive field.
+- **Activation Beacon**: Compress past activations into a small summary; the base model attends
+  to summaries instead of literal past tokens. Lossy but training-cheap.
+
+Beacon is the right tool when (a) the base model is fixed (proprietary, expensive to retrain)
+and (b) the downstream task is robust to lossy compression. For applications that demand exact
+recall over a long window, YaRN or a full-attention long-context retrain is still preferred.
+
+<Summary>
+**Activation Beacon in one breath.** Train a small set of compression tokens that summarize
+past activations; attention reads from beacons instead of literal past keys. 100× context
+extension on a frozen base model with a tiny fine-tune. Lossy but cheap; complements YaRN and
+SWA on the long-context axis.
+</Summary>

@@ -1,0 +1,166 @@
+---
+import BaseLayout from "~/layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+
+const techniques = await getCollection("techniques");
+type TechniqueEntry = (typeof techniques)[number];
+
+// Build a deduplicated list of (arxiv_id, paper_title, year, introduced_by, paper_url) tuples,
+// keyed by arxiv_id, with the entries that cite each paper.
+type Citation = {
+  arxiv_id: string;
+  paper_title: string;
+  paper_url: string;
+  introduced_by: string;
+  year: number;
+  month?: number;
+  cites: { slug: string; title: string; abbr: string; category: string }[];
+};
+
+const citationMap = new Map<string, Citation>();
+for (const t of techniques) {
+  const arxiv = t.data.arxiv_id;
+  if (!citationMap.has(arxiv)) {
+    citationMap.set(arxiv, {
+      arxiv_id: arxiv,
+      paper_title: t.data.paper_title,
+      paper_url: t.data.paper_url,
+      introduced_by: t.data.introduced_by,
+      year: t.data.year,
+      month: t.data.month,
+      cites: [],
+    });
+  }
+  citationMap.get(arxiv)!.cites.push({
+    slug: t.slug.split("/").pop()!,
+    title: t.data.title,
+    abbr: t.data.abbreviation,
+    category: t.data.category,
+  });
+}
+
+const citations = [...citationMap.values()].sort((a, b) => {
+  if (a.year !== b.year) return a.year - b.year;
+  return (a.month ?? 0) - (b.month ?? 0);
+});
+
+// Group by year for browsing.
+const byYear = new Map<number, Citation[]>();
+for (const c of citations) {
+  const arr = byYear.get(c.year) ?? [];
+  arr.push(c);
+  byYear.set(c.year, arr);
+}
+const years = [...byYear.keys()].sort((a, b) => a - b);
+---
+
+<BaseLayout
+  title="References"
+  description="Every paper cited across the knowledge base, organized by year. Direct arXiv links."
+>
+  <article class="prose-wide">
+    <header class="entry-header">
+      <p class="section-eyebrow">Browse</p>
+      <h1>References</h1>
+      <p class="lede">
+        Every paper cited as the introducing source for a technique in this knowledge base.
+        {citations.length} unique papers across {years.length} years
+        ({years[0]}–{years[years.length - 1]}). All links go to arXiv abstracts.
+      </p>
+    </header>
+
+    {years.map((year) => (
+      <section class="year-group">
+        <h2>{year}</h2>
+        <ul class="ref-list">
+          {byYear.get(year)!.map((c) => (
+            <li>
+              <p class="cite-line">
+                <strong>{c.introduced_by}</strong> ·
+                &nbsp;<a href={c.paper_url} rel="noopener noreferrer">{c.paper_title}</a>
+                &nbsp;<span class="arxiv">arXiv:{c.arxiv_id}</span>
+              </p>
+              <p class="cite-uses">
+                <span class="uses-label">Used in:</span>
+                {c.cites.map((u, idx) => (
+                  <>
+                    <a href={`${base}/${u.category}/${u.slug}/`}>{u.title}</a><span class="abbr"> ({u.abbr})</span>
+                    {idx < c.cites.length - 1 ? <span class="sep"> · </span> : null}
+                  </>
+                ))}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </section>
+    ))}
+  </article>
+</BaseLayout>
+
+<style>
+  .entry-header { margin: 48px 0 48px; }
+  .entry-header h1 { margin: 8px 0 24px; }
+  .lede {
+    color: var(--text-soft);
+    font-size: 1.125rem;
+    line-height: 1.55;
+  }
+  .year-group {
+    margin: 48px 0;
+    display: grid;
+    grid-template-columns: 80px 1fr;
+    column-gap: 32px;
+    align-items: start;
+  }
+  .year-group h2 {
+    font-family: var(--mono);
+    font-size: 1.0625rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 12px 0 0;
+    letter-spacing: 0.02em;
+  }
+  .ref-list { list-style: none; margin: 0; padding: 0; }
+  .ref-list li {
+    padding: 20px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .ref-list li:last-child { border-bottom: none; }
+  .cite-line {
+    margin: 0 0 8px;
+    line-height: 1.55;
+  }
+  .cite-line strong { font-weight: 600; }
+  .arxiv {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    letter-spacing: 0.02em;
+  }
+  .cite-uses {
+    margin: 4px 0 0;
+    font-size: var(--t-small);
+    color: var(--text-soft);
+  }
+  .uses-label {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    margin-right: 6px;
+  }
+  .abbr {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    letter-spacing: 0.02em;
+  }
+  .sep { color: var(--text-faint); }
+  @media (max-width: 640px) {
+    .year-group { grid-template-columns: 1fr; column-gap: 0; }
+    .year-group h2 { margin-bottom: 12px; }
+  }
+</style>

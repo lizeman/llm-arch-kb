@@ -13,11 +13,14 @@ problem_solved: "Let a pretrained decoder serve infinite-length streaming genera
 predecessors: []
 successors: []
 adopted_by: []
+figure_component: "AttentionSinks"
+figure_caption: "Drag t past the window size with S = 0 to see naive sliding-window failure; bump S to 4 to see the streaming-LLM fix."
 summary: "The first 1-4 tokens of any pretrained decoder act as attention sinks — they absorb the softmax mass that has nowhere else to go. Pin them in the KV cache and you can slide the rest of the window over arbitrarily long input without quality collapse."
 tags: ["long-context", "inference"]
 last_verified: "2026-05-11"
 ---
 
+import AttentionSinks from "~/components/figures/AttentionSinks";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -47,6 +50,8 @@ in the gradient sense, absorbing the leftover probability mass.
 When sliding-window eviction removes these sinks, every query in every layer suddenly has
 nowhere to dump its excess probability. The softmax redistributes to weakly-attended local
 keys, the signal-to-noise ratio collapses, and outputs degrade.
+
+<AttentionSinks client:visible />
 
 <p class="section-eyebrow">§ 3 · The fix</p>
 ## Pin the sinks; slide the rest

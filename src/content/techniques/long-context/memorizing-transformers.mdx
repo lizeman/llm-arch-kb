@@ -1,0 +1,103 @@
+---
+title: "Memorizing Transformers"
+abbreviation: "Memorizing"
+category: "long-context"
+year: 2022
+month: 3
+introduced_by: "Yuhuai Wu, Markus N. Rabe, DeLesley Hutchins, Christian Szegedy"
+paper_title: "Memorizing Transformers"
+arxiv_id: "2203.08913"
+paper_url: "https://arxiv.org/abs/2203.08913"
+status: "research"
+problem_solved: "Extend a transformer's effective context to millions of tokens by adding a non-differentiable kNN memory that retrieves relevant past key/value pairs from outside the standard attention window."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Augment one mid-stack attention layer with a kNN lookup over a non-differentiable bank of past K, V pairs. Retrieved keys/values are merged into the layer's attention. Conceptually adjacent to RAG; mechanically a forerunner."
+tags: ["long-context", "memory", "kNN"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Two ways out of the context cap
+
+By 2022 there were two strategies for letting a transformer access information older than its
+attention window:
+
+1. **Compress the past.** Pack old activations into a smaller representation that current
+   attention can still see — Compressive Transformer's approach. Lossy but fully differentiable.
+2. **Retrieve from the past.** Maintain a non-differentiable database of past activations, and
+   at inference time look up the most relevant entries by similarity. Lossless on retrieved
+   items, but the retrieval mechanism doesn't get gradient signal.
+
+Memorizing Transformers explored route 2 within a single transformer layer.
+
+<p class="section-eyebrow">§ 2 · The kNN memory</p>
+## Retrieve, then attend
+
+Pick one mid-stack attention layer to augment. As text streams through the model, store every
+K, V pair produced by that layer in an external memory bank — a vector database keyed by K.
+At each new query position $t$:
+
+1. Use $\mathbf{q}_t$ to look up the $k$ nearest keys in the external bank (k-Nearest-Neighbors,
+   exact or approximate).
+2. Add the retrieved $k$ (key, value) pairs to the normal in-window keys/values.
+3. Run standard attention over the combined set.
+
+```python
+def memorizing_attn(q, k, v, external_memory, knn_k=32):
+    # q, k, v: [B, T, H, d_h]
+    # external_memory: KV database from past chunks
+    retrieved_k, retrieved_v = external_memory.knn_lookup(q, knn_k)
+    full_k = concat([k, retrieved_k], dim=2)
+    full_v = concat([v, retrieved_v], dim=2)
+    return scaled_dot_product_attention(q, full_k, full_v)
+```
+
+The external memory's vectors are *not* part of the computational graph: the kNN lookup is a
+discrete operation, retrieved values are treated as constants. Gradients flow only through the
+in-window K, V. This makes the memory cheap to store (no autograd state needed) and easy to
+scale to millions of entries.
+
+<p class="section-eyebrow">§ 3 · Where it sits in the layer stack</p>
+## A single augmented layer is enough
+
+Wu et al.'s ablation (Table 5) checked augmenting different layers. Mid-stack layers (e.g.,
+the 9th of 12 in their setup) give the largest perplexity reduction. Augmenting early layers
+helps less because the queries are too lexical; augmenting the final layer helps less because
+its representations are already specialized for next-token prediction. Augmenting *every* layer
+helps somewhat but at much greater memory cost.
+
+The mid-stack-only design is part of what makes the technique tractable: a single layer's K, V
+to index, not the whole stack.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+On PG-19 and arXiv math, Memorizing Transformers cut perplexity by 1.5–2 nats compared to a
+matched-FLOP baseline transformer, with effective context extending to ~64K tokens at training
+length 2K — a 32× extension via retrieval (Wu et al. Table 1). The memory bank during training
+was the rolling buffer of past activations from the current document.
+
+The technique never made the leap to frontier production decoders, for two reasons:
+
+1. **The non-differentiable retrieval is awkward.** The model can learn to *use* retrieved
+   K, V but cannot learn to retrieve better. Retrieval quality is upstream of attention quality.
+2. **Retrieval-augmented generation** (RAG) accomplishes similar goals with a different
+   architecture (retrieve documents into the prompt, run standard attention over the prompt)
+   and is easier to deploy.
+
+Memorizing Transformers remain a clean reference point: they showed that *attention itself* can
+be wired to an external memory, separately from the question of whether to use one. The
+mechanism survives in research on landmark attention, infinite-context memorization, and certain
+retrieval-from-activations work.
+
+<Summary>
+**Memorizing Transformers in one breath.** Add a non-differentiable kNN memory of past K, V
+pairs at one mid-stack layer. Retrieved entries merge into the layer's attention; effective
+context extends 32× at fixed training length. Lost to RAG and compression-based long-context
+in production, but remains the cleanest demonstration that attention can natively use external
+memory.
+</Summary>

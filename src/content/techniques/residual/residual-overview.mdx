@@ -1,0 +1,122 @@
+---
+title: "The Residual Stream"
+abbreviation: "Residual"
+category: "residual"
+year: 2015
+month: 12
+introduced_by: "Kaiming He, Xiangyu Zhang, Shaoqing Ren, Jian Sun"
+paper_title: "Deep Residual Learning for Image Recognition"
+arxiv_id: "1512.03385"
+paper_url: "https://arxiv.org/abs/1512.03385"
+status: "foundational"
+problem_solved: "Train arbitrarily deep networks without gradient vanishing — by letting each layer learn a perturbation on a clean linear stream rather than transforming activations in place."
+predecessors: []
+successors: []
+adopted_by:
+  - model: "llama-3-1-70b"
+    source_url: "https://arxiv.org/abs/2407.21783"
+    notes: "Standard Pre-Norm residual: x ← x + sublayer(norm(x))."
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "Standard Pre-Norm residual across 61 layers."
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "Sandwich/norm-everywhere residual with normalization inside the residual branch."
+summary: "Every modern transformer block adds its output to the running activation rather than replacing it. The 'residual stream' is the linear path through depth that carries information unaltered; each block contributes a perturbation."
+tags: ["residual", "consensus-stack", "foundational"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The pre-residual era
+
+Before ResNet, networks deeper than ~20 layers were intractable to train. Gradients either
+vanished (multiplicative attenuation through nonlinearities) or exploded (amplification through
+unbounded weight matrices). VGG topped out at 19 layers.
+
+The diagnosis from He et al. (2015) was sharp: depth itself was not the problem. The problem
+was that deep stacks were being asked to *transform* activations through a long chain of
+nonlinear functions, when most of those layers should be doing very little — close to the
+identity.
+
+<p class="section-eyebrow">§ 2 · The fix</p>
+## Add, don't replace
+
+Reformulate each block to learn a *residual function* on top of an identity skip:
+
+$$\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + f_\ell(\mathbf{x}_\ell).$$
+
+Now $f_\ell$ only needs to learn what is different about $\mathbf{x}_{\ell+1}$ vs
+$\mathbf{x}_\ell$. The "do nothing" baseline is $f_\ell \equiv 0$, which is reachable with a
+simple bias initialization. Depth becomes nearly free.
+
+The gradient with respect to a deep input is
+
+$$\frac{\partial L}{\partial \mathbf{x}_\ell} = \frac{\partial L}{\partial \mathbf{x}_{L}}\;\prod_{k=\ell}^{L-1}\Bigl(I + \frac{\partial f_k}{\partial \mathbf{x}_k}\Bigr).$$
+
+The identity term inside each product keeps the gradient from collapsing to zero or blowing up,
+even at depths of hundreds of layers.
+
+<p class="section-eyebrow">§ 3 · The residual stream</p>
+## A useful mental model
+
+A modern transformer block has two sub-layers (attention, FFN), each with its own residual:
+
+```python
+def block(x, attn, ffn, norm1, norm2):
+    x = x + attn(norm1(x))   # attention adds a delta
+    x = x + ffn(norm2(x))    # FFN adds another delta
+    return x
+```
+
+Think of $\mathbf{x}$ as a flowing *stream* whose dimensionality $d_{\text{model}}$ is fixed
+across depth. Every block reads from the stream (via the norm + sublayer), computes a
+correction, and writes that correction back additively. Nothing is replaced; nothing is lost
+unless explicitly written over.
+
+This framing has become the standard mechanistic-interpretability lens (Elhage et al. 2021,
+"A Mathematical Framework for Transformer Circuits"). Each attention head and FFN neuron is a
+read/write operation against the residual stream. The stream is the shared memory.
+
+<p class="section-eyebrow">§ 4 · Geometry across depth</p>
+## The norm grows
+
+A consequence of pure Pre-Norm residual layout: the residual stream's norm tends to grow
+monotonically with depth, because each block adds a perturbation but nothing trims it. A 100-layer
+model can have a stream norm 10× larger at the output than at the embedding.
+
+This is mostly fine — the final RMSNorm before the unembedding normalizes it back — but it has
+two effects worth knowing:
+
+1. **Layers deep in the network see a different distribution than shallow ones.** Some recent
+   designs (DeepNorm, OLMo 2) deliberately rein in the growth via initialization or by reverting
+   to Post-Norm with care.
+2. **Sandwich placements** (Gemma 3's norm-everywhere) wrap each residual branch in normalization,
+   capping the magnitude of the additive correction per block. See the
+   [norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for the placement zoo.
+
+<p class="section-eyebrow">§ 5 · Variations on the basic recipe</p>
+## What changes the residual itself
+
+The standard $\mathbf{x} + f(\mathbf{x})$ is the consensus choice for every open frontier
+decoder. A few research directions worth flagging for later entries:
+
+- **ReZero** (Bachlechner et al. 2020): scale each residual branch by a learnable scalar
+  initialized to zero. Trains stably without warmup or norm.
+- **DeepNet** (Wang et al. 2022): rescale the residual additively to stabilize 1000+ layer
+  transformers.
+- **Hyper-Connections** (Zhu et al. 2024): replace the single residual stream with multiple
+  parallel streams that exchange information via learned read/write matrices.
+
+These are roadmap entries for the v2 and v3 ships. For v1, "the residual" means the original
+ResNet formulation, applied twice per transformer block, on either side of the norm depending
+on placement.
+
+<Summary>
+**Residual in one breath.** Each block adds a learned perturbation to a clean linear stream
+instead of transforming activations in place. Gradients flow through the identity term, depth
+becomes nearly free, and the residual stream itself becomes the shared substrate that
+interpretability research now treats as the model's working memory.
+</Summary>

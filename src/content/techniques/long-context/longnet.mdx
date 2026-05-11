@@ -1,0 +1,106 @@
+---
+title: "LongNet — Dilated Attention"
+abbreviation: "LongNet"
+category: "long-context"
+year: 2023
+month: 7
+introduced_by: "Jiayu Ding et al. (Microsoft Research)"
+paper_title: "LongNet: Scaling Transformers to 1,000,000,000 Tokens"
+arxiv_id: "2307.02486"
+paper_url: "https://arxiv.org/abs/2307.02486"
+status: "research"
+problem_solved: "Cover very long sequences via dilated attention — multiple attention heads operating at exponentially-increasing stride patterns, so the receptive field grows multiplicatively in depth and head count rather than linearly in either."
+predecessors: ["sparse-transformer"]
+successors: []
+adopted_by: []
+summary: "Each attention head operates at a different dilation rate r ∈ {1, 2, 4, ...}: stride-r local windows. Combining log₂(N) such heads gives O(N · log N) total cost with full reachability across the sequence. Demonstrated training on 1B-token sequences."
+tags: ["long-context", "dilated", "sparse"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Window attention with multiple resolutions
+
+Sliding-window attention attends to the last $W$ keys at full resolution. The receptive field
+grows by $W$ per layer. To reach a key $10^6$ tokens away in a 32-layer model with $W = 4096$,
+the information has to route through 32 hops — possible but lossy.
+
+LongNet's approach: have different heads attend at different *strides* over the sequence,
+combining multiple resolutions of local attention in a single layer. A token can reach a key
+$10^6$ tokens away in a *single layer* via the head whose stride covers that distance.
+
+<p class="section-eyebrow">§ 2 · Dilated attention</p>
+## Stride-r local windows per head
+
+For head $i$ with dilation rate $r_i \in \{1, 2, 4, 8, \ldots, 2^k\}$, the head attends to a
+window of size $w$ at stride $r_i$. Specifically, query at position $t$ attends to keys
+
+$$\{t - r_i, t - 2 r_i, t - 3 r_i, \ldots, t - w \cdot r_i\}.$$
+
+The head sees $w$ keys, spaced $r_i$ apart, covering a span of $w \cdot r_i$ positions. With
+$\log_2(N)$ heads at exponentially-increasing dilation rates, the head ensemble covers
+positions from $t$ all the way to $t - N$ at $\log_2(N)$ different resolutions.
+
+```python
+def dilated_attention(q, k, v, dilation_rate, window_size):
+    # q, k, v: [B, T, d_h]
+    # For each query position t, select keys at indices [t - w*r, t - (w-1)*r, ..., t - r]
+    T = q.shape[1]
+    offsets = torch.arange(1, window_size + 1) * dilation_rate     # [w]
+    indices = torch.arange(T)[:, None] - offsets[None, :]          # [T, w]
+    indices = indices.clamp(min=0)                                  # causal + boundary
+    keys_dilated = k.gather(1, indices.unsqueeze(-1).expand(-1, -1, k.shape[-1]))
+    values_dilated = v.gather(1, indices.unsqueeze(-1).expand(-1, -1, v.shape[-1]))
+    return scaled_dot_product_attention(q, keys_dilated, values_dilated)
+```
+
+Total compute per layer: $O(N \cdot w \cdot \log N)$. With $w \approx 1024$ and the head count
+scaling logarithmically in target context length, this scales sub-linearly past softmax's
+$O(N^2)$.
+
+<p class="section-eyebrow">§ 3 · Full reachability via composition</p>
+## Why log N heads is enough
+
+For any target distance $d \leq N$, there exists a dilation rate $r_i$ such that $d \in
+[r_i, w \cdot r_i]$ — the dilation-rate-$r_i$ head's window covers position $t - d$. The head
+ensemble therefore has direct access to any past position at *some* resolution, in a single
+layer.
+
+The downside: the resolution at distance $d$ is $r_i$ (one key in every $r_i$ positions).
+The model attends at fine resolution locally and coarse resolution far away — which is
+intuitive but means specific far-away tokens can be skipped.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## What 1B tokens looks like
+
+Ding et al. (Figure 1) report training a transformer on **1 billion-token** sequences end-to-end
+via dilated attention. Standard softmax attention OOMs at $10^4$-$10^5$ tokens on the same
+hardware; LongNet trains stably to $10^9$ at sub-quadratic cost.
+
+For the practical 32K–1M context regime that production models care about, LongNet's relative
+advantage over SWA + global is small — the simpler interleaved-window pattern (Gemma 3, Mistral)
+achieves similar receptive-field properties with less implementation complexity. The dilated
+attention's value is in the asymptotic regime where the multiplicative reach of $\log N$ heads
+genuinely matters.
+
+<p class="section-eyebrow">§ 5 · Where it sits</p>
+## Adjacent to but distinct from SWA + global
+
+LongNet shares the "fixed sparse pattern per head" framing with [BigBird](/llm-arch-kb/attention/bigbird/)
+and [Sparse Transformer](/llm-arch-kb/attention/sparse-transformer/). The dilation idea — covering
+distance via stride rather than window size — is its specific contribution. The combination
+of *exponentially-growing strides* across heads is what gives the $O(N \log N)$ scaling rather
+than $O(N \sqrt N)$.
+
+No production decoder ships pure LongNet — the asymptotic-regime advantage doesn't translate
+to wins at the contexts current models operate in. Worth tracking for very-long-context
+applications that haven't yet hit the production frontier.
+
+<Summary>
+**LongNet in one breath.** Dilated attention with exponentially-increasing strides across heads.
+O(N · log N) compute; full reachability in one layer for any target distance. Demonstrated
+training on 1B-token sequences. Below 1M context, simpler SWA + global designs are competitive;
+above 1M, LongNet's asymptotic advantage starts to matter.
+</Summary>

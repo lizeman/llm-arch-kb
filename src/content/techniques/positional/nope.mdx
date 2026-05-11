@@ -1,0 +1,97 @@
+---
+title: "No Position Encoding"
+abbreviation: "NoPE"
+category: "positional"
+year: 2022
+month: 3
+introduced_by: "Adi Haviv et al."
+paper_title: "Transformer Language Models without Positional Encodings Still Learn Positional Information"
+arxiv_id: "2203.16634"
+paper_url: "https://arxiv.org/abs/2203.16634"
+status: "research"
+problem_solved: "Show that decoder-only transformers don't need an explicit positional encoding at all — the causal mask alone leaks enough position information for the model to recover it implicitly."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Drop the positional encoding entirely. The causal mask asymmetrically restricts each query to its left context; the model learns to extract token position from that asymmetry alone. Works surprisingly well; reveals what positional encodings are actually adding."
+tags: ["positional", "research"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## A control experiment that wasn't supposed to work
+
+By 2022, the "positional encoding is necessary" claim was taken as load-bearing — without
+sinusoidal / rotary / ALiBi / learned position embeddings, the attention mechanism is
+permutation-equivariant, and language is not.
+
+Haviv et al. ran the control experiment anyway: train a decoder-only language model with no
+positional encoding at all. The expected outcome was a model that produced word salad.
+
+The actual outcome (their Figure 2): the no-PE model trains to within ~1 perplexity point of a
+standard sinusoidal baseline on WikiText-103. On some long-range tasks it actually generalizes
+better.
+
+<p class="section-eyebrow">§ 2 · The mechanism</p>
+## The causal mask leaks position
+
+The asymmetry: a *bidirectional* attention layer is genuinely permutation-equivariant, and
+needs positional information injected to break the symmetry. A *causal* attention layer is not.
+Token at position $t$ can attend to positions $\{0, 1, \ldots, t\}$ — a different set than the
+positions attended by token $t-1$, position $t+1$, or any other token.
+
+Specifically:
+
+- Token 0 attends to itself only.
+- Token 1 attends to a set of size 2.
+- Token $t$ attends to a set of size $t + 1$.
+
+The number of tokens a query has seen is a perfect indicator of its absolute position. The
+model can derive position from the *count of past tokens* observable through the mask — for
+example, by routing attention through a head that uses softmax temperature to estimate the
+denominator of $\sum_{s \leq t} 1 = t + 1$.
+
+Haviv et al. probe internal representations and confirm that no-PE models do encode position
+information in their hidden states — they just learn it implicitly from the mask geometry.
+
+```python
+# A "no-PE" causal transformer is just standard causal attention with no positional injection.
+# No sinusoidal table. No RoPE. No ALiBi. Just:
+def no_pe_attn(q, k, v, causal_mask):
+    logits = (q @ k.transpose(-2, -1)) / d_h**0.5
+    return (logits + causal_mask).softmax(-1) @ v
+```
+
+<p class="section-eyebrow">§ 3 · Length generalization</p>
+## What Kazemnejad et al. added
+
+The 2023 follow-up by Kazemnejad et al. (arXiv 2305.19466) sharpened the finding: across a
+suite of length-extrapolation tasks (addition, copying, parity), NoPE *generalizes better* than
+RoPE, ALiBi, or sinusoidal on out-of-distribution lengths. Where sinusoidal and learned PE fall
+off cliffs at $> L_{\text{train}}$ positions, NoPE degrades smoothly.
+
+The intuition: there is no positional encoding to extrapolate, so there is nothing to break.
+The model's implicit position-counting mechanism is scale-invariant.
+
+<p class="section-eyebrow">§ 4 · Why no production decoder uses it</p>
+## The non-extrapolation case
+
+For tasks where position-tagged tokens are useful — long-document QA, code, anything with
+explicit hierarchy — NoPE underperforms RoPE in absolute quality (Kazemnejad et al. Table 2).
+The implicit position information is enough but not optimal: a richer relative-position
+signal helps the model when relative position is genuinely informative.
+
+Production decoders care about absolute quality on context-rich tasks more than about smooth
+length extrapolation. RoPE remains the consensus choice. NoPE survives as the cleanest
+existence proof that "positional encoding is necessary" is *strictly false* for causal
+decoders, and as an option for tasks where length extrapolation dominates.
+
+<Summary>
+**NoPE in one breath.** Drop the positional encoding entirely; the causal mask's asymmetry
+leaks enough position information for the model to recover it. Works within a perplexity point
+of sinusoidal on standard tasks, generalizes better than every PE on length extrapolation.
+Reveals what positional encodings are actually adding — and that for causal decoders, it's not
+nearly as much as everyone assumed.
+</Summary>

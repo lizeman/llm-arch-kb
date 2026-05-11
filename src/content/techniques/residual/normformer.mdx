@@ -1,0 +1,98 @@
+---
+title: "NormFormer — Extra Normalization in the Residual"
+abbreviation: "NormFormer"
+category: "residual"
+year: 2021
+month: 10
+introduced_by: "Sam Shleifer, Jason Weston, Myle Ott (Facebook AI)"
+paper_title: "NormFormer: Improved Transformer Pretraining with Extra Normalization"
+arxiv_id: "2110.09456"
+paper_url: "https://arxiv.org/abs/2110.09456"
+status: "research"
+problem_solved: "Add three small per-block normalization terms — head-wise output scaling, post-FFN norm, head-wise gain — that improve Pre-Norm transformer pretraining speed by 22% with no architectural changes downstream."
+predecessors: ["residual-overview"]
+successors: []
+adopted_by: []
+summary: "Three extra normalizations bolted onto Pre-Norm: head-wise scale on attention output, RMSNorm after FFN output, and a learnable per-head gain on the attention's projected output. 22% faster pretraining at matched final perplexity; not adopted in production but cleanly motivated."
+tags: ["residual", "normalization"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Pre-Norm leaves residual-stream norm uncontrolled
+
+Pre-Norm Pre-RMSNorm transformers train stably but the residual stream's norm grows
+monotonically with depth: each block adds a perturbation without renormalizing the stream
+itself (see the [residual-stream entry](/llm-arch-kb/residual/residual-overview/)). Shleifer
+et al. observed that this unbounded growth is correlated with slower convergence — the model
+spends compute learning to compensate for distributional drift across depth that does not
+carry useful signal.
+
+NormFormer's approach: add three small normalization terms that selectively curb the growth
+without compromising Pre-Norm's gradient-flow properties.
+
+<p class="section-eyebrow">§ 2 · The three additions</p>
+## Where the extra norms go
+
+For a standard Pre-Norm block `x ← x + sublayer(norm(x))`, NormFormer adds:
+
+1. **Head-wise scaling on attention output.** A per-head learnable scalar
+   $\alpha_i \in \mathbb{R}$ multiplied into each head's output before concatenation:
+   $\mathrm{head}_i \leftarrow \alpha_i \cdot \mathrm{head}_i$. This lets the model attenuate
+   noisy heads' contributions to the residual.
+2. **RMSNorm after the FFN sub-layer.** Apply RMSNorm to the FFN output *before* the residual
+   addition:
+   `x ← x + RMSNorm(FFN(norm(x)))`. Caps the magnitude of the FFN's per-block contribution.
+3. **Head-wise gain on attention's projection.** A learnable per-head scalar applied to
+   $W_O$'s output, similar to (1) but at the post-projection stage rather than per-head
+   pre-projection.
+
+```python
+def normformer_block(x, attn, ffn, norm_attn, norm_ffn, post_ffn_norm, head_scales):
+    # head_scales: [num_heads] learnable per-head attention scale
+    attn_out = attn(norm_attn(x))                 # [B, T, num_heads, d_h]
+    attn_out = attn_out * head_scales[None, None, :, None]
+    x = x + flatten_heads(attn_out)
+    x = x + post_ffn_norm(ffn(norm_ffn(x)))       # extra RMSNorm here
+    return x
+```
+
+The three additions cost a handful of learnable scalars per block — negligible vs the FFN and
+attention's parameter counts.
+
+<p class="section-eyebrow">§ 3 · Results</p>
+## Empirical evidence
+
+Shleifer et al. (Table 1) report NormFormer reaching the baseline Pre-Norm GPT-3-style model's
+final perplexity in **22% fewer steps** at scales from 125M to 6.7B parameters. The speedup
+holds across causal LM and masked LM pretraining. At matched compute, NormFormer reaches lower
+final perplexity by ~0.2 nats.
+
+The mechanism the paper attributes: residual-stream norm grows more slowly with depth (Figure 3),
+so deeper layers see a more stable distribution and can spend gradient signal on actual
+learning rather than on adapting to shifting input statistics.
+
+<p class="section-eyebrow">§ 4 · Why production decoders didn't adopt it</p>
+## Three small things vs no things
+
+NormFormer's three additions are individually small but collectively change the parameter
+inventory of every block. For a research team building a new model, the question is whether
+the 22% training speedup justifies the architectural divergence from the Pre-Norm + RMSNorm
+consensus that the rest of the open ecosystem assumes.
+
+In practice, the answer has been no: Llama, DeepSeek, Gemma, OLMo, Mistral, Qwen all run pure
+Pre-Norm. The cost of being different from the consensus (kernel compatibility, tooling
+support, hyperparameter knowledge) exceeded the benefit of a single-recipe training speedup.
+
+NormFormer's three additions are nevertheless interesting evidence that Pre-Norm + RMSNorm is
+not Pareto-optimal — there exists a strict improvement on training efficiency. The fact that
+nobody ships it is a coordination problem more than a technical one.
+
+<Summary>
+**NormFormer in one breath.** Three small per-block additions on top of Pre-Norm: head-wise
+attention scaling, post-FFN RMSNorm, head-wise attention-output gain. 22% faster pretraining
+at matched final quality. Lost to consensus drag: no open frontier model has switched, despite
+the benefit being real and well-replicated.
+</Summary>

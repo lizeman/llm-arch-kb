@@ -1,0 +1,103 @@
+---
+title: "StreamingLLM and Attention Sinks"
+abbreviation: "Attention Sinks"
+category: "long-context"
+year: 2023
+month: 9
+introduced_by: "Guangxuan Xiao, Yuandong Tian, Beidi Chen, Song Han, Mike Lewis"
+paper_title: "Efficient Streaming Language Models with Attention Sinks"
+arxiv_id: "2309.17453"
+paper_url: "https://arxiv.org/abs/2309.17453"
+status: "production-adopted"
+problem_solved: "Let a pretrained decoder serve infinite-length streaming generation without retraining — by keeping a tiny set of 'sink' tokens permanently in the KV cache."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "The first 1-4 tokens of any pretrained decoder act as attention sinks — they absorb the softmax mass that has nowhere else to go. Pin them in the KV cache and you can slide the rest of the window over arbitrarily long input without quality collapse."
+tags: ["long-context", "inference"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Naive sliding fails badly
+
+The obvious recipe for serving a long stream is a sliding KV cache: keep the most recent $W$
+tokens, evict the rest. Memory becomes $O(W)$ regardless of input length. The expected outcome:
+quality stays roughly constant per token, the model just loses long-range context.
+
+The actual outcome (Xiao et al. 2023, Figure 1): the second the eviction front passes token 0,
+perplexity blows up by orders of magnitude. Generation becomes incoherent. A model fine for
+context 4096 produces garbage at sliding-window position 4097.
+
+<p class="section-eyebrow">§ 2 · The diagnosis</p>
+## Softmax must sum to one
+
+For any query token, the attention softmax over its keys is forced to sum to 1. If most keys
+are uninformative — far away, semantically unrelated, just noise — the softmax mass has to go
+somewhere. Pretrained decoders learn to send it to the easiest dump available: the first few
+tokens, which every query in every layer can always see.
+
+Xiao et al. show this directly. Look at the attention weights of a trained Llama-2: heads in
+deep layers route 30-60% of their attention mass to tokens 0-3, regardless of what those
+tokens semantically are. They are not informative attention targets. They are *sinks* — sinks
+in the gradient sense, absorbing the leftover probability mass.
+
+When sliding-window eviction removes these sinks, every query in every layer suddenly has
+nowhere to dump its excess probability. The softmax redistributes to weakly-attended local
+keys, the signal-to-noise ratio collapses, and outputs degrade.
+
+<p class="section-eyebrow">§ 3 · The fix</p>
+## Pin the sinks; slide the rest
+
+The minimum change: keep $S$ initial tokens (typically $S = 4$) permanently pinned in the KV
+cache. Slide the rest. Memory becomes $O(S + W)$. Quality stays at the level of the original
+attention window.
+
+```python
+def streaming_kv_update(kv_cache, new_kv, window_w=2048, sinks_s=4):
+    # kv_cache: [N, ...] running cache
+    # new_kv: appended this step
+    full = concat([kv_cache, new_kv], dim=0)
+    if len(full) <= sinks_s + window_w:
+        return full
+    sinks = full[:sinks_s]
+    recent = full[-window_w:]
+    return concat([sinks, recent], dim=0)
+```
+
+The simplicity is the surprising part. No retraining. No new parameter. No change to the model.
+Just keep the first four tokens.
+
+<p class="section-eyebrow">§ 4 · Pretraining-time sinks</p>
+## Make the sink learnable
+
+A follow-up improvement: instead of relying on the first input tokens to act as accidental sinks,
+allocate a dedicated learnable "sink token" prepended to every sequence during pretraining. The
+model learns to route excess attention to it explicitly. Xiao et al. report this slightly
+improves the streaming behavior and removes the dependence on the actual content of the first
+few tokens (Table 6).
+
+Most production decoders do not retrain with explicit sinks, but inference engines (vLLM,
+llama.cpp, TensorRT-LLM) implement the pin-first-N recipe behind a flag — meaning attention sinks
+are a deployment-time architectural choice rather than a training-time one.
+
+<p class="section-eyebrow">§ 5 · Why this entry has no adopters</p>
+## A note on attribution
+
+This is an **inference-time** recipe applicable to any pretrained decoder, not an architectural
+change that a model itself adopts. The mechanism (softmax over keys with bias toward early
+tokens) is universal across Pre-Norm transformer decoders. The Xiao et al. paper demonstrates
+the effect on Llama-2, MPT, Pythia, and Falcon — every architecture they tested has it.
+
+This means the `adopted_by` list in this entry is intentionally empty. Streaming sinks are
+available wherever the inference engine supports them; no model commits to or opts out of them
+at training time.
+
+<Summary>
+**Attention sinks in one breath.** Pretrained decoders dump excess softmax mass onto their first
+few tokens; evicting those tokens during sliding-window inference collapses quality. Pin the
+first 4 tokens permanently and the entire 1M-token streaming generation works on a 7B model
+trained for 4K. The technique is universal and inference-time only — no retraining required.
+</Summary>

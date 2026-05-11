@@ -1,0 +1,122 @@
+---
+title: "Rotary Position Embedding"
+abbreviation: "RoPE"
+category: "positional"
+year: 2021
+month: 4
+introduced_by: "Jianlin Su, Yu Lu, Shengfeng Pan, Bo Wen, Yunfeng Liu"
+paper_title: "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+arxiv_id: "2104.09864"
+paper_url: "https://arxiv.org/abs/2104.09864"
+status: "production-adopted"
+problem_solved: "Encode position by rotating Q and K vectors — so that attention's inner product depends only on the relative offset between tokens, with no separate position-embedding lookup."
+predecessors: []
+successors: ["yarn"]
+adopted_by:
+  - model: "llama-3-1-70b"
+    source_url: "https://arxiv.org/abs/2407.21783"
+    notes: "RoPE base scaled for 128K context."
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "RoPE on the decoupled head of MLA; YaRN scaling for 128K."
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "Two RoPE bases: 10K for local SWA layers, 1M for global layers."
+figure_component: "RopeRotor"
+figure_caption: "Drag the position slider to see how fast a given dimension pair rotates. Slide the dimension index to compare fast vs slow rotation rates."
+summary: "Rotate the (2i, 2i+1) coordinate pairs of Q and K by an angle proportional to position. Relative position falls out of the inner product for free; the model never sees a learned position table."
+tags: ["positional", "consensus-stack"]
+last_verified: "2026-05-11"
+---
+
+import RopeRotor from "~/components/figures/RopeRotor";
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Position before RoPE
+
+Pre-RoPE transformers encoded position by *adding* something to the token embedding — either a
+sinusoidal table (Vaswani et al. 2017) or a learned position table (BERT, GPT-2, GPT-3). Both
+approaches have the same shape:
+
+$$\mathbf{x}_t = \mathbf{e}_{\text{tok}(t)} + \mathbf{p}_t,$$
+
+where $\mathbf{p}_t$ is a function of absolute position $t$. The model then has to *learn* to
+extract the relative offset $t - s$ between two positions whenever attention needs it.
+
+This works but has two costs: extrapolating beyond the trained position table is brittle, and
+the relative-position information is entangled with the token content in the first layer's
+input. Several alternatives — relative position embeddings (Shaw et al.), T5-style buckets,
+ALiBi — tried to address this by modifying the attention mechanism rather than the input.
+
+<p class="section-eyebrow">§ 2 · The rotation</p>
+## Rotate Q and K by position
+
+RoPE encodes position not on the embedding but on the *query and key vectors directly*, by
+rotation. Group the head-dim coordinates into pairs $(2i, 2i+1)$. For position $t$, multiply
+each pair by a 2D rotation matrix:
+
+$$R_t^{(i)} = \begin{pmatrix} \cos(t\theta_i) & -\sin(t\theta_i) \\ \sin(t\theta_i) & \cos(t\theta_i) \end{pmatrix},\quad
+\theta_i = b^{-2i/d_h}, \quad b = 10000.$$
+
+Apply $R_t$ to $W_Q \mathbf{x}_t$ and $W_K \mathbf{x}_t$ before the attention dot product. The
+resulting Q and K vectors live on rotating subspaces, with fast rotation in low-index dimensions
+and slow rotation in high-index ones.
+
+<RopeRotor client:visible />
+
+<p class="section-eyebrow">§ 3 · Why this gives relative position</p>
+## The product collapses
+
+The key identity: for the rotated query at position $m$ and rotated key at position $n$,
+
+$$\bigl(R_m \mathbf{q}\bigr)^\top \bigl(R_n \mathbf{k}\bigr) = \mathbf{q}^\top R_m^\top R_n \mathbf{k} = \mathbf{q}^\top R_{n-m} \mathbf{k}.$$
+
+The inner product depends only on $n - m$. Even though we rotated by absolute positions $m$ and
+$n$, attention sees the relative offset $n - m$ alone. The model never needs to learn this
+substitution — it is mechanical in the geometry.
+
+```python
+def apply_rope(x, theta, position):
+    # x: [..., d_h]   pair coordinates: x_pairs = x.view(..., d_h // 2, 2)
+    cos = (position * theta).cos()
+    sin = (position * theta).sin()
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+```
+
+<p class="section-eyebrow">§ 4 · The frequency ladder</p>
+## Fast and slow dimensions
+
+The choice $\theta_i = b^{-2i/d_h}$ with $b = 10000$ gives a geometric ladder of rotation rates:
+
+- $i = 0$: rotates by 1 radian per position. Cycles through the unit circle in 6.3 positions.
+- $i = d_h / 2 - 1$: rotates by $\sim 10^{-4}$ radians per position. Barely moves across 10K
+  positions.
+
+Low-index dimensions encode *short-range* relative position (any nearby token has a different
+phase). High-index dimensions encode *long-range* (the phase only differs at scales of thousands
+of tokens). This is the frequency-ladder structure that the figure above shows; it is also what
+YaRN exploits to extend the context window — see the [YaRN entry](/llm-arch-kb/positional/yarn/).
+
+<p class="section-eyebrow">§ 5 · Why it won</p>
+## Empirical evidence and adoption
+
+The RoFormer paper (Table 5) reports RoPE matching or beating both sinusoidal and Shaw-style
+relative embeddings on translation and language-modeling tasks. The decisive practical wins came
+later:
+
+- **No position-table cap.** Sinusoidal extrapolates badly past trained positions; RoPE bases
+  cleanly into long-context extensions like YaRN and NTK-aware scaling.
+- **Mechanical relative-position math.** Attention gets relative info for free, simplifying
+  position-aware reasoning across layers.
+- **Tiny implementation footprint.** A few lines of einsum, no extra parameters.
+
+Llama, Mistral, Qwen, DeepSeek, OLMo, Gemma, and Kimi all use RoPE. The 2024–26 consensus is
+unconditional: no major open dense LLM uses anything else.
+
+<Summary>
+**RoPE in one breath.** Rotate Q and K coordinate pairs by an angle proportional to position;
+inner products then depend only on relative offset. No position table, no extrapolation cliff,
+no extra parameters. The default positional encoding for every open decoder since 2022.
+</Summary>

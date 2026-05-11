@@ -1,0 +1,44 @@
+---
+name: "GPT-4"
+organization: "OpenAI"
+release_date: "2023-03-14"
+parameters_total: "undisclosed"
+context_length: 8192
+open_weights: false
+disclosure_level: "undisclosed"
+architecture:
+  positional: null
+  normalization_placement: null
+  normalization_type: null
+  qk_norm: null
+  activation: null
+  attention: null
+  moe: null
+  other: []
+source_urls:
+  - "https://cdn.openai.com/papers/gpt-4.pdf"
+  - "https://openai.com/index/gpt-4-research/"
+notes: "Architecture details are not publicly documented. Per the closed-model policy, no inferred claims are made; all architecture fields are null. The base context length (8192 / 32768) and release date are confirmed from OpenAI's official communications."
+---
+
+Architecture details for GPT-4 are not publicly documented. OpenAI's GPT-4 Technical Report
+(March 2023) declines to discuss model architecture, training data, training compute, or
+parameter count. Subsequent statements from OpenAI have not changed this stance.
+
+Per the [closed-model policy](/llm-arch-kb/about/), this knowledge base does not infer or
+report architectural claims for undocumented models. The fields below are confirmed public
+facts only:
+
+- **Release date**: March 14, 2023.
+- **Context length**: 8K base, 32K extended variant. Both confirmed by OpenAI's official
+  documentation.
+- **Open weights**: No.
+- **Modality**: Text + image input as of the public release.
+
+Every other architectural slot — positional encoding, normalization placement, activation,
+attention variant, MoE structure — is recorded as `null` in this knowledge base's schema, and
+the [Compare matrix](/llm-arch-kb/compare/) renders these as a dash.
+
+Rumors, leaked details, and third-party reverse-engineering speculation are explicitly out of
+scope for this knowledge base. See the [methodology](/llm-arch-kb/about/) page for the policy
+rationale.

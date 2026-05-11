@@ -43,6 +43,100 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
       </p>
     </section>
 
+    <section class="prose-wide stack-section">
+      <p class="section-eyebrow">The 2026 consensus stack</p>
+      <h2>One transformer block, six choices</h2>
+      <p class="stack-lede">
+        The default frontier dense decoder of 2024–26 is a small, settled set of choices. Each
+        labeled module below links to its entry.
+      </p>
+
+      <figure class="figure stack-figure">
+        <svg viewBox="0 0 720 460" role="img" aria-label="A canonical 2026 dense-decoder transformer block with labeled choices">
+          <title>One transformer block: pre-norm residual layout with attention (RoPE + GQA + optional QK-Norm) and FFN (SwiGLU), normalized by RMSNorm.</title>
+
+          <text x="40" y="32" font-family="var(--mono)" font-size="11" fill="#5a5a55">x_ℓ</text>
+          <line x1="60" y1="42" x2="60" y2="420" stroke="#1a4f7a" stroke-width="2" />
+          <text x="40" y="430" font-family="var(--mono)" font-size="11" fill="#5a5a55">x_ℓ₊₁</text>
+
+          <text x="78" y="58" font-family="var(--serif)" font-style="italic" font-size="11" fill="#5a5a55">residual stream</text>
+
+          <line x1="60" y1="100" x2="180" y2="100" stroke="#1a4f7a" stroke-width="1.25" />
+
+          <a href={`${base}/normalization/rmsnorm/`}>
+            <rect x="180" y="80" width="140" height="40" rx="3" fill="#fafaf7" stroke="#1a4f7a" stroke-width="1.25" />
+            <text x="250" y="105" text-anchor="middle" font-family="var(--serif)" font-size="13" fill="#1a4f7a">Pre-Norm RMSNorm</text>
+          </a>
+
+          <line x1="320" y1="100" x2="360" y2="100" stroke="#1a4f7a" stroke-width="1.25" />
+
+          <a href={`${base}/attention/gqa/`}>
+            <rect x="360" y="60" width="280" height="80" rx="3" fill="#fafaf7" stroke="#1a4f7a" stroke-width="1.25" />
+          </a>
+          <text x="500" y="80" text-anchor="middle" font-family="var(--serif)" font-size="13" font-weight="600" fill="#1a4f7a">Attention</text>
+          <a href={`${base}/attention/gqa/`}>
+            <text x="395" y="105" font-family="var(--mono)" font-size="11" fill="#1a4f7a" text-decoration="underline">GQA</text>
+          </a>
+          <text x="420" y="105" font-family="var(--mono)" font-size="11" fill="#5a5a55">+</text>
+          <a href={`${base}/positional/rope/`}>
+            <text x="435" y="105" font-family="var(--mono)" font-size="11" fill="#1a4f7a" text-decoration="underline">RoPE</text>
+          </a>
+          <text x="463" y="105" font-family="var(--mono)" font-size="11" fill="#5a5a55">+</text>
+          <a href={`${base}/normalization/qk-norm/`}>
+            <text x="479" y="105" font-family="var(--mono)" font-size="11" fill="#1a4f7a" text-decoration="underline">QK-Norm</text>
+          </a>
+          <text x="618" y="105" font-family="var(--mono)" font-size="9" fill="#8a8a85" text-anchor="end">optional</text>
+          <text x="500" y="128" text-anchor="middle" font-family="var(--mono)" font-size="9" fill="#8a8a85">(MLA replaces GQA in DeepSeek)</text>
+
+          <line x1="640" y1="100" x2="680" y2="100" stroke="#1a4f7a" stroke-width="1.25" />
+          <line x1="680" y1="100" x2="680" y2="225" stroke="#1a4f7a" stroke-width="1.25" />
+          <line x1="680" y1="225" x2="80" y2="225" stroke="#1a4f7a" stroke-width="1.25" stroke-dasharray="0" />
+          <circle cx="60" cy="225" r="9" fill="#fafaf7" stroke="#1a4f7a" stroke-width="1.5" />
+          <text x="60" y="229" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="#1a4f7a">+</text>
+          <text x="80" y="218" font-family="var(--serif)" font-style="italic" font-size="11" fill="#5a5a55">residual add</text>
+
+          <line x1="60" y1="280" x2="180" y2="280" stroke="#1a4f7a" stroke-width="1.25" />
+
+          <a href={`${base}/normalization/rmsnorm/`}>
+            <rect x="180" y="260" width="140" height="40" rx="3" fill="#fafaf7" stroke="#1a4f7a" stroke-width="1.25" />
+            <text x="250" y="285" text-anchor="middle" font-family="var(--serif)" font-size="13" fill="#1a4f7a">Pre-Norm RMSNorm</text>
+          </a>
+
+          <line x1="320" y1="280" x2="360" y2="280" stroke="#1a4f7a" stroke-width="1.25" />
+
+          <a href={`${base}/ffn-moe/swiglu/`}>
+            <rect x="360" y="240" width="280" height="80" rx="3" fill="#fafaf7" stroke="#1a4f7a" stroke-width="1.25" />
+          </a>
+          <text x="500" y="260" text-anchor="middle" font-family="var(--serif)" font-size="13" font-weight="600" fill="#1a4f7a">FFN</text>
+          <a href={`${base}/ffn-moe/swiglu/`}>
+            <text x="500" y="285" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="#1a4f7a" text-decoration="underline">SwiGLU</text>
+          </a>
+          <text x="500" y="308" text-anchor="middle" font-family="var(--mono)" font-size="9" fill="#8a8a85">
+            (
+            <tspan>
+              <a href={`${base}/ffn-moe/deepseek-moe/`}><tspan fill="#1a4f7a" text-decoration="underline">DeepSeekMoE</tspan></a>
+            </tspan> for sparse variants)
+          </text>
+
+          <line x1="640" y1="280" x2="680" y2="280" stroke="#1a4f7a" stroke-width="1.25" />
+          <line x1="680" y1="280" x2="680" y2="380" stroke="#1a4f7a" stroke-width="1.25" />
+          <line x1="680" y1="380" x2="80" y2="380" stroke="#1a4f7a" stroke-width="1.25" />
+          <circle cx="60" cy="380" r="9" fill="#fafaf7" stroke="#1a4f7a" stroke-width="1.5" />
+          <text x="60" y="384" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="#1a4f7a">+</text>
+          <text x="80" y="373" font-family="var(--serif)" font-style="italic" font-size="11" fill="#5a5a55">residual add</text>
+
+          <text x="380" y="438" font-family="var(--serif)" font-style="italic" font-size="12" fill="#5a5a55" text-anchor="middle">
+            repeat L times (typically 32–80)
+          </text>
+        </svg>
+        <figcaption>
+          The frontier dense-decoder block, ca. 2026.
+          {" "}<a href={`${base}/residual/residual-overview/`}>Residual stream</a>{" "}flows down the left;
+          attention and FFN branches read, transform, and add back. Each labeled box links to its entry.
+        </figcaption>
+      </figure>
+    </section>
+
     {featured.length > 0 && (
       <section class="prose featured">
         <p class="section-eyebrow">Featured</p>
@@ -151,4 +245,15 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
     font-size: var(--t-small);
     margin-left: auto;
   }
+
+  .stack-section { margin-top: 80px; }
+  .stack-section h2 { margin-top: 8px; }
+  .stack-lede {
+    color: var(--text-soft);
+    line-height: 1.6;
+    margin-bottom: 32px;
+  }
+  .stack-figure svg a:hover text { fill: #0e3357; }
+  .stack-figure svg a:hover rect { stroke-width: 1.75; }
+  .stack-figure figcaption { line-height: 1.6; max-width: 640px; margin-left: auto; margin-right: auto; }
 </style>

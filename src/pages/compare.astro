@@ -15,6 +15,21 @@ for (const t of techniques) {
   techniqueLookup.set(t.slug.split("/").pop()!, t);
 }
 
+// Sort techniques chronologically for View A
+const sortedTechniques = [...techniques].sort((a, b) => {
+  if (a.data.year !== b.data.year) return a.data.year - b.data.year;
+  return (a.data.month ?? 0) - (b.data.month ?? 0);
+});
+
+const CATEGORY_LABEL: Record<string, string> = {
+  positional: "Positional",
+  normalization: "Normalization",
+  residual: "Residual",
+  "ffn-moe": "FFN / MoE",
+  attention: "Attention",
+  "long-context": "Long Context",
+};
+
 function dash(): string {
   return "—";
 }
@@ -91,6 +106,48 @@ function display(value: string | boolean | null | undefined): string {
       </table>
     </div>
 
+    <h2 class="mt-section">Technique matrix</h2>
+    <p class="table-lede">
+      Each row is a documented technique in the knowledge base. The "adopters" column counts
+      how many of our spec-sheet'd models cite the technique.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Year</th>
+            <th scope="col">Category</th>
+            <th scope="col">Technique</th>
+            <th scope="col">Status</th>
+            <th scope="col">Adopters</th>
+            <th scope="col">Summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortedTechniques.map((t) => {
+            const tail = t.slug.split("/").pop()!;
+            const date = t.data.month
+              ? `${t.data.year}-${String(t.data.month).padStart(2, "0")}`
+              : `${t.data.year}`;
+            return (
+              <tr>
+                <td class="year">{date}</td>
+                <td class="cat">{CATEGORY_LABEL[t.data.category] ?? t.data.category}</td>
+                <th scope="row">
+                  <a href={`${base}/${t.data.category}/${tail}/`}>{t.data.title}</a>
+                  <span class="abbr">{t.data.abbreviation}</span>
+                </th>
+                <td class="status">{t.data.status}</td>
+                <td class="adopters">{t.data.adopted_by?.length ?? 0}</td>
+                <td class="summary">{t.data.summary}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+
     <h2 class="mt-section">Coverage notes</h2>
     <p>
       v1 ship covers the open / documented frontier model families
@@ -159,5 +216,45 @@ function display(value: string | boolean | null | undefined): string {
     font-size: 0.78rem;
     font-weight: 400;
     margin-top: 2px;
+  }
+  .year {
+    font-family: var(--mono);
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+  .cat {
+    font-family: var(--mono);
+    color: var(--accent);
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+  .abbr {
+    display: block;
+    font-family: var(--mono);
+    color: var(--text-faint);
+    font-size: 0.72rem;
+    margin-top: 2px;
+    letter-spacing: 0.02em;
+    font-weight: 400;
+  }
+  .status {
+    font-family: var(--mono);
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+  .adopters {
+    font-family: var(--mono);
+    color: var(--text-soft);
+    font-size: 0.78rem;
+    text-align: center;
+  }
+  .summary {
+    white-space: normal;
+    max-width: 320px;
+    color: var(--text-soft);
+    line-height: 1.45;
+    font-size: 0.85rem;
   }
 </style>

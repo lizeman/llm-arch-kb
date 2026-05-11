@@ -1,0 +1,143 @@
+---
+import BaseLayout from "~/layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+import { sortChronological } from "~/utils/chronological-sort";
+import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const all = await getCollection("techniques");
+type TechniqueEntry = (typeof all)[number];
+const sorted = sortChronological(all as unknown as TechniqueEntry[]);
+
+const byYear = new Map<number, TechniqueEntry[]>();
+for (const t of sorted) {
+  const arr = byYear.get(t.data.year) ?? [];
+  arr.push(t);
+  byYear.set(t.data.year, arr);
+}
+const years = [...byYear.keys()].sort((a, b) => a - b);
+
+function monthName(m?: number): string {
+  if (!m) return "";
+  return new Date(2000, m - 1, 1).toLocaleString("en-US", { month: "short" });
+}
+---
+
+<BaseLayout
+  title="Timeline"
+  description="Chronological listing of every architecture innovation in the knowledge base, from the original transformer onward."
+>
+  <article class="prose">
+    <header class="entry-header">
+      <p class="section-eyebrow">Browse</p>
+      <h1>Timeline</h1>
+      <p class="lede">
+        Every technique in the knowledge base, in the order it appeared. {sorted.length} entries
+        spanning {years[0]} to {years[years.length - 1]}.
+      </p>
+    </header>
+
+    {years.map((year) => (
+      <section class="year-group">
+        <h2>{year}</h2>
+        <ul class="year-list">
+          {byYear.get(year)!.map((t) => {
+            const slugLast = t.slug.split("/").pop()!;
+            return (
+              <li>
+                <a href={`${base}/${t.data.category}/${slugLast}/`}>
+                  <span class="when">{monthName(t.data.month)}</span>
+                  <span class="title-block">
+                    <strong>{t.data.title}</strong>
+                    <span class="abbr">{t.data.abbreviation}</span>
+                    <span class="cat">{CATEGORY_LABELS[t.data.category]}</span>
+                  </span>
+                  <span class="summary">{t.data.summary}</span>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    ))}
+  </article>
+</BaseLayout>
+
+<style>
+  .entry-header { margin: 48px 0 56px; }
+  .entry-header h1 { margin: 8px 0 24px; }
+  .lede { color: var(--text-soft); font-size: 1.125rem; line-height: 1.55; }
+
+  .year-group {
+    margin: 56px 0;
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    column-gap: 32px;
+    align-items: start;
+  }
+  .year-group h2 {
+    font-family: var(--mono);
+    font-size: 1.0625rem;
+    font-weight: 600;
+    color: var(--accent);
+    margin: 8px 0 0;
+    letter-spacing: 0.02em;
+  }
+  .year-list { list-style: none; margin: 0; padding: 0; }
+  .year-list li {
+    border-bottom: 1px solid var(--border);
+  }
+  .year-list a {
+    display: grid;
+    grid-template-columns: 60px 1fr;
+    column-gap: 16px;
+    padding: 18px 0;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .year-list a:hover strong { color: var(--accent); }
+  .when {
+    font-family: var(--mono);
+    font-size: var(--t-small);
+    color: var(--text-faint);
+    padding-top: 2px;
+  }
+  .title-block {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 4px;
+  }
+  .title-block strong {
+    font-size: 1.0625rem;
+    font-weight: 600;
+  }
+  .abbr {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+  }
+  .cat {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--accent);
+    letter-spacing: 0.02em;
+  }
+  .summary {
+    grid-column: 2;
+    color: var(--text-soft);
+    font-size: var(--t-small);
+    line-height: 1.55;
+  }
+
+  @media (max-width: 640px) {
+    .year-group {
+      grid-template-columns: 1fr;
+      column-gap: 0;
+    }
+    .year-group h2 { margin-bottom: 16px; }
+    .year-list a { grid-template-columns: 56px 1fr; }
+  }
+</style>

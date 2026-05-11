@@ -1,0 +1,96 @@
+---
+title: "Gaussian Error Linear Unit"
+abbreviation: "GELU"
+category: "ffn-moe"
+year: 2016
+month: 6
+introduced_by: "Dan Hendrycks, Kevin Gimpel"
+paper_title: "Gaussian Error Linear Units (GELUs)"
+arxiv_id: "1606.08415"
+paper_url: "https://arxiv.org/abs/1606.08415"
+status: "foundational"
+problem_solved: "Replace ReLU's hard zero cutoff with a smooth, probabilistically-motivated activation. Improves transformer pretraining quality at no compute cost; the standard FFN activation through 2022."
+predecessors: []
+successors: ["swiglu", "geglu"]
+adopted_by: []
+summary: "Multiply x by the standard normal CDF: GELU(x) = x · Φ(x). Smoother than ReLU, weighted by the input's z-score. The default transformer FFN activation in BERT, GPT-2, GPT-3 era; superseded by gated variants (SwiGLU, GeGLU) but still the substrate they sit on."
+tags: ["activation", "ffn", "foundational"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Past ReLU
+
+ReLU — $\max(0, x)$ — is biologically inspired and computationally trivial, but has two well-known
+costs: the hard zero kills gradients on negative inputs (the "dying ReLU" problem), and the kink
+at zero is non-differentiable, slightly complicating optimization-theory analysis.
+
+Smooth alternatives (sigmoid, tanh) restore differentiability but saturate at the extremes,
+killing gradients in a different way. Leaky variants of ReLU help with the dying-neuron problem
+but introduce arbitrary slope hyperparameters.
+
+GELU's approach: take a probabilistically motivated smooth function that approximates ReLU's
+behavior on the bulk of the input distribution.
+
+<p class="section-eyebrow">§ 2 · The activation</p>
+## x weighted by P(X ≤ x)
+
+For input $x$, GELU multiplies $x$ by the probability that a standard normal random variable
+is less than or equal to $x$:
+
+$$\mathrm{GELU}(x) = x \cdot \Phi(x) = x \cdot \tfrac{1}{2}\bigl[1 + \mathrm{erf}(x / \sqrt{2})\bigr].$$
+
+The intuition: rather than thresholding at zero like ReLU, weight $x$ by where it sits in the
+standard-normal distribution. Inputs much larger than zero get weight ~1 (similar to ReLU);
+inputs much smaller than zero get weight ~0 (similar to ReLU's negative half); inputs near
+zero get an intermediate weight that smooths the kink.
+
+A widely-used approximation that avoids computing the error function:
+
+$$\mathrm{GELU}(x) \approx x \cdot \sigma(1.702 \cdot x).$$
+
+```python
+def gelu_exact(x):
+    return x * 0.5 * (1.0 + (x / 2**0.5).erf())
+
+def gelu_approx(x):
+    return x * (1.702 * x).sigmoid()
+```
+
+PyTorch's `F.gelu` defaults to the exact form. Most production inference uses the approximation
+for ~5% wall-clock speedup with negligible quality difference.
+
+<p class="section-eyebrow">§ 3 · Results</p>
+## Empirical evidence
+
+Hendrycks & Gimpel (2016, Table 1) report GELU edging out ReLU and ELU on MNIST + CIFAR-10 +
+CIFAR-100 by 0.5–1.5 quality points. The headline application came later: BERT (Devlin et al.
+2018), GPT-2 (Radford et al. 2019), and GPT-3 (Brown et al. 2020) all used GELU as their FFN
+activation, citing the same smoothness motivation.
+
+For dense transformer FFNs through ~2022, GELU was the standard choice. The 2024-26 frontier
+has largely moved on:
+
+- **SwiGLU** ([entry](/llm-arch-kb/ffn-moe/swiglu/)): replaces plain GELU with a gated bilinear
+  form using Swish. Adopted by Llama / DeepSeek / OLMo.
+- **GeGLU** ([entry](/llm-arch-kb/ffn-moe/geglu/)): replaces plain GELU with a gated bilinear
+  form *using GELU as the gate*. Adopted by Gemma.
+
+Note the asymmetry: SwiGLU drops GELU entirely; GeGLU keeps GELU inside the gate. Both are
+empirically better than plain GELU FFN at matched parameter count.
+
+<p class="section-eyebrow">§ 4 · Where it survives</p>
+## Still in the gate
+
+GELU is no longer the dominant FFN activation but it is *inside* every GeGLU layer in Gemma 1 / 2 / 3.
+It also remains the default in encoder-only models that haven't migrated to gated FFNs
+(BERT-base, RoBERTa, DeBERTa). The activation itself is not deprecated; the *uncgated* FFN
+that used to wrap it is.
+
+<Summary>
+**GELU in one breath.** Multiply x by the standard normal CDF Φ(x). Smooth, probabilistically-
+motivated; replaced ReLU as the default transformer FFN activation in 2018-22. Now sits inside
+GeGLU rather than as a standalone FFN nonlinearity; SwiGLU dropped GELU altogether.
+</Summary>

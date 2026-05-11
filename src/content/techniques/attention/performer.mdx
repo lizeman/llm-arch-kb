@@ -1,0 +1,109 @@
+---
+title: "Performer — Random Feature Softmax Approximation"
+abbreviation: "Performer"
+category: "attention"
+year: 2020
+month: 9
+introduced_by: "Krzysztof Choromanski et al. (Google Research)"
+paper_title: "Rethinking Attention with Performers"
+arxiv_id: "2009.14794"
+paper_url: "https://arxiv.org/abs/2009.14794"
+status: "research"
+problem_solved: "Approximate softmax attention with random features that decompose the kernel — letting attention scale linearly in sequence length while remaining an unbiased estimator of the original softmax operator."
+predecessors: ["linear-attention"]
+successors: []
+adopted_by: []
+summary: "Approximate the softmax kernel as ⟨φ(q), φ(k)⟩ for a random feature map φ. The decomposition reorders QKV matmuls so attention is O(N·d) per layer; unlike Linformer the approximation is sequence-length-independent and works for autoregressive decoders."
+tags: ["attention", "approximate", "linear", "kernel"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Softmax as a kernel
+
+Standard attention computes $\mathrm{softmax}(\mathbf{q}^\top \mathbf{k}_j / \sqrt{d})$ for
+each query-key pair. The softmax can be rewritten as $\exp(\mathbf{q}^\top \mathbf{k}_j /
+\sqrt{d})$ normalized by the sum across $j$. The exponential is a *kernel*: a similarity
+function between $\mathbf{q}$ and $\mathbf{k}_j$.
+
+Mercer's theorem says any positive-definite kernel $K(\mathbf{x}, \mathbf{y})$ can be written
+as $\langle \phi(\mathbf{x}), \phi(\mathbf{y}) \rangle$ for some (possibly infinite-dimensional)
+feature map $\phi$. If we can find a *finite-dimensional* feature map $\phi$ whose inner product
+approximates $\exp(\mathbf{x}^\top \mathbf{y} / \sqrt{d})$, then the QKV matrix multiplications
+can be reordered exactly as in Linear Attention — giving linear-time complexity.
+
+Performer's contribution: a specific positive random feature map (FAVOR+) that gives a
+provably unbiased and positivity-preserving estimator of the softmax kernel.
+
+<p class="section-eyebrow">§ 2 · The random features</p>
+## FAVOR+
+
+For $r$ random projection vectors $\boldsymbol{\omega}_1, \ldots, \boldsymbol{\omega}_r \sim
+\mathcal{N}(0, I_d)$ and a scaling constant $h(\mathbf{x})$, define
+
+$$\phi(\mathbf{x}) = \frac{h(\mathbf{x})}{\sqrt{r}}\bigl[\exp(\boldsymbol{\omega}_1^\top \mathbf{x}),\ \ldots,\ \exp(\boldsymbol{\omega}_r^\top \mathbf{x})\bigr] \in \mathbb{R}^r_{>0}.$$
+
+The "+" in FAVOR+ refers to the strict positivity of $\phi$: every component is an
+exponential, so $\langle \phi(\mathbf{q}), \phi(\mathbf{k}) \rangle$ is always positive — a
+necessary property for it to approximate the strictly-positive softmax kernel.
+
+Choromanski et al. prove that the expected value $\mathbb{E}_{\boldsymbol{\omega}} \langle
+\phi(\mathbf{q}), \phi(\mathbf{k}) \rangle$ equals $\exp(\mathbf{q}^\top \mathbf{k})$ exactly,
+and that variance decreases as $O(1/r)$.
+
+```python
+def performer_attention(Q, K, V, omega):
+    # omega: [r, d_h] random projections, fixed across layer/forward
+    phi_Q = (Q @ omega.T).exp() / r**0.5     # [B, T, r]
+    phi_K = (K @ omega.T).exp() / r**0.5
+    # Reorder: compute phi_K^T V (small) once, then phi_Q · (phi_K^T V)
+    KV = phi_K.transpose(-2, -1) @ V         # [B, r, d_h]
+    return phi_Q @ KV                         # [B, T, d_h]
+```
+
+For causal masking the same prefix-sum trick used by Linear Attention applies:
+$S_t = S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top$, with $\phi$ in place of the identity
+feature map.
+
+<p class="section-eyebrow">§ 3 · The catch</p>
+## Variance, scale, and the random seed
+
+Three issues prevented Performer from displacing softmax in production decoders:
+
+1. **Variance scales with feature count.** For 128-dim head with sequence length 16K, $r = 256$
+   random features gives ~1% RMSE on the attention probabilities. To match softmax precisely
+   you need $r \gtrsim 1024$, at which point the compute advantage over FlashAttention shrinks.
+2. **Approximation quality is content-dependent.** When the attention distribution is sharp
+   (one or two dominant keys), the random feature estimator has high variance. Performer
+   underperforms softmax on tasks with high attention concentration — exactly the tasks
+   where attention's expressivity matters most.
+3. **The random projections are a hyperparameter.** Different seeds give different attention
+   patterns; results are not reproducible across training runs without seeding the random
+   features.
+
+Despite these costs, Performer was the cleanest existence proof of "approximate softmax with
+random features at linear cost." Its lineage influenced subsequent kernel-based attention
+work; see [Linear Attention](/llm-arch-kb/attention/linear-attention/) for the parent framing
+and [Lightning Attention](/llm-arch-kb/attention/lightning-attention/) for the descendant that
+actually shipped in production.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+Choromanski et al. (Table 1) report Performer matching softmax on protein language modeling
+benchmarks at 8K sequence length, with $4\times$ wall-clock speedup. On natural language tasks
+the gap is larger ($\sim 1$ perplexity point at matched parameter count on WikiText-103) but
+the linear scaling enables sequences past 16K that softmax cannot fit on a single GPU.
+
+The technique didn't make it to frontier production decoders, but its math — random features
+approximating an inner-product kernel — survives in the broader linear-attention literature.
+
+<Summary>
+**Performer in one breath.** Approximate softmax via positive random features (FAVOR+) so QKV
+matmuls can be reordered for O(N) cost. Unbiased estimator of softmax with variance O(1/r).
+Theoretically clean; lost to FlashAttention and Lightning Attention on practical grounds
+(variance under sharp attention, seed dependence) but a load-bearing reference in the
+linear-attention research lineage.
+</Summary>

@@ -11,7 +11,7 @@ paper_url: "https://arxiv.org/abs/2006.16236"
 status: "research"
 problem_solved: "Replace softmax with a kernel that lets you reorder QKV multiplications — making attention compute linear in sequence length, with a constant-size recurrent state at autoregressive inference."
 predecessors: []
-successors: []
+successors: ["performer", "lightning-attention"]
 adopted_by: []
 summary: "Replace softmax(QK^T)V with φ(Q)·(φ(K)^T·V). The K^T·V term is a small (d×d) state independent of sequence length; the operator becomes a recurrence at inference. Approximate, but linear in T."
 tags: ["attention", "approximate"]

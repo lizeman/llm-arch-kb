@@ -1,0 +1,49 @@
+---
+name: "Mistral 7B"
+organization: "Mistral AI"
+release_date: "2023-09-27"
+parameters_total: "7.3B"
+context_length: 32768
+open_weights: true
+paper_url: "https://arxiv.org/abs/2310.06825"
+model_card_url: "https://huggingface.co/mistralai/Mistral-7B-v0.1"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA (8 KV heads, 32 query heads) + Sliding Window Attention (W = 4096)"
+  moe: null
+  other:
+    - "32 layers"
+    - "First production decoder to ship SWA as a primary mechanism"
+    - "Apache 2.0 license"
+source_urls:
+  - "https://arxiv.org/abs/2310.06825"
+  - "https://huggingface.co/mistralai/Mistral-7B-v0.1"
+  - "https://mistral.ai/news/announcing-mistral-7b/"
+notes: "Brought SWA to popular consciousness in late 2023; the canonical reference for 'small dense decoder with effective 32K context via sliding window plus depth-of-attention'."
+---
+
+Mistral 7B (September 2023) is the model that brought sliding window attention to the
+production frontier and gave Apache-licensed open weights to a model competitive with much
+larger dense baselines. Architecturally a 32-layer transformer with the Pre-Norm RMSNorm + RoPE
++ GQA + SwiGLU canonical stack, plus the defining addition:
+
+- **Sliding window attention** with $W = 4096$. Each layer's attention is local; the stacked
+  receptive field reaches $32 \times 4096 \approx 131K$ tokens. The recipe demonstrated that
+  pure local attention is sufficient for a competitive 7B-class model. See the
+  [SWA entry](/llm-arch-kb/attention/sliding-window/).
+
+The Mistral 7B paper's empirical comparisons (Table 2) showed the model matching or beating
+Llama 2 13B on most benchmarks despite half the parameters — a result mostly attributable to
+data and training rather than architecture, but the architectural simplicity made the recipe
+easily reproducible. Subsequent open-weights efforts (Mixtral 8x7B from the same lab, OLMo 1
+from AI2) adopted variations of the same stack.
+
+Although the v1 ship explicitly draws core adoption lists from Llama / OLMo / DeepSeek / Gemma
+/ Kimi / MiniMax / GLM, Mistral 7B meets the citation bar of [§9](/llm-arch-kb/about/) — open
+weights, paper-documented architecture, Apache license — and is included here as the
+canonical SWA adopter.

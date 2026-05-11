@@ -13,6 +13,9 @@ problem_solved: "Make per-layer attention compute and KV cache scale linearly wi
 predecessors: ["sparse-transformer"]
 successors: []
 adopted_by:
+  - model: "mistral-7b"
+    source_url: "https://arxiv.org/abs/2310.06825"
+    notes: "Pure SWA across all 32 layers with W = 4096; the high-profile production introduction."
   - model: "gemma-3-27b"
     source_url: "https://arxiv.org/abs/2503.19786"
     notes: "Interleaved 5 SWA layers (window 4096) : 1 global attention layer; the dominant long-context strategy in Gemma 3."

@@ -1,0 +1,110 @@
+---
+title: "Auxiliary-Loss-Free Load Balancing"
+abbreviation: "Aux-Loss-Free"
+category: "ffn-moe"
+year: 2024
+month: 12
+introduced_by: "DeepSeek-AI"
+paper_title: "DeepSeek-V3 Technical Report"
+arxiv_id: "2412.19437"
+paper_url: "https://arxiv.org/abs/2412.19437"
+status: "production-adopted"
+problem_solved: "Load-balance MoE experts without paying the auxiliary-loss quality tax — by adjusting a per-expert bias that enters at top-K selection but does not enter the final output computation."
+predecessors: ["switch-transformer", "deepseek-moe"]
+successors: []
+adopted_by:
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "Used across all MoE layers; replaces the standard balance loss."
+summary: "Maintain a per-expert bias term that shifts the gate's top-K decision toward under-used experts. The bias enters at selection time only — the final expert outputs are weighted by the original (unbiased) gate values. Load balance without quality cost."
+tags: ["moe", "load-balance", "deepseek"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The auxiliary-loss tax
+
+Every prior MoE in this knowledge base — Switch, GShard, Mixtral, DeepSeekMoE V2 — uses an
+auxiliary load-balancing loss with a coefficient $\alpha \sim 0.01$ added to the training
+objective:
+
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{LM}} + \alpha \cdot \mathcal{L}_{\text{aux}}.$$
+
+The auxiliary term penalizes deviation from uniform expert utilization. It works — experts
+stay balanced — but it has a cost: the gradient signal from $\mathcal{L}_{\text{aux}}$ pulls
+the gate away from what it would otherwise choose. Ablations (DeepSeek V3 Table 5) show this
+cost as a measurable but small quality regression vs an ideal gate.
+
+DeepSeek V3's question: can you get load balance without the gradient interference?
+
+<p class="section-eyebrow">§ 2 · The bias</p>
+## Add a bias at selection; not at output
+
+Maintain a learnable scalar bias $b_i \in \mathbb{R}$ per expert $i$. At every step, the gate
+computes logits $g(\mathbf{x})$, *adds the bias* for the top-K selection, but uses the
+*unbiased* logits for the output weighting:
+
+$$i^* = \mathrm{topK}\bigl(g(\mathbf{x}) + b\bigr),\quad \mathrm{out}(\mathbf{x}) = \sum_{i \in i^*} \mathrm{softmax}\bigl(g(\mathbf{x})\bigr)_i \cdot f_i(\mathbf{x}).$$
+
+The bias only matters at the top-K argmax. Once experts are selected, the final mixing weights
+come from the original gate logits. The model's *expressive output* is unaffected by the bias;
+only the *routing decision* is.
+
+The bias is updated after every step based on the realized expert utilization:
+
+$$b_i \leftarrow b_i + \gamma \cdot \bigl(\bar{f} - f_i\bigr),$$
+
+where $f_i$ is the fraction of tokens routed to expert $i$ in the batch and $\bar{f} = 1/E$ is
+the target uniform utilization. The update rate $\gamma$ is small (DeepSeek uses $10^{-3}$).
+Over-used experts get a more negative bias and become less likely to be selected; under-used
+experts become more likely.
+
+```python
+def aux_loss_free_routing(x, gate, experts, biases, K, gamma=1e-3):
+    logits = gate(x)                                   # [B, T, E]
+    biased = logits + biases[None, None, :]
+    top_idx = biased.topk(K, dim=-1).indices
+    # Output weights from UNbiased logits — restricted to selected experts
+    weights = logits.softmax(-1).gather(-1, top_idx)
+    out = dispatch_and_combine(x, experts, top_idx, weights.softmax(-1))
+    # Update biases based on realized utilization (post-hoc, not in graph)
+    realized = utilization_from_topk(top_idx, num_experts=biases.shape[0])
+    biases.add_(gamma * (1.0 / biases.shape[0] - realized))
+    return out
+```
+
+<p class="section-eyebrow">§ 3 · Why it doesn't hurt quality</p>
+## Selection vs expression
+
+The mechanism's correctness rests on a clean separation: the bias affects *which* experts
+process the token (a categorical, non-differentiable decision) but not *how much* their
+outputs count in the residual stream. The gate's softmax over the selected K experts is
+computed from the original logits, so the model's downstream signal is identical to what an
+unbiased gate would have produced — given the same selection.
+
+If the gate would have routed to experts $\{A, B\}$ for token $t$, the auxiliary-loss
+approach pulls the gate toward routing $t$ elsewhere to balance utilization, and downstream
+expression suffers. The bias approach instead routes $t$ to $\{A, B\}$ *and* shifts a *later*
+token to a different pair to compensate. Total utilization balances; per-token expression
+stays optimal.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+DeepSeek V3 (§3.4 in the paper) reports the aux-loss-free scheme achieving comparable
+utilization variance to the standard aux loss across 256 routed experts × 61 layers, with
+0.2–0.4 perplexity-point improvement on most evaluation benchmarks. The improvement is small
+in absolute terms but stable across ablations and consistent across model sizes.
+
+The scheme has been adopted by subsequent DeepSeek releases (V3.1, V3.2). Other MoE families
+(Mixtral, Kimi, OLMoE) currently use the original auxiliary loss; whether they switch will
+likely depend on whether the small quality bump is reproducible at non-DeepSeek scales.
+
+<Summary>
+**Aux-loss-free routing in one breath.** Per-expert bias added at top-K selection only; the
+final mixing weights come from the unbiased logits. Load balance is maintained by an external
+EMA-style bias update rule rather than by an in-graph loss term. Small but consistent quality
+improvement; production-deployed in DeepSeek V3.
+</Summary>

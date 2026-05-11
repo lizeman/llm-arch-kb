@@ -1,0 +1,98 @@
+---
+title: "Linformer — Low-Rank Attention Projection"
+abbreviation: "Linformer"
+category: "attention"
+year: 2020
+month: 6
+introduced_by: "Sinong Wang et al. (Facebook AI)"
+paper_title: "Linformer: Self-Attention with Linear Complexity"
+arxiv_id: "2006.04768"
+paper_url: "https://arxiv.org/abs/2006.04768"
+status: "research"
+problem_solved: "Project keys and values down to a fixed low-rank subspace before attention — making attention O(N) by replacing the N×N attention matrix with an N×k one, where k is a fixed projection rank."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Multiply K and V by learned projection matrices E, F ∈ ℝ^{N×k} that compress the sequence axis to a fixed rank k. Attention becomes O(N·k) per query. Empirically near-softmax on encoder tasks; the sequence-length-dependent projection makes decoder use awkward."
+tags: ["attention", "approximate", "low-rank"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Attention is low-rank in practice
+
+Wang et al. observed that the attention matrix $P = \mathrm{softmax}(QK^\top / \sqrt{d_h})$ in
+a trained transformer has approximately low rank — a small number of singular values capture
+most of its mass. If the matrix is rank-$k$ with $k \ll N$, then there exists a rank-$k$
+factorization that approximates $P$ accurately.
+
+The architectural question: can you bake this low-rank structure into the model from training
+time, rather than discovering it post hoc? Linformer's bet: yes, via learned projections of
+K and V along the sequence dimension.
+
+<p class="section-eyebrow">§ 2 · The projection</p>
+## Squash N down to k
+
+Define two learnable matrices $E, F \in \mathbb{R}^{k \times N}$ that project along the
+sequence axis. Apply them to K and V:
+
+$$\tilde{K} = E K \in \mathbb{R}^{k \times d_h},\quad \tilde{V} = F V \in \mathbb{R}^{k \times d_h}.$$
+
+Now compute attention against the projected keys and values:
+
+$$\mathrm{Attn}(Q, K, V) = \mathrm{softmax}\!\left(\frac{Q \tilde{K}^\top}{\sqrt{d_h}}\right)\tilde{V}.$$
+
+The intermediate $Q \tilde{K}^\top$ matrix is $N \times k$, not $N \times N$. Total compute is
+$O(N \cdot k \cdot d_h)$ — linear in $N$.
+
+```python
+def linformer_attention(Q, K, V, E, F):
+    # Q, K, V: [B, T, d_h]
+    # E, F: [k, T_max]   (T_max is the maximum supported sequence length)
+    K_proj = einsum("kt,btd->bkd", E, K)        # [B, k, d_h]
+    V_proj = einsum("kt,btd->bkd", F, V)
+    logits = einsum("btd,bkd->btk", Q, K_proj) / d_h**0.5
+    return einsum("btk,bkd->btd", logits.softmax(-1), V_proj)
+```
+
+The projections $E, F$ are learned, shared across heads (in the original paper's recommended
+configuration), and sized $k \approx 256$ regardless of $N$.
+
+<p class="section-eyebrow">§ 3 · Why no production decoder uses Linformer</p>
+## The autoregressive problem
+
+The projection matrices $E, F$ have shape $k \times N$, which is fixed at training time. For
+encoder applications with bounded sequence length, this is fine. For autoregressive decoders,
+two problems arise:
+
+1. **Variable-length inference**. At generation time the sequence grows token by token; an
+   $N$-fixed projection is incompatible with extending past training length.
+2. **Causal masking gets weird**. The projection mixes past and future keys before attention
+   ever runs; recovering a causal structure requires careful constraints on $E, F$ that the
+   original paper does not formalize.
+
+Several follow-ups (Performer's random-feature kernel, Linear Attention's prefix-sum recurrence)
+address the autoregressive case via mathematically distinct mechanisms. Linformer itself
+remains an encoder technique.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+On GLUE and IMDB (encoder tasks), Linformer at $k = 256$ matches the standard transformer
+within 0.5 quality points (Wang et al. Table 1), with $4$–$10$× lower compute at $N = 512$
+to $N = 4096$. At very long sequences ($N \geq 16K$) the gap widens to $\sim 1$ quality point
+but compute stays linear.
+
+The technique never crossed into frontier decoder-only LLMs but its low-rank framing — the
+attention matrix is approximately rank-$k$ for small $k$ — informs the subsequent linear-attention
+research lineage. See the [Linear Attention entry](/llm-arch-kb/attention/linear-attention/)
+for the lineage descendant that does support autoregressive decoding.
+
+<Summary>
+**Linformer in one breath.** Learn N→k projection matrices for K and V; attention becomes O(N·k)
+via the resulting low-rank factorization. Matches softmax on encoder tasks. The sequence-length-
+dependent projection makes it awkward for autoregressive decoders, so no current frontier
+decoder ships it.
+</Summary>

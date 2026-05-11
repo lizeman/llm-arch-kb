@@ -1,0 +1,103 @@
+---
+title: "NTK-Aware RoPE Scaling"
+abbreviation: "NTK-Aware"
+category: "positional"
+year: 2023
+month: 7
+introduced_by: "Anonymous (Reddit user 'bloc97'); later formalized by Peng et al."
+paper_title: "Dynamically Scaled RoPE further increases performance of long context LLaMA with zero fine-tuning"
+arxiv_id: "2309.00071"
+paper_url: "https://arxiv.org/abs/2309.00071"
+status: "production-adopted"
+problem_solved: "Rescale the RoPE base b instead of squishing positions — preserving the fast dimensions' resolution while only the slow ones interpolate. The bridge between PI and YaRN."
+predecessors: ["rope", "position-interpolation"]
+successors: ["yarn"]
+adopted_by: []
+summary: "Multiply RoPE's base b by s^(d_h/(d_h-2)) for extension factor s. Fast dimensions (low index) are nearly untouched; slow dimensions get linearly interpolated. Zero fine-tuning needed at small extensions; the inspiration for YaRN's per-band approach."
+tags: ["positional", "long-context"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## PI compresses everything; can we be selective?
+
+[Position Interpolation](/llm-arch-kb/positional/position-interpolation/) (PI) divides every
+RoPE rotation rate $\theta_i$ by the extension factor $s$. This solves the extrapolation
+problem but hits *every* frequency band equally — including the fast bands that had already
+fully spanned the unit circle and didn't need interpolation.
+
+The NTK-aware idea, attributed to an anonymous Reddit user in mid-2023 and later formalized
+in the YaRN paper: rescale the base $b$ (not the positions). Because $\theta_i = b^{-2i/d_h}$,
+changing $b$ has a frequency-dependent effect — fast bands barely shift, slow bands shift a
+lot.
+
+<p class="section-eyebrow">§ 2 · The base rescaling</p>
+## Multiply b by s^(d_h / (d_h - 2))
+
+For extension factor $s$ and head dim $d_h$, the NTK-aware new base is:
+
+$$b' = b \cdot s^{d_h / (d_h - 2)}.$$
+
+The exponent is chosen so that the *slowest* dimension (largest $i$, with $\theta_{d_h/2-1} =
+b^{-(d_h-2)/d_h}$) has its rotation rate divided by exactly $s$ — matching PI's behavior on
+the slow band. The *fast* dimensions ($i$ small, $\theta_i \approx b^0 = 1$) are nearly
+untouched because $b'^0 = b^0 = 1$.
+
+The interpolation factor on dimension $i$ becomes
+
+$$\frac{\theta_i'}{\theta_i} = \bigl(\tfrac{b}{b'}\bigr)^{2i/d_h} = s^{-2i/(d_h - 2)},$$
+
+which equals $1$ at $i = 0$ (no change) and equals $1/s$ at $i = d_h/2 - 1$ (full PI rescaling
+at the slow end). A smooth frequency-dependent ramp from "untouched" to "interpolated".
+
+```python
+def ntk_aware_rope_base(base, extension_factor, d_h):
+    return base * extension_factor ** (d_h / (d_h - 2))
+
+def ntk_aware_rope(x, position, base=10000.0, d_h=128, s=4.0):
+    b_prime = ntk_aware_rope_base(base, s, d_h)
+    theta = b_prime ** (-2 * torch.arange(0, d_h, 2) / d_h)
+    angles = position * theta
+    cos, sin = angles.cos(), angles.sin()
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
+```
+
+<p class="section-eyebrow">§ 3 · Why it works without fine-tuning</p>
+## The fast bands keep their precision
+
+PI's failure mode at large extensions was the short-range positional acuity loss in the fast
+bands. NTK-aware leaves those bands essentially intact — adjacent positions still have nearly
+the same relative rotation as before extension. The model's short-range positional reasoning
+survives.
+
+What gets interpolated is the slow-band signal — the dimensions that previously rotated by
+$\sim 10^{-4}$ radians per position and that the model used for "is this token early or late
+in the document" judgments. Compressing those by $s$ is fine because the original signal was
+already coarse.
+
+The result: NTK-aware works with *zero fine-tuning* at modest extensions (typically $s \leq 8$).
+The model evaluates correctly out of the box. Past $s = 8$, perplexity starts to degrade and
+fine-tuning becomes necessary; this is also approximately where YaRN's three-band ramp begins
+to outperform.
+
+<p class="section-eyebrow">§ 4 · Where it fits</p>
+## The bridge
+
+NTK-aware was originally posted on Reddit by user `bloc97`. The community quickly verified it,
+and within months several research groups had formalized and extended the idea. YaRN
+(Peng et al. 2023) is the most prominent descendant: it explicitly cites NTK-aware as the
+inspiration for the three-band rescaling structure, then adds the smooth ramp between bands
+and the attention-logit temperature correction.
+
+For production decoder extensions, the path was: PI (Chen et al. 2023) → NTK-aware (mid-2023)
+→ YaRN (Peng et al. 2023) → LongRoPE (Ding et al. 2024). Each fix is downstream of the
+previous insight.
+
+<Summary>
+**NTK-aware in one breath.** Rescale RoPE's base b by s^(d_h/(d_h-2)) for extension factor s.
+Fast dimensions stay sharp; slow ones interpolate. Works zero-shot at s ≤ 8; the conceptual
+bridge between PI and YaRN. A rare case of a Reddit post becoming load-bearing research.
+</Summary>

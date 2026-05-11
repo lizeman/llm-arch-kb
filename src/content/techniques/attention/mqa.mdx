@@ -1,0 +1,93 @@
+---
+title: "Multi-Query Attention"
+abbreviation: "MQA"
+category: "attention"
+year: 2019
+month: 11
+introduced_by: "Noam Shazeer"
+paper_title: "Fast Transformer Decoding: One Write-Head is All You Need"
+arxiv_id: "1911.02150"
+paper_url: "https://arxiv.org/abs/1911.02150"
+status: "production-adopted"
+problem_solved: "Cut the KV cache by H× — share a single K, V across all H query heads. Solves decoder-side inference memory pressure that MHA's per-head cache creates."
+predecessors: ["mha"]
+successors: ["gqa", "mla"]
+adopted_by: []
+summary: "One K, V projection shared by every query head. H× smaller KV cache than MHA; small but real quality drop that motivated GQA. The first move in the MHA → MQA → GQA → MLA evolution."
+tags: ["attention", "kv-cache"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The cost MHA pays at inference
+
+At training time, MHA's per-head K and V projections are essentially free — they parallelize
+across the batch and sequence dimensions. At inference time, with batch size 1 and autoregressive
+generation, the KV cache becomes the dominant memory cost. Each token's prior K and V vectors
+must stay resident; each head needs its own copy.
+
+For a 64-head, 128 head-dim, 80-layer model at 128K context, the cache pushes 300 GB — far
+beyond what a single GPU holds. Long-context decoder inference is bottlenecked here.
+
+<p class="section-eyebrow">§ 2 · The simplification</p>
+## One write-head
+
+Shazeer's 2019 proposal: keep $H$ query heads, but project K and V only *once* per layer. All
+heads attend over the same K, V pair.
+
+$$\mathbf{Q}_i = X W_Q^{(i)} \quad (i = 1, \ldots, H),\qquad \mathbf{K} = X W_K,\quad \mathbf{V} = X W_V.$$
+
+The KV cache per token per layer drops from $2 \cdot H \cdot d_h$ to $2 \cdot d_h$ floats — an
+$H\times$ reduction. For the 64-head, 128 head-dim, 80-layer setup, the cache goes from 300 GB
+to under 5 GB at 128K context.
+
+```python
+def mqa(x, W_Q_all, W_K, W_V, W_O, H, mask=None):
+    B, T, D = x.shape
+    d_h = D // H
+    q = (x @ W_Q_all).view(B, T, H, d_h).transpose(1, 2)  # [B, H, T, d_h]
+    k = (x @ W_K).unsqueeze(1)                            # [B, 1, T, d_h]
+    v = (x @ W_V).unsqueeze(1)
+    logits = (q @ k.transpose(-2, -1)) / d_h**0.5         # broadcasts over H
+    if mask is not None: logits = logits.masked_fill(mask, float("-inf"))
+    out = logits.softmax(-1) @ v                          # [B, H, T, d_h]
+    return out.transpose(1, 2).reshape(B, T, D) @ W_O.T
+```
+
+<p class="section-eyebrow">§ 3 · The quality cost</p>
+## Why nobody runs pure MQA anymore
+
+Shazeer's paper reports MQA approximately matching MHA on translation tasks, with a 12× decode
+speedup on a 6-layer model (Table 2). PaLM (Chowdhery et al. 2022) used MQA at 540B and reported
+no measurable quality difference at that scale.
+
+Later work was less sanguine. The GQA paper (Ainslie et al. 2023) found MQA losing ~1.5
+quality points vs MHA on summarization and translation at the T5-XXL scale (Table 1). The
+asymmetry is intuitive: every head must now agree on which positions matter, where MHA let
+heads specialize on different relations.
+
+The pattern that emerged: MQA's savings are too valuable to leave on the table, but its quality
+cost is real enough to motivate a middle ground — GQA's partial sharing across small groups.
+GQA closes most of the quality gap while keeping ~$H/8$-fold cache reduction. Today every
+production decoder we document uses GQA or MLA, not plain MQA.
+
+<p class="section-eyebrow">§ 4 · MQA's place in the lineage</p>
+## Conceptual stepping stone
+
+MQA's importance is not as a final destination but as the move that proved KV sharing was
+viable. Once a single shared K, V worked at all, the design space opened: group sharing (GQA),
+latent compression (MLA), and decoupled positional sub-heads (MLA's RoPE band) all build on the
+basic observation that per-head K, V was over-provisioned.
+
+For context on the descendants:
+
+- [GQA](/llm-arch-kb/attention/gqa/) — partial sharing across groups of query heads.
+- [MLA](/llm-arch-kb/attention/mla/) — latent-space compression instead of head sharing.
+
+<Summary>
+**MQA in one breath.** Share one K, V across all H query heads. H× KV cache reduction; small but
+real quality cost that motivated GQA's middle ground. Foundational on the lineage from MHA to
+modern KV-friendly attention, but no current frontier open decoder ships pure MQA.
+</Summary>

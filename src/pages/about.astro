@@ -25,6 +25,28 @@ import BaseLayout from "~/layouts/BaseLayout.astro";
       the move and write a working sketch; not enough to replace the paper.
     </p>
 
+    <p class="section-eyebrow">§ 2a · How an entry is built</p>
+    <h2>What you'll find on every page</h2>
+    <p>
+      A technique entry follows the same shape so that browsing across categories is predictable:
+    </p>
+    <ul class="structure-list">
+      <li><strong>Header</strong> — title, category, year, the original paper as a citation.</li>
+      <li><strong>Premise</strong> — what problem the technique addresses and what came before.</li>
+      <li><strong>The move</strong> — the math and a short PyTorch-style pseudocode sketch.</li>
+      <li><strong>Mechanism / why it works</strong> — the analysis that motivates the design.</li>
+      <li><strong>Results</strong> — at least one quantitative number from the paper's ablations.</li>
+      <li><strong>Adopted by</strong> — the disclosed production models that use it, each with a source URL.</li>
+      <li><strong>Lineage</strong> — predecessor and successor techniques, when relevant.</li>
+      <li><strong>Summary box</strong> — the entry in one breath.</li>
+    </ul>
+    <p>
+      Model spec sheets follow a different shape: a fixed architectural-slot table
+      (positional encoding · norm placement · norm type · QK-Norm · activation · attention · MoE),
+      a brief prose summary citing the paper, and a list of techniques used (auto-generated from
+      the adoption graph). Empty cells mean the choice was not publicly disclosed — see §3.
+    </p>
+
     <p class="section-eyebrow">§ 3 · Citation discipline</p>
     <h2>The closed-model policy</h2>
     <p>
@@ -66,4 +88,14 @@ import BaseLayout from "~/layouts/BaseLayout.astro";
 <style>
   .entry-header { margin: 48px 0 56px; }
   .entry-header h1 { margin-top: 8px; }
+  .structure-list {
+    list-style: none;
+    margin: 16px 0 24px;
+    padding: 0;
+  }
+  .structure-list li {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .structure-list li:last-child { border-bottom: none; }
 </style>

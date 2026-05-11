@@ -10,7 +10,7 @@ arxiv_id: "2401.03462"
 paper_url: "https://arxiv.org/abs/2401.03462"
 status: "research"
 problem_solved: "Extend a pretrained 4K-context model to 400K context by training a small set of 'beacon' tokens that compress past activations into a compact summary — without retraining the base model."
-predecessors: []
+predecessors: ["compressive-transformer"]
 successors: []
 adopted_by: []
 summary: "Insert learned 'beacon' tokens that summarize past activation windows. The model attends to beacons instead of the full long-context activations; 100× context extension with a tiny fine-tune of just the beacon parameters."

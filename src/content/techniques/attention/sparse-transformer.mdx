@@ -1,0 +1,95 @@
+---
+title: "Sparse Transformer"
+abbreviation: "Sparse Transformer"
+category: "attention"
+year: 2019
+month: 4
+introduced_by: "Rewon Child, Scott Gray, Alec Radford, Ilya Sutskever (OpenAI)"
+paper_title: "Generating Long Sequences with Sparse Transformers"
+arxiv_id: "1904.10509"
+paper_url: "https://arxiv.org/abs/1904.10509"
+status: "foundational"
+problem_solved: "Replace dense O(T²) attention with structured sparsity — two fixed patterns (strided and fixed) that together let any pair of tokens reach each other in at most two hops while attending to only O(T·√T) total keys."
+predecessors: []
+successors: ["sliding-window"]
+adopted_by: []
+summary: "Factorize attention into two structured sparse patterns: strided (local window) and fixed (long-range hubs). Total cost O(T·√T) per layer; full reachability in two hops. Foundational for sparse-attention research; superseded by SWA, BigBird, MoE attention in production."
+tags: ["attention", "sparse", "foundational"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Most attention is wasted
+
+In a trained transformer, the attention matrix is highly sparse in practice: most queries
+attend strongly to a small subset of keys. Yet computing the full $T \times T$ logit matrix
+requires evaluating every (query, key) pair regardless.
+
+Child et al.'s observation: if you commit to a *structured* sparsity pattern at training time
+rather than discovering it post hoc, you can train models with much lower attention cost. The
+trick is choosing a pattern dense enough for the model to route any token-to-token signal in
+a small number of hops.
+
+<p class="section-eyebrow">§ 2 · The two patterns</p>
+## Strided + Fixed
+
+For sequence length $T$ with stride $\ell \approx \sqrt{T}$, the paper defines two sparse
+patterns that interleave across attention heads (or across layers):
+
+- **Strided attention**: each token attends to the previous $\ell$ tokens (a local window) and
+  to every $\ell$-th token going back (a strided long-range view). The local window captures
+  short-range dependence; the strided keys give every token periodic access to the far past.
+- **Fixed attention**: each token attends to its local block of $\ell$ tokens, plus to a small
+  set of "summary" tokens that are positioned at fixed locations and that every other token
+  also attends to. The summary tokens act as long-range hubs.
+
+Either pattern alone reaches $O(T \sqrt{T})$ keys per query. The paper demonstrates that two
+hops of either pattern are sufficient to connect any pair of tokens — meaning the model
+retains the expressivity of full attention for sequences past two of its layers.
+
+```python
+def strided_mask(T, stride):
+    # Each position t attends to: [t-stride, t]  plus  {t, t-stride, t-2*stride, ...}
+    mask = torch.zeros(T, T, dtype=bool)
+    for t in range(T):
+        # Local window
+        for s in range(max(0, t - stride + 1), t + 1):
+            mask[t, s] = True
+        # Strided long-range
+        for s in range(0, t + 1, stride):
+            mask[t, s] = True
+    return mask
+```
+
+<p class="section-eyebrow">§ 3 · Results and successors</p>
+## What it enabled
+
+The original Sparse Transformer trained character-level language models at sequence length
+12288 on a single GPU — well past what dense attention could fit. Generative quality on
+enwik8, ImageNet at the pixel level, and classical music MIDI all matched or exceeded the
+dense baselines of the era.
+
+The two-pattern design did not survive directly into production decoders. Several reasons:
+
+- **Strided + fixed is rigid.** The patterns are hard-coded; the model cannot learn that a
+  specific head needs a slightly different sparsity layout.
+- **Pure local windows (SWA) plus occasional global attention** (Mistral 7B, Gemma 3) achieve
+  similar receptive-field properties with simpler implementation, since "strided" became
+  unnecessary once stacked-depth gave the same coverage.
+- **Trainable sparsity** (Reformer's LSH attention, Routing Transformer's clustering) tries to
+  let the model discover patterns rather than commit to one — though most of these have not
+  reached frontier scale either.
+
+What stuck from Child et al.: the framing that O(T√T) is enough, the proof-by-construction that
+two hops connect everything, and the demonstration that sparse attention can train stably from
+scratch. See the [SWA entry](/llm-arch-kb/attention/sliding-window/) for the descendant pattern
+that actually shipped at frontier scale.
+
+<Summary>
+**Sparse Transformer in one breath.** Strided plus fixed sparse-attention patterns, O(T√T) cost,
+full two-hop reachability. The foundational work for "structured sparsity at training time" —
+SWA, BigBird, and modern sparse-attention proposals all build on it conceptually. Direct use is
+historical.
+</Summary>

@@ -1,0 +1,115 @@
+---
+title: "Landmark Attention"
+abbreviation: "Landmark"
+category: "long-context"
+year: 2023
+month: 5
+introduced_by: "Amirkeivan Mohtashami, Martin Jaggi (EPFL)"
+paper_title: "Landmark Attention: Random-Access Infinite Context Length for Transformers"
+arxiv_id: "2305.16300"
+paper_url: "https://arxiv.org/abs/2305.16300"
+status: "research"
+problem_solved: "Give attention 'random access' to a long context by summarizing each chunk with a learned 'landmark' token. Queries attend to landmarks first to decide which chunks to fully expand, then attend within only the selected chunks."
+predecessors: ["compressive-transformer"]
+successors: []
+adopted_by: []
+summary: "Insert a learnable landmark token at the end of each chunk; train it to summarize the chunk's content. At inference, queries attend to landmarks to gate which chunks get full attention. Hierarchical chunked attention with O(C + W) cost where C is chunk count and W is per-chunk window."
+tags: ["long-context", "hierarchical"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Random-access attention
+
+Linear-time attention variants — sliding windows, kNN memory, compression — all give up
+something. Sliding loses tokens past the window. kNN loses gradient signal through retrieval.
+Compression loses fine-grained detail. All three trade resolution for length.
+
+Landmark Attention's bet: rather than degrading all far-away keys equally, use a learned
+*indexing* mechanism. Each chunk of past tokens gets a single summary representation; the
+model decides which chunks need full attention based on those summaries. Far-away keys not
+selected get zero attention; selected far-away chunks get attended to at full resolution.
+
+<p class="section-eyebrow">§ 2 · The landmark token</p>
+## One summary per chunk
+
+Insert a learnable token $\mathbf{L}$ at the end of each chunk of $C$ tokens during training:
+
+$$[\text{tok}_1, \ldots, \text{tok}_C, \mathbf{L}, \text{tok}_{C+1}, \ldots, \text{tok}_{2C}, \mathbf{L}, \ldots]$$
+
+The landmark token attends to its preceding chunk via standard attention and develops an
+activation that summarizes the chunk's content. The model learns this implicitly during
+pretraining (with a small auxiliary loss to encourage useful summaries).
+
+At inference time, attention is hierarchical:
+
+1. **Coarse stage**: query $\mathbf{q}_t$ attends to *all landmark tokens*. This produces a
+   distribution over chunks indicating which are relevant.
+2. **Fine stage**: for the top-K most relevant chunks, expand and run full attention over
+   their constituent tokens.
+
+```python
+def landmark_attention(q, all_landmarks, chunks, top_K, full_attn):
+    # all_landmarks: [num_chunks, d_h]
+    # chunks: list of [chunk_len, d_h] per chunk
+    landmark_scores = q @ all_landmarks.T            # [num_chunks]
+    top_chunk_idx = landmark_scores.topk(top_K).indices
+    selected_keys = cat([chunks[i] for i in top_chunk_idx])
+    return full_attn(q, selected_keys, selected_keys)
+```
+
+Cost: $O(C)$ for the landmark stage plus $O(K \cdot W)$ for the fine stage. For 1M-token
+contexts at $C = 4096$ chunks, $K = 4$, $W = 4096$, total cost is $\sim 20K$ operations per
+query — vs $1M$ for full attention.
+
+<p class="section-eyebrow">§ 3 · Training</p>
+## How the landmark learns to summarize
+
+The training objective makes landmark tokens useful via a small auxiliary loss: each landmark
+must be able to "recover" its chunk's content well enough that gradients flow through the
+landmark routing. Mohtashami & Jaggi train this implicitly — the model is rewarded for
+producing landmarks that maximize end-task quality on long-context retrieval tasks.
+
+A second design choice: at training time, landmarks attend to the entire preceding chunk via
+standard attention, so the model can pack summaries optimally. At inference, the chunked
+hierarchical attention is what runs.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+Mohtashami & Jaggi (Table 2) report Llama-7B extended to 32K context via Landmark fine-tuning,
+matching standard Llama-7B's PG-19 perplexity at the new length. On synthetic key-value
+retrieval tasks (where exact recall is required), Landmark significantly outperforms naive
+sliding-window approaches at the same compute budget — the hierarchical routing lets it pick
+the relevant chunk regardless of distance.
+
+Where it lost ground: tasks that need broadly-distributed long-range signals (e.g., document
+summarization that pulls from many chunks at once) saw smaller gains, because each query can
+only afford to expand ~$K = 4$ chunks before the cost-savings disappear.
+
+<p class="section-eyebrow">§ 5 · Where it sits</p>
+## The four long-context approaches
+
+The long-context category in this knowledge base now spans four structurally distinct ideas:
+
+- **Sliding** ([StreamingLLM](/llm-arch-kb/long-context/streaming-llm/)): pin some, slide the
+  rest. Loss-free within the window.
+- **Compression** ([Compressive Transformer](/llm-arch-kb/long-context/compressive-transformer/),
+  [Activation Beacon](/llm-arch-kb/long-context/activation-beacon/)): summarize the past
+  losslessly per chunk.
+- **Retrieval** ([Memorizing Transformers](/llm-arch-kb/long-context/memorizing-transformers/)):
+  non-differentiable kNN lookup.
+- **Hierarchical indexing** (Landmark): differentiable summary tokens guide attention routing.
+
+Each trades a different axis. Landmark's contribution: keep the *option* of full-resolution
+attention for selected far-away chunks, rather than committing globally to compression or
+retrieval.
+
+<Summary>
+**Landmark Attention in one breath.** Train landmark tokens to summarize chunks; at inference,
+attention queries pick the top-K chunks via landmark scores, then run full attention only
+within selected chunks. O(C + K·W) per query. Best for tasks needing exact recall from a few
+specific places in a long context; worse for broadly-distributed long-range signals.
+</Summary>

@@ -1,0 +1,93 @@
+---
+title: "GELU-Gated Linear Unit"
+abbreviation: "GeGLU"
+category: "ffn-moe"
+year: 2020
+month: 2
+introduced_by: "Noam Shazeer"
+paper_title: "GLU Variants Improve Transformer"
+arxiv_id: "2002.05202"
+paper_url: "https://arxiv.org/abs/2002.05202"
+status: "production-adopted"
+problem_solved: "Same gated bilinear FFN as SwiGLU, with GELU as the gate activation instead of Swish. Adopted by the Gemma family; matches SwiGLU's quality within noise."
+predecessors: ["swiglu"]
+successors: []
+adopted_by:
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "GeGLU FFN; the dominant variant choice in the Gemma family."
+summary: "Bilinear gated FFN with a GELU-activated gating path. Matches SwiGLU on quality; lineage difference is mostly historical, with the Gemma family carrying GeGLU forward and the Llama/DeepSeek family carrying SwiGLU."
+tags: ["ffn", "activation"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The GLU-variant family
+
+Shazeer's 2020 paper introduced a family of gated bilinear FFNs of the form
+
+$$\mathrm{FFN}(\mathbf{x}) = W_2\bigl((W\mathbf{x}) \odot \phi(V\mathbf{x})\bigr),$$
+
+where $\phi$ is the gating activation. The variants studied in the paper:
+
+- **ReGLU**: $\phi = \mathrm{ReLU}$.
+- **GeGLU**: $\phi = \mathrm{GELU}$.
+- **SwiGLU**: $\phi = \mathrm{Swish}$, where $\mathrm{Swish}(z) = z \cdot \sigma(z)$.
+
+All three improve on the vanilla ReLU FFN by a similar margin. GeGLU and SwiGLU are the two
+descendants that survived into production decoders; ReGLU and the original GLU (sigmoid gate)
+are rarely seen post-2020.
+
+<p class="section-eyebrow">§ 2 · The activation</p>
+## GELU vs Swish
+
+GELU is the Gaussian Error Linear Unit:
+
+$$\mathrm{GELU}(z) = z \cdot \Phi(z),$$
+
+where $\Phi$ is the standard normal CDF. In practice it is approximated as
+
+$$\mathrm{GELU}(z) \approx z \cdot \sigma(1.702 \cdot z),$$
+
+which differs from $\mathrm{Swish}(z) = z \cdot \sigma(z)$ only in the temperature of the inner
+sigmoid. GELU saturates more sharply for large $|z|$; Swish is smoother.
+
+```python
+def geglu_ffn(x, W, V, W2):
+    return F.gelu(x @ V.T) * (x @ W.T) @ W2.T
+```
+
+The temperature-1.702 GELU and the temperature-1 Swish both pass enough information through
+the gate at the input regimes seen in transformer training that their final-model qualities
+differ by less than typical seed noise.
+
+<p class="section-eyebrow">§ 3 · Why the field split</p>
+## Historical lineage
+
+GeGLU and SwiGLU emerged from the same paper, but two roughly parallel research lineages
+adopted one or the other and never switched:
+
+- **Google → Gemma → Gemini-derivatives**: GeGLU.
+- **Meta → Llama → DeepSeek → OLMo**: SwiGLU.
+
+The reason is mostly path-dependence. PaLM (Google, 2022) used SwiGLU; then the Gemma team
+moved to GeGLU for Gemma 1, evaluated SwiGLU during ablations, found no difference, and stayed
+with GeGLU. Llama 1 used SwiGLU and the entire downstream family inherited it.
+
+Neither paper makes a strong claim that one beats the other; Shazeer (2020, Table 1) reports
+them within 0.05 perplexity points on T5-scale pretraining.
+
+<p class="section-eyebrow">§ 4 · The 8/3 rule still applies</p>
+## Parameter accounting
+
+GeGLU has the same three-projection structure as SwiGLU, so the convention $d_{\text{ff}} =
+(8/3)\,d_{\text{model}}$ used to keep parameter count matched against a ReLU FFN applies
+unchanged. See the [SwiGLU entry](/llm-arch-kb/ffn-moe/swiglu/) for the derivation.
+
+<Summary>
+**GeGLU in one breath.** Same gated bilinear FFN as SwiGLU, with GELU as the gate. Matches
+SwiGLU on quality; the Gemma family uses GeGLU, the Llama / DeepSeek / OLMo lineage uses
+SwiGLU. Both are downstream of Shazeer 2020.
+</Summary>

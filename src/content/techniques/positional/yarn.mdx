@@ -1,0 +1,119 @@
+---
+title: "YaRN — Yet Another RoPE eXtensioN"
+abbreviation: "YaRN"
+category: "positional"
+year: 2023
+month: 8
+introduced_by: "Bowen Peng, Jeffrey Quesnelle, Honglu Fan, Enrico Shippole"
+paper_title: "YaRN: Efficient Context Window Extension of Large Language Models"
+arxiv_id: "2309.00071"
+paper_url: "https://arxiv.org/abs/2309.00071"
+status: "production-adopted"
+problem_solved: "Extend a pretrained RoPE model's usable context far beyond the training length with only a short fine-tune, by treating fast and slow rotation bands differently."
+predecessors: []
+successors: []
+adopted_by:
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "YaRN used for the 128K context extension from the base 4K window."
+summary: "Treat RoPE's rotation bands as three regimes — preserve the fast ones, linearly interpolate the slow ones — and rescale the softmax temperature. The 2023 long-context extension recipe of choice."
+tags: ["positional", "long-context"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## RoPE's extrapolation problem
+
+Rotary position embeddings rotate the $i$-th pair of Q and K coordinates by an angle that grows
+linearly with position:
+
+$$\theta_i = b^{-2i/d_h},\quad \text{angle}(t, i) = t \cdot \theta_i,$$
+
+with base $b = 10000$ typically. During pretraining, the model sees positions $0$ to $T-1$, so
+the *fast* dimensions (small $i$) rotate through the full unit circle many times, while the
+*slow* dimensions (large $i$) rotate by only a small amount.
+
+When you ask the same model to process position $t = 10T$ at inference, the slow dimensions
+extrapolate far past anything they saw during training. The model has never observed a key with
+that rotational phase. Attention degrades.
+
+<p class="section-eyebrow">§ 2 · Earlier approaches</p>
+## PI and NTK-aware
+
+Two extension techniques preceded YaRN:
+
+- **Position Interpolation** (Chen et al. 2023, "Extending Context Window of Large Language
+  Models via Position Interpolation"): linearly squeeze new positions into the original range.
+  For a $4\times$ extension, position $t$ becomes $t/4$. Every dimension is rescaled equally.
+  Works, but loses precision on the fast dimensions because they no longer span the full
+  rotational range.
+
+- **NTK-aware scaling** (anonymized "u/bloc97" Reddit post, then formalized in NTK-LongRoPE):
+  scale the base $b$ upward rather than squeezing positions. For a $4\times$ extension, set
+  $b' = b \cdot 4^{d_h/(d_h-2)}$. The fast dimensions are nearly untouched (good — they already
+  span the unit circle); slow dimensions interpolate (good — they avoid extrapolation).
+
+YaRN combines NTK-aware's frequency split with three refinements.
+
+<p class="section-eyebrow">§ 3 · The three bands</p>
+## NTK-by-parts
+
+YaRN partitions RoPE dimensions into three regimes based on each dimension's *rotation count*
+over the original training context:
+
+1. **Fast dimensions** that complete $\geq r_{\max}$ rotations over the original window: leave
+   their $\theta_i$ untouched. They already saw their full domain.
+2. **Slow dimensions** that complete $\leq r_{\min}$ rotations: linearly interpolate to the new
+   context length (PI on this band only).
+3. **Middle dimensions**: blend between the two regimes via a smooth ramp.
+
+Concretely, with extension factor $s = L_{\text{new}}/L_{\text{train}}$:
+
+$$\theta_i' = \theta_i \cdot \bigl(1 - h_i(s)\bigr) + \frac{\theta_i}{s} \cdot h_i(s),$$
+
+where $h_i(s) \in [0, 1]$ is the ramp that depends on dimension $i$'s rotation count. Fast
+dimensions get $h_i = 0$; slow dimensions get $h_i = 1$; middle dimensions get a smooth blend.
+
+```python
+def yarn_theta(theta_i, s, rot_count_i, r_min=1, r_max=32):
+    if rot_count_i >= r_max:
+        return theta_i               # fast band: untouched
+    if rot_count_i <= r_min:
+        return theta_i / s           # slow band: linearly interpolated
+    # middle band: smooth ramp
+    h = (rot_count_i - r_min) / (r_max - r_min)
+    return theta_i * (1 - h) + (theta_i / s) * h
+```
+
+<p class="section-eyebrow">§ 4 · Temperature scaling</p>
+## Adjust softmax sharpness
+
+A longer context means more keys for every query. The softmax distribution naturally flattens;
+attention loses sharpness. YaRN compensates by scaling logits by an explicit temperature
+
+$$\text{temp}(s) = \frac{1}{\sqrt{1 + 0.1 \log s}},$$
+
+applied multiplicatively to the attention logits. The constants were fit empirically; the form
+keeps attention entropy approximately matched to the pretraining context.
+
+<p class="section-eyebrow">§ 5 · Results</p>
+## Empirical evidence
+
+Peng et al. (Table 1) report YaRN extending Llama-2 7B's context from 4K to 64K and 128K via a
+short 400-step fine-tune (~0.1% of pretraining tokens), with perplexity strictly below PI,
+NTK-aware, and dynamic NTK on PG-19 and Proof-Pile at all tested lengths.
+
+DeepSeek-V2 and V3 (Liu et al. 2024; Liu et al. 2024) report using YaRN for the 4K-to-128K
+extension, citing its sample efficiency vs continued pretraining with a uniformly scaled base.
+
+For models like Llama 3.1, the team went with a simpler scaled-base recipe (multiplying $b$ by
+a fixed factor) plus long continued pretraining, which works at the larger token budget but
+trades sample efficiency for simplicity.
+
+<Summary>
+**YaRN in one breath.** Frequency-aware RoPE rescaling: preserve fast rotations, interpolate
+slow ones, smooth between. Add a small temperature correction to keep softmax sharpness
+constant. 32× context extension on Llama-2 in 400 steps; adopted by DeepSeek V2/V3 for 128K.
+</Summary>

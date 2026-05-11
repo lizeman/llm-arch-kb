@@ -16,6 +16,9 @@ adopted_by:
   - model: "gemma-3-27b"
     source_url: "https://arxiv.org/abs/2503.19786"
     notes: "RMSNorm applied to Q and K before the attention dot product."
+  - model: "olmo-2-13b"
+    source_url: "https://arxiv.org/abs/2501.00656"
+    notes: "QK-Norm combined with reordered Post-Norm placement for 13B training stability."
 summary: "Normalize Q and K before the attention dot product so the logit magnitude stays bounded — a near-free fix for the outlier blow-ups that wreck attention at long context."
 tags: ["normalization", "attention-stability"]
 last_verified: "2026-05-11"

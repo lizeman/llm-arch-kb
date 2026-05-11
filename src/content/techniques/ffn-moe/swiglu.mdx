@@ -22,6 +22,9 @@ adopted_by:
   - model: "gemma-3-27b"
     source_url: "https://arxiv.org/abs/2503.19786"
     notes: "GeGLU — same gated structure with GELU in place of Swish."
+  - model: "olmo-2-13b"
+    source_url: "https://arxiv.org/abs/2501.00656"
+    notes: "SwiGLU FFN."
 summary: "Replace the FFN with a Swish-gated bilinear form: one linear path multiplied element-wise by Swish of another. Consistent quality win over ReLU/GELU at matched parameter count; the default modern FFN."
 tags: ["ffn", "consensus-stack"]
 last_verified: "2026-05-11"

@@ -1,0 +1,44 @@
+---
+name: "OLMo 2 13B"
+organization: "Allen Institute for AI (AI2)"
+release_date: "2024-11-26"
+parameters_total: "13B"
+context_length: 4096
+open_weights: true
+paper_url: "https://arxiv.org/abs/2501.00656"
+model_card_url: "https://huggingface.co/allenai/OLMo-2-1124-13B"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 500K)"
+  normalization_placement: "Reordered Post-Norm (norm after attention output, after FFN output, inside residual)"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "SwiGLU"
+  attention: "GQA"
+  moe: null
+  other:
+    - "Z-loss for output-layer stability"
+    - "Fully open: weights, training data (Dolma 1.7), training code, intermediate checkpoints"
+source_urls:
+  - "https://arxiv.org/abs/2501.00656"
+  - "https://huggingface.co/allenai/OLMo-2-1124-13B"
+  - "https://allenai.org/papers/olmo-2"
+notes: "Notable for explicitly reverting toward Post-Norm placement with QK-Norm for training stability; AI2's most fully-open release with training data, code, and intermediate checkpoints all published."
+---
+
+OLMo 2 13B is the Allen Institute for AI's fully-open second-generation dense decoder. Compared
+to OLMo 1, the architectural changes were deliberately conservative — the team's stated focus
+was training stability and reproducibility at long horizons. The two notable choices:
+
+1. **Reordered normalization placement.** RMSNorms are placed after the attention output and
+   after the FFN output, inside the residual branch — a layout that AI2 describes as a return
+   toward Post-Norm character, in contrast to the standard Pre-Norm of Llama and most peers.
+   Combined with **QK-Norm**, this gives the recipe its training-stability properties at the
+   13B scale without warmup-sensitivity.
+
+2. **Z-loss on the output layer.** A small auxiliary penalty on the squared log-partition of
+   the output softmax, encouraging output-layer logits to stay near zero mean.
+
+OLMo 2 is also notable for its openness: the weights, training data (Dolma 1.7), training code,
+and intermediate checkpoints across pretraining are all public. For research on long-horizon
+training dynamics, it is currently the most complete artifact in the open ecosystem.

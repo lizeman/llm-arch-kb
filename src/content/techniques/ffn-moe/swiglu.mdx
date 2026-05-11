@@ -1,0 +1,112 @@
+---
+title: "Swish-Gated Linear Unit"
+abbreviation: "SwiGLU"
+category: "ffn-moe"
+year: 2020
+month: 2
+introduced_by: "Noam Shazeer"
+paper_title: "GLU Variants Improve Transformer"
+arxiv_id: "2002.05202"
+paper_url: "https://arxiv.org/abs/2002.05202"
+status: "production-adopted"
+problem_solved: "Replace the FFN's ReLU/GELU with a gated activation that consistently improves perplexity at matched compute."
+predecessors: []
+successors: []
+adopted_by:
+  - model: "llama-3-1-70b"
+    source_url: "https://arxiv.org/abs/2407.21783"
+    notes: "SwiGLU, hidden dim 8/3 × d_model for matched parameter count."
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "SwiGLU in dense FFN; experts in DeepSeekMoE also use SwiGLU activations."
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "GeGLU — same gated structure with GELU in place of Swish."
+summary: "Replace the FFN with a Swish-gated bilinear form: one linear path multiplied element-wise by Swish of another. Consistent quality win over ReLU/GELU at matched parameter count; the default modern FFN."
+tags: ["ffn", "consensus-stack"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The vanilla FFN
+
+The transformer's feed-forward network has been the same since 2017: two linear layers with an
+elementwise nonlinearity between them.
+
+$$\mathrm{FFN}(\mathbf{x}) = W_2\,\phi(W_1\mathbf{x}),$$
+
+where $\phi$ is ReLU in the original paper, GELU in BERT and later. The hidden dim is typically
+$4 \cdot d_{\text{model}}$ — most of a transformer's parameters live here.
+
+Two facts motivate replacing it:
+
+1. Gating mechanisms (LSTM, GLU) consistently outperform ungated versions in sequence tasks.
+2. The FFN does most of the model's parameter-bound work; even a small per-step quality bump
+   compounds.
+
+<p class="section-eyebrow">§ 2 · The gate</p>
+## A bilinear, Swish-gated form
+
+GLU (Dauphin et al. 2017) replaces $\phi$ with an elementwise gate: split the projection into
+two halves, push one through a sigmoid, multiply. SwiGLU swaps the sigmoid for Swish (a.k.a.
+SiLU): $\mathrm{Swish}(z) = z \cdot \sigma(z)$.
+
+$$\mathrm{SwiGLU}(\mathbf{x}) = \bigl(W\mathbf{x}\bigr) \odot \mathrm{Swish}\bigl(V\mathbf{x}\bigr),$$
+
+then a third projection back to $d_{\text{model}}$:
+
+$$\mathrm{FFN}_{\text{SwiGLU}}(\mathbf{x}) = W_2\bigl((W\mathbf{x}) \odot \mathrm{Swish}(V\mathbf{x})\bigr).$$
+
+```python
+def swiglu_ffn(x, W, V, W2):
+    # x: [..., d_model]
+    # W, V: [d_ff, d_model]
+    # W2: [d_model, d_ff]
+    return (x @ W.T) * silu(x @ V.T) @ W2.T
+
+def silu(z):
+    return z * z.sigmoid()
+```
+
+<p class="section-eyebrow">§ 3 · Parameter accounting</p>
+## Why d_ff = 8/3 · d_model
+
+Vanilla FFN has $2 \cdot d_{\text{model}} \cdot d_{\text{ff}}$ parameters. SwiGLU has three
+projections, so $3 \cdot d_{\text{model}} \cdot d_{\text{ff}}$. To keep parameter count matched
+across the substitution, modern stacks set
+
+$$d_{\text{ff}} = \tfrac{2}{3} \cdot 4 \cdot d_{\text{model}} = \tfrac{8}{3}\,d_{\text{model}}.$$
+
+Llama, PaLM, DeepSeek, and most descendants use this convention. (Some — Gemma — round to a
+nearby multiple of a hardware-friendly tile size.)
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+Shazeer (2020) reports SwiGLU beating ReLU FFN by 0.6–1.3 perplexity points on T5-scale pretraining
+at matched parameter count (Table 1). The same ordering holds for the related variants GeGLU
+(GELU gate) and ReGLU (ReLU gate); SwiGLU and GeGLU tend to lead with very small differences
+between them.
+
+Subsequent reports — PaLM, Llama 1, Llama 2, Llama 3 — all confirm SwiGLU as a net win at the
+relevant scales. The technique is now the consensus FFN choice for dense decoder-only LLMs.
+
+The cost: a third weight matrix in the FFN means slightly more weight-loading traffic per forward
+pass, partially offset by the smaller $d_{\text{ff}}$. In practice the wall-clock difference is
+negligible.
+
+<p class="section-eyebrow">§ 5 · Why Shazeer didn't explain it</p>
+## "We offer no explanation"
+
+The most quoted line from the SwiGLU paper appears in its conclusion: *"We offer no explanation
+as to why these architectures seem to work; we attribute their success, as all else, to divine
+benevolence."* The mechanism is empirically robust but theoretically opaque — a recurring pattern
+with FFN-side architecture choices.
+
+<Summary>
+**SwiGLU in one breath.** Replace the FFN with a bilinear gated form using Swish on one half.
+Half a perplexity point at matched parameter count, three projections instead of two, hidden dim
+shrinks to 8/3 × d_model. The default modern FFN; Gemma uses the GELU-gate cousin GeGLU.
+</Summary>

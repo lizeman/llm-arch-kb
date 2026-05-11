@@ -1,0 +1,105 @@
+---
+title: "Grouped-Query Attention"
+abbreviation: "GQA"
+category: "attention"
+year: 2023
+month: 5
+introduced_by: "Joshua Ainslie et al. (Google Research)"
+paper_title: "GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints"
+arxiv_id: "2305.13245"
+paper_url: "https://arxiv.org/abs/2305.13245"
+status: "production-adopted"
+problem_solved: "Get most of Multi-Query Attention's KV-cache savings without the quality drop — by sharing K, V across small groups of query heads instead of all heads."
+predecessors: []
+successors: ["mla"]
+adopted_by:
+  - model: "llama-3-1-70b"
+    source_url: "https://arxiv.org/abs/2407.21783"
+    notes: "8 key-value heads share 64 query heads (G = 8)."
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "GQA at the head level across both local SWA and global attention layers."
+figure_component: "MhaMqaGqaMla"
+figure_caption: "G = 16 is full MHA. G = 1 is MQA. The intermediate values are GQA. Drag the slider to watch the KV cache shrink as groups of query heads share K and V."
+summary: "Group query heads so each group reads one shared K, V pair. 4-8× KV-cache reduction with quality near MHA; the dominant attention layout for dense LLMs from 2023 onward."
+tags: ["attention", "kv-cache", "consensus-stack"]
+last_verified: "2026-05-11"
+---
+
+import MhaMqaGqaMla from "~/components/figures/MhaMqaGqaMla";
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## MHA vs MQA, both flawed
+
+Multi-Head Attention (Vaswani et al. 2017) gives every query head its own K and V projection.
+For $H$ heads at $d_h$ head-dim, the KV cache per token per layer is
+
+$$\text{cache} = 2 \cdot H \cdot d_h \quad (\text{fp16 bytes} = 4 \cdot H \cdot d_h).$$
+
+For a 64-head model at $d_h = 128$, that is 16 KB per token per layer. At 128K context and 80
+layers, the KV cache pushes 160 GB — most of a frontier inference budget.
+
+Multi-Query Attention (Shazeer 2019) is the opposite extreme: one K, V pair shared across all
+heads. The cache becomes $2 \cdot d_h$ — an $H\times$ reduction. The quality cost is real but
+hard to pin down precisely; PaLM and others reported subtle degradation at scale.
+
+GQA picks the middle.
+
+<p class="section-eyebrow">§ 2 · The grouping</p>
+## Share K, V across groups of size H/G
+
+Pick a group count $G$ dividing $H$. Each group of $H/G$ query heads shares one K, V pair.
+
+$$\mathbf{k}^{(g)}_t = W_K^{(g)}\,\mathbf{h}_t,\quad \mathbf{v}^{(g)}_t = W_V^{(g)}\,\mathbf{h}_t,\quad g \in \{1, \ldots, G\}.$$
+
+At attention time, query head $i$ uses $K, V$ from group $\lfloor i / (H/G) \rfloor$:
+
+$$\mathrm{Attn}_i(\mathbf{Q}, K^{(g)}, V^{(g)}) = \mathrm{softmax}\!\left(\frac{\mathbf{Q}^{(i)}\,K^{(g)\top}}{\sqrt{d_h}}\right)V^{(g)}.$$
+
+KV cache per token per layer becomes $2 \cdot G \cdot d_h$. The KV-cache ratio vs MHA is exactly $H/G$.
+
+<MhaMqaGqaMla client:visible />
+
+```python
+def gqa(q, k, v, num_heads, num_kv_heads):
+    # q: [B, T, H, d_h]; k, v: [B, T, G, d_h]
+    repeat = num_heads // num_kv_heads
+    k = k.repeat_interleave(repeat, dim=2)  # [B, T, H, d_h]
+    v = v.repeat_interleave(repeat, dim=2)
+    return scaled_dot_product_attention(q, k, v)
+```
+
+In practice the repeat is implemented as a virtual stride in optimized kernels rather than a
+materialized copy — Flash-Attn and friends know how to broadcast across the group axis.
+
+<p class="section-eyebrow">§ 3 · Uptraining from MHA</p>
+## The clever bit of the paper
+
+Ainslie et al.'s actual contribution was less the architecture (the idea is mechanical) and
+more the recipe: they showed you can *uptrain* an existing MHA checkpoint to GQA with only
+~5% of the original training compute. Initialize each group's $W_K^{(g)}, W_V^{(g)}$ by averaging
+the original $W_K^{(i)}, W_V^{(i)}$ across the heads that will share them, then fine-tune.
+
+This was the unlock that let Llama 2 70B ship with GQA without retraining from scratch, and
+established GQA as the default thereafter.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+The original paper (Table 1) reports T5-XXL with GQA at $G = 8$ matching the MHA baseline's
+quality within noise on translation and summarization tasks, with $8\times$ smaller KV cache.
+MQA on the same setup loses 1–2 quality points.
+
+Llama 2 (Touvron et al. 2023) confirmed the same at decoder-LM scale: GQA-8 matched MHA on
+HumanEval, MMLU, and reasoning suites within run-to-run noise. Llama 3 and 3.1 kept GQA
+unchanged.
+
+For models that need even smaller cache than GQA-8 allows, the natural next step is MLA — see
+the [MLA entry](/llm-arch-kb/attention/mla/) for the latent-compression alternative.
+
+<Summary>
+**GQA in one breath.** Share K, V across small groups of query heads. $H/G\times$ smaller KV cache
+with quality indistinguishable from MHA; uptrainable from an MHA checkpoint in 5% of original
+compute. The dominant 2023–25 attention layout for dense decoders.
+</Summary>

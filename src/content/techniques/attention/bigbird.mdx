@@ -1,0 +1,114 @@
+---
+title: "BigBird"
+abbreviation: "BigBird"
+category: "attention"
+year: 2020
+month: 7
+introduced_by: "Manzil Zaheer et al. (Google Research)"
+paper_title: "Big Bird: Transformers for Longer Sequences"
+arxiv_id: "2007.14062"
+paper_url: "https://arxiv.org/abs/2007.14062"
+status: "research"
+problem_solved: "Combine three structured sparse-attention patterns (random, window, global) so the model preserves universal-approximation properties while running in O(N) attention. The first theoretically-grounded sparse attention with a Turing-completeness proof."
+predecessors: ["sparse-transformer"]
+successors: []
+adopted_by: []
+summary: "Each query attends to three sets of keys: a random sample, a local window, and a fixed global set. O(N) attention; provably universal-approximator and Turing-complete. The 2020 successor to Sparse Transformer that put sparse attention on a theoretical footing."
+tags: ["attention", "sparse", "long-context"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Sparse attention with theory
+
+Sparse Transformer (Child et al. 2019) had shown that structured sparse attention works
+empirically — but lacked theoretical guarantees. Did the sparse approximation preserve any of
+full attention's properties? Could it represent arbitrary functions or were there sequences
+where the sparse pattern was fundamentally limited?
+
+BigBird's contribution: prove that a specific three-pattern combination preserves both
+universal approximation and Turing completeness in the limit. The construction is also $O(N)$
+in attention compute.
+
+<p class="section-eyebrow">§ 2 · The three patterns</p>
+## Random + window + global
+
+For sequence length $N$, each query attends to a subset of keys defined by three components:
+
+1. **Window attention**: each query attends to its $w$ nearest neighbors (window-local). Same
+   as standard SWA. Captures short-range dependencies.
+2. **Global attention**: a small set of $g$ designated "global" tokens that every query attends
+   to and that attend to every key. Provides a shortcut for any-to-any routing in two hops.
+3. **Random attention**: each query attends to $r$ randomly-sampled positions, uniform over
+   the sequence. Provides graph-theoretic connectivity guarantees.
+
+Total per-query keys: $w + g + r$. For typical settings $w = 256, g = 32, r = 32$, this is
+$\approx 300$ keys per query regardless of $N$, vs $N$ for full attention.
+
+```python
+def bigbird_attention(q, k, v, window_size, global_idx, num_random):
+    # q, k, v: [B, T, d_h]
+    T = q.shape[1]
+    # Window indices: local window per query
+    window_mask = build_band_mask(T, window_size)
+    # Global mask: rows for global queries, columns for global keys
+    global_mask = build_global_mask(T, global_idx)
+    # Random mask: r random keys per query
+    random_mask = sample_random_mask(T, num_random)
+    full_mask = window_mask | global_mask | random_mask
+    return masked_attention(q, k, v, full_mask)
+```
+
+<p class="section-eyebrow">§ 3 · The theory</p>
+## What the proof shows
+
+Zaheer et al. prove three results:
+
+1. **Universal approximation**: the attention layer is a universal approximator of
+   sequence-to-sequence functions, given suitable widths and depths. The combined sparse
+   pattern is enough.
+2. **Turing completeness**: with arbitrary precision and unbounded depth, BigBird can simulate
+   any Turing machine. Same property as full attention.
+3. **Graph diameter**: the random pattern alone gives the attention graph an expected diameter
+   of $O(\log N)$ — meaning any token's information reaches any other within $O(\log N)$ hops.
+   Adding window + global tightens this to a small constant.
+
+The proofs use the random pattern crucially: it gives the connectivity guarantees that pure
+window-or-strided patterns cannot. Sparse Transformer's strided + fixed patterns *almost*
+provide the same connectivity but without the same theoretical bounds.
+
+<p class="section-eyebrow">§ 4 · Empirical performance</p>
+## What it actually does
+
+On long-document QA tasks (HotpotQA, TriviaQA, WikiHop), BigBird at sequence length 4096
+matches or slightly beats RoBERTa with full attention at 512 tokens, while running in 1/4 the
+attention compute (Zaheer et al. Table 6). The technique scales to 16K sequence length
+practically.
+
+For decoder-only language modeling, the BigBird recipe is less directly applicable: the random
+pattern interacts awkwardly with autoregressive masking, and the global tokens require
+a known global-token-position protocol. Production decoder long-context work largely went with
+SWA + occasional global layers (Mistral, Gemma 3) — which is *BigBird without the random*. The
+"random" component, despite being theoretically load-bearing, has been empirically dispensable
+in dense decoder settings.
+
+<p class="section-eyebrow">§ 5 · Where it sits</p>
+## Theoretical anchor for sparse attention
+
+BigBird is the cleanest argument for "structured sparse attention is enough" rather than a
+production-deployed technique. The construction's value is the theoretical guarantees: any
+future sparse-attention design that includes a random component is downstream of BigBird's
+proof that random connectivity is essential.
+
+See [Sparse Transformer](/llm-arch-kb/attention/sparse-transformer/) for the predecessor and
+[Sliding Window Attention](/llm-arch-kb/attention/sliding-window/) for the descendant pattern
+that won at scale (without the random component).
+
+<Summary>
+**BigBird in one breath.** Combine window + global + random sparse-attention patterns. O(N)
+compute; provably universal-approximator and Turing-complete. The theoretical anchor for the
+sparse-attention research line; production decoder LLMs use the window + global piece without
+random, which empirically works just as well.
+</Summary>

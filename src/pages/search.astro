@@ -1,0 +1,103 @@
+---
+import BaseLayout from "~/layouts/BaseLayout.astro";
+
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+const pagefindBundle = `${base}/pagefind/pagefind-ui.js`;
+const pagefindStyles = `${base}/pagefind/pagefind-ui.css`;
+---
+
+<BaseLayout
+  title="Search"
+  description="Full-text search across every technique, model, and figure in the knowledge base."
+>
+  <article class="prose">
+    <header class="entry-header">
+      <p class="section-eyebrow">Browse</p>
+      <h1>Search</h1>
+      <p class="lede">
+        Full-text search across techniques, models, and the home page. Index built at deploy
+        time via <a href="https://pagefind.app/">Pagefind</a> — entirely client-side, no server.
+      </p>
+    </header>
+
+    <link rel="stylesheet" href={pagefindStyles} />
+    <div id="search"></div>
+
+    <script is:inline define:vars={{ bundle: pagefindBundle }}>
+      window.addEventListener("DOMContentLoaded", () => {
+        const initialize = () => {
+          if (typeof window.PagefindUI !== "function") {
+            // Pagefind UI script not yet evaluated; retry shortly.
+            setTimeout(initialize, 50);
+            return;
+          }
+          /* eslint-disable no-new */
+          new window.PagefindUI({
+            element: "#search",
+            showSubResults: true,
+            pageSize: 8,
+            resetStyles: false,
+          });
+        };
+        const tag = document.createElement("script");
+        tag.src = bundle;
+        tag.async = true;
+        tag.addEventListener("load", initialize);
+        document.head.appendChild(tag);
+      });
+    </script>
+
+    <noscript>
+      <p class="noscript-note">
+        Search requires JavaScript. Browse via the <a href={`${base}/timeline/`}>timeline</a>,
+        the <a href={`${base}/compare/`}>compare matrix</a>, or any category page in the top nav.
+      </p>
+    </noscript>
+  </article>
+</BaseLayout>
+
+<style is:global>
+  /* Override Pagefind UI's default tokens to match the Calm Editorial design system. */
+  :root {
+    --pagefind-ui-scale: 0.9;
+    --pagefind-ui-primary: #1a4f7a;
+    --pagefind-ui-text: #1a1a1a;
+    --pagefind-ui-background: #fafaf7;
+    --pagefind-ui-border: #e3e3dc;
+    --pagefind-ui-tag: #f1f1ec;
+    --pagefind-ui-border-width: 1px;
+    --pagefind-ui-border-radius: 2px;
+    --pagefind-ui-font: "Source Serif 4", Iowan Old Style, Georgia, serif;
+  }
+
+  /* Pagefind UI does not let us style every internal piece via tokens; a few targeted overrides
+     keep it on-brand without rewriting the whole component. */
+  .pagefind-ui__form::before {
+    background-color: var(--accent) !important;
+  }
+  .pagefind-ui__search-input {
+    font-family: var(--serif) !important;
+  }
+  .pagefind-ui__result-title a {
+    color: var(--accent) !important;
+  }
+</style>
+
+<style>
+  .entry-header { margin: 48px 0 40px; }
+  .entry-header h1 { margin: 8px 0 24px; }
+  .lede {
+    color: var(--text-soft);
+    font-size: 1.125rem;
+    line-height: 1.55;
+  }
+  #search {
+    margin: 32px 0 64px;
+  }
+  .noscript-note {
+    color: var(--text-soft);
+    border-left: 3px solid var(--border);
+    padding-left: 20px;
+    margin: 32px 0;
+  }
+</style>

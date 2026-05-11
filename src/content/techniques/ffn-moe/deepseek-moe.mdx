@@ -13,6 +13,9 @@ problem_solved: "Get sharper expert specialization than vanilla MoE by combining
 predecessors: ["swiglu", "mixtral-moe"]
 successors: []
 adopted_by:
+  - model: "deepseek-v2"
+    source_url: "https://arxiv.org/abs/2405.04434"
+    notes: "162 routed + 2 shared experts; top-6 routing; standard aux balance loss."
   - model: "deepseek-v3"
     source_url: "https://arxiv.org/abs/2412.19437"
     notes: "256 routed experts + 1 shared expert per MoE layer; top-8 routing; aux-loss-free balancing on top."

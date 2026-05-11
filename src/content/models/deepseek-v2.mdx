@@ -1,0 +1,50 @@
+---
+name: "DeepSeek V2"
+organization: "DeepSeek-AI"
+release_date: "2024-05-07"
+parameters_total: "236B"
+parameters_active: "21B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2405.04434"
+model_card_url: "https://huggingface.co/deepseek-ai/DeepSeek-V2"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (decoupled head for MLA)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "MLA"
+  moe: "DeepSeekMoE with standard auxiliary balance loss"
+  other:
+    - "60 layers"
+    - "Context extended from 4K base to 128K via YaRN"
+    - "First model to ship MLA architecture"
+source_urls:
+  - "https://arxiv.org/abs/2405.04434"
+  - "https://huggingface.co/deepseek-ai/DeepSeek-V2"
+  - "https://github.com/deepseek-ai/DeepSeek-V2"
+notes: "The model that introduced MLA. Same overall stack as V3 minus the aux-loss-free routing and multi-token prediction objective."
+---
+
+DeepSeek V2 (May 2024) is the model that introduced [MLA](/llm-arch-kb/attention/mla/) and
+established the DeepSeek architectural lineage. The four defining choices:
+
+- **MLA attention**: latent-space K, V compression to a per-token bottleneck ($d_c = 512$),
+  with a decoupled RoPE head ($d_R = 64$). 5–7× smaller KV cache than MHA on this scale.
+- **[DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/)**: 162 routed experts plus 2 shared
+  experts per MoE layer, top-6 routing. Established the fine-grained-plus-shared design
+  pattern that V3 inherits.
+- **Standard auxiliary balance loss**: V2 still uses Switch-style aux loss for MoE load
+  balancing. V3 later replaced this with the
+  [aux-loss-free scheme](/llm-arch-kb/ffn-moe/aux-loss-free/).
+- **YaRN context extension**: trained at 4K base, extended to 128K via
+  [YaRN](/llm-arch-kb/positional/yarn/) post-pretraining.
+
+The 60 layers and Pre-Norm RMSNorm + SwiGLU stack are otherwise canonical. The cumulative
+effect of MLA + fine-grained MoE was a sparse-activation model with quality comparable to
+dense 70B models at ~1/3 the inference cost.
+
+V2 is included here as the *original* MLA + DeepSeekMoE adopter; for the latest in the lineage,
+see [DeepSeek V3](/llm-arch-kb/models/deepseek-v3/).

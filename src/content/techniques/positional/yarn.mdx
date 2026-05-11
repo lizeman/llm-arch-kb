@@ -13,6 +13,9 @@ problem_solved: "Extend a pretrained RoPE model's usable context far beyond the 
 predecessors: []
 successors: ["longrope"]
 adopted_by:
+  - model: "deepseek-v2"
+    source_url: "https://arxiv.org/abs/2405.04434"
+    notes: "YaRN used for 4K → 128K context extension."
   - model: "deepseek-v3"
     source_url: "https://arxiv.org/abs/2412.19437"
     notes: "YaRN used for the 128K context extension from the base 4K window."

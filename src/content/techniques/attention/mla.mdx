@@ -13,6 +13,9 @@ problem_solved: "Cut KV cache memory below MQA/GQA while preserving or improving
 predecessors: ["mha", "mqa", "gqa"]
 successors: []
 adopted_by:
+  - model: "deepseek-v2"
+    source_url: "https://arxiv.org/abs/2405.04434"
+    notes: "Original MLA introduction. 60 layers; d_c = 512, d_R = 64."
   - model: "deepseek-v3"
     source_url: "https://arxiv.org/abs/2412.19437"
     notes: "Same MLA design as V2 across 61 layers."

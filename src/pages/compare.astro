@@ -1,0 +1,163 @@
+---
+import BaseLayout from "~/layouts/BaseLayout.astro";
+import { getCollection } from "astro:content";
+
+const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+
+const models = (await getCollection("models")).sort((a, b) =>
+  a.data.release_date.localeCompare(b.data.release_date),
+);
+const techniques = await getCollection("techniques");
+
+// Map of technique slug-tail → entry, for linking abbreviations to entry URLs
+const techniqueLookup = new Map<string, (typeof techniques)[number]>();
+for (const t of techniques) {
+  techniqueLookup.set(t.slug.split("/").pop()!, t);
+}
+
+function dash(): string {
+  return "—";
+}
+
+type ArchKey =
+  | "positional"
+  | "normalization_placement"
+  | "normalization_type"
+  | "qk_norm"
+  | "activation"
+  | "attention"
+  | "moe";
+
+const slots: { key: ArchKey; label: string }[] = [
+  { key: "positional", label: "Positional" },
+  { key: "normalization_placement", label: "Norm placement" },
+  { key: "normalization_type", label: "Norm type" },
+  { key: "qk_norm", label: "QK-Norm" },
+  { key: "activation", label: "Activation" },
+  { key: "attention", label: "Attention" },
+  { key: "moe", label: "MoE" },
+];
+
+function display(value: string | boolean | null | undefined): string {
+  if (value === null || value === undefined || value === "" || value === "null") return dash();
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  return value;
+}
+---
+
+<BaseLayout
+  title="Compare"
+  description="Side-by-side architecture matrix for every documented production model in the knowledge base."
+>
+  <article class="prose-wide">
+    <header class="entry-header">
+      <p class="section-eyebrow">Browse</p>
+      <h1>Compare</h1>
+      <p class="lede">
+        Architecture slot by architecture slot, every documented model in the knowledge base.
+        Empty cells (—) mean the choice was not publicly disclosed, per the
+        <a href={`${base}/about/`}>citation policy</a>.
+      </p>
+    </header>
+
+    <h2>Model adoption matrix</h2>
+    <p class="table-lede">
+      Each row is a production model with public architecture documentation. Each column is a
+      design slot. Cells repeat the model's disclosed choice; the interactive
+      <a href={`${base}/compare/`}>sortable variant</a> is on the v2 roadmap.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Model</th>
+            {slots.map((s) => <th scope="col">{s.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {models.map((m) => (
+            <tr>
+              <th scope="row">
+                <a href={`${base}/models/${m.slug}/`}>{m.data.name}</a>
+                <span class="org">{m.data.organization}</span>
+              </th>
+              {slots.map((s) => (
+                <td>{display(m.data.architecture[s.key] as string | boolean | null)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <h2 class="mt-section">Coverage notes</h2>
+    <p>
+      v1 ship covers the open / documented frontier model families
+      (<strong>Llama, OLMo, DeepSeek, Gemma</strong>); the v2 ship plans to extend to
+      <strong>Kimi, MiniMax, GLM</strong> with the same disclosure standard.
+      Closed-frontier families (GPT-*, Claude, Gemini) are intentionally absent — see the
+      <a href={`${base}/about/`}>methodology</a> for why.
+    </p>
+  </article>
+</BaseLayout>
+
+<style>
+  .entry-header { margin: 48px 0 56px; }
+  .entry-header h1 { margin: 8px 0 24px; }
+  .lede { color: var(--text-soft); font-size: 1.125rem; line-height: 1.55; }
+
+  h2 { margin-top: 32px; }
+  .mt-section { margin-top: 64px; }
+
+  .table-lede {
+    color: var(--text-soft);
+    margin-bottom: 24px;
+  }
+
+  .table-wrap {
+    overflow-x: auto;
+    margin: 24px 0;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+  }
+
+  table {
+    margin: 0;
+    border-collapse: collapse;
+    font-size: var(--t-small);
+    min-width: 100%;
+  }
+
+  th, td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    text-align: left;
+    white-space: nowrap;
+  }
+  thead th {
+    background: var(--bg-soft);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    position: sticky;
+    top: 0;
+  }
+  tbody th {
+    background: transparent;
+    text-align: left;
+    font-weight: 600;
+  }
+  tbody th a { color: var(--text); text-decoration: none; }
+  tbody th a:hover { color: var(--accent); text-decoration: underline; }
+  .org {
+    display: block;
+    color: var(--text-faint);
+    font-size: 0.78rem;
+    font-weight: 400;
+    margin-top: 2px;
+  }
+</style>

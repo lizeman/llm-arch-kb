@@ -1,0 +1,109 @@
+---
+title: "FlashAttention"
+abbreviation: "FlashAttention"
+category: "attention"
+year: 2022
+month: 5
+introduced_by: "Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, Christopher Ré"
+paper_title: "FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness"
+arxiv_id: "2205.14135"
+paper_url: "https://arxiv.org/abs/2205.14135"
+status: "production-adopted"
+problem_solved: "Compute exact attention 2–4× faster and with 5–20× less peak memory by recognizing that attention is memory-bandwidth-bound and tiling the computation to keep operations on-chip."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Tile attention so QK^T and the softmax stay in SRAM rather than round-tripping through HBM. Exact (not approximate) attention, 2–4× faster, 5–20× less peak memory. The universal kernel under every modern transformer trainer."
+tags: ["attention", "kernel", "performance"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Attention is memory-bound
+
+Standard attention computes scores $S = QK^\top / \sqrt{d_h}$, softmaxes to $P = \mathrm{softmax}(S)$,
+and aggregates $O = PV$. The N×N matrices $S$ and $P$ have to be materialized somewhere. On a
+GPU, "somewhere" is HBM — the slow, large memory pool.
+
+Dao et al. measured this in 2022: for the typical transformer scales of 2022 (sequence length
+2K–16K, head dim 64), the entire attention operation spent **most of its wall-clock time waiting
+for memory**, not computing. The arithmetic intensity (FLOPs per byte transferred) was lower
+than what the GPU's compute units could keep busy.
+
+The diagnosis flips the optimization target: instead of reducing FLOPs (the goal of approximate
+attention variants — Performer, Linformer, etc.), reduce *memory traffic*.
+
+<p class="section-eyebrow">§ 2 · The technique</p>
+## Tile, fuse, recompute
+
+FlashAttention splits Q, K, V into small tiles that fit in SRAM (the GPU's on-chip cache,
+~100 KB per SM). For each tile of Q, it streams the K and V tiles in turn, computes a partial
+softmax + output, and accumulates — using an *online softmax* trick to maintain numerical
+correctness across tile boundaries.
+
+The key arithmetic is the online softmax aggregation. Given two partial softmaxes with running
+maxima $m_1, m_2$ and denominators $\ell_1, \ell_2$, the merge is:
+
+$$m = \max(m_1, m_2),\quad \ell = e^{m_1 - m}\ell_1 + e^{m_2 - m}\ell_2,$$
+
+$$O = e^{m_1 - m}\frac{\ell_1}{\ell}O_1 + e^{m_2 - m}\frac{\ell_2}{\ell}O_2.$$
+
+The full N×N attention matrix is never materialized; only the per-tile partials are. Backward
+pass uses recomputation (the same idea as gradient checkpointing) to avoid storing $P$ for the
+backward.
+
+```python
+# Forward (sketch): for each Q tile, walk over K/V tiles, accumulate online softmax.
+for q_tile in split(Q, block_size):
+    m = -inf; l = 0; o = 0
+    for k_tile, v_tile in zip(split(K, ...), split(V, ...)):
+        s = q_tile @ k_tile.T / d_h**0.5
+        m_new = max(m, max(s, axis=-1))
+        p = exp(s - m_new[..., None])
+        l = exp(m - m_new) * l + sum(p, axis=-1)
+        o = exp(m - m_new)[..., None] * o + p @ v_tile
+        m = m_new
+    yield o / l[..., None]
+```
+
+The compute is the same. The memory pattern is dramatically better.
+
+<p class="section-eyebrow">§ 3 · Results</p>
+## Empirical evidence
+
+Dao et al. (2022, Table 1) report **2-4× speedup on end-to-end transformer training** vs
+PyTorch's default attention at sequences from 1K to 16K, with peak memory dropping from
+$O(N^2)$ to $O(N)$. The peak-memory improvement is the practical win: it removed the
+single biggest barrier to long-context training on a single GPU.
+
+Subsequent versions:
+
+- **FlashAttention-2** (Dao 2023, arXiv 2307.08691): better parallelism across the sequence
+  dimension and reorganized loops; another ~2× speedup over v1.
+- **FlashAttention-3** (Shah, Dao et al. 2024, arXiv 2407.08608): specialized for NVIDIA Hopper
+  with asynchronous tensor-memory accelerators and FP8 support; another ~1.5–2× over v2 on H100.
+
+The technique is implemented in PyTorch's `scaled_dot_product_attention`, JAX, Triton, and every
+training framework's default attention path. Every model in this knowledge base — Llama, DeepSeek,
+Gemma, OLMo — trains on top of FlashAttention or a derivative.
+
+<p class="section-eyebrow">§ 4 · Why this entry has no adopters</p>
+## A note on attribution
+
+Like StreamingLLM, FlashAttention is an implementation kernel, not an architectural choice. Saying
+"Llama 3.1 adopts FlashAttention" would be technically true but underdetermined — it's like
+saying the model "adopts the GPU memory hierarchy". The technique is at a different level of
+abstraction than the others in this knowledge base.
+
+The closer analog is GQA's relationship to MHA: GQA changes the *operator*, FlashAttention
+changes the *kernel that implements the operator*. Both matter; only one shows up in the model
+architecture spec sheets.
+
+<Summary>
+**FlashAttention in one breath.** Tile attention so QK^T and softmax stay in SRAM. Exact (not
+approximate), 2-4× faster, 5-20× less peak memory. Universal in modern training; FlashAttention-3
+on Hopper is the current frontier. The single most important compute-side improvement to
+attention since the 2017 paper.
+</Summary>

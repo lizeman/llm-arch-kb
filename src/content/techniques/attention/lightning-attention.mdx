@@ -12,7 +12,10 @@ status: "production-adopted"
 problem_solved: "Make linear attention actually fast at moderate sequence lengths by tile-fusing the computation so the constant overhead of the linear recurrence doesn't dominate against optimized FlashAttention kernels."
 predecessors: ["linear-attention", "flash-attention"]
 successors: []
-adopted_by: []
+adopted_by:
+  - model: "minimax-01"
+    source_url: "https://arxiv.org/abs/2501.08313"
+    notes: "7 Lightning Attention layers : 1 softmax attention layer interleave; 4M context."
 summary: "Tile and fuse linear attention's prefix-sum recurrence so it runs faster than FlashAttention at long context. Interleaved 7:1 with softmax attention in MiniMax-01 to recover what linear attention loses on absolute quality while keeping its linear-in-T scaling."
 tags: ["attention", "linear", "production"]
 last_verified: "2026-05-11"

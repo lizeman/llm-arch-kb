@@ -1,0 +1,45 @@
+---
+name: "MiniMax-Text-01"
+organization: "MiniMax"
+release_date: "2025-01-14"
+parameters_total: "456B"
+parameters_active: "45.9B"
+context_length: 4000000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2501.08313"
+model_card_url: "https://huggingface.co/MiniMaxAI/MiniMax-Text-01"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "Lightning Attention (7 layers) interleaved with softmax attention (1 layer); ratio 7:1"
+  moe: "32 routed experts + 1 shared expert; top-2 routing"
+  other:
+    - "4M token context window"
+    - "Hybrid linear/softmax attention stack"
+source_urls:
+  - "https://arxiv.org/abs/2501.08313"
+  - "https://huggingface.co/MiniMaxAI/MiniMax-Text-01"
+  - "https://github.com/MiniMax-AI/MiniMax-01"
+notes: "First production-scale model to ship Lightning Attention as its primary attention operator. The 7:1 interleave with softmax is the design choice that recovers the recall quality linear attention sacrifices."
+---
+
+MiniMax-Text-01 (released January 2025) is the first production decoder to use Lightning
+Attention at frontier scale. The defining choices:
+
+- **Hybrid attention stack**: 7 out of every 8 layers use
+  [Lightning Attention](/llm-arch-kb/attention/lightning-attention/) (tiled linear attention);
+  the 8th uses standard softmax attention. The mix gives near-softmax recall on context-rich
+  tasks plus near-linear compute scaling on long sequences.
+- **4M token context**: enabled by the linear-attention cost profile in the 7 Lightning layers
+  per group; quadratic cost concentrates in the 1 softmax layer per group.
+- **MoE architecture**: DeepSeekMoE-style with 32 routed experts plus 1 shared expert per MoE
+  layer, top-2 routing. 456B total parameters, 45.9B active per token.
+
+The architectural bet — linear attention is viable in production if interleaved with periodic
+softmax for quality recovery — is the most concrete 2025 case for the linear-attention
+research line. Whether the 7:1 ratio is optimal across scales is contested, but the existence
+proof that it works at 456B is now in the record.

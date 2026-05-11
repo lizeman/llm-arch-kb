@@ -28,6 +28,9 @@ adopted_by:
   - model: "olmoe-1b-7b"
     source_url: "https://arxiv.org/abs/2409.02060"
     notes: "SwiGLU inside each routed expert."
+  - model: "minimax-01"
+    source_url: "https://arxiv.org/abs/2501.08313"
+    notes: "SwiGLU FFN inside each routed expert."
 summary: "Replace the FFN with a Swish-gated bilinear form: one linear path multiplied element-wise by Swish of another. Consistent quality win over ReLU/GELU at matched parameter count; the default modern FFN."
 tags: ["ffn", "consensus-stack"]
 last_verified: "2026-05-11"

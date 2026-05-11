@@ -1,0 +1,105 @@
+---
+title: "Lightning Attention"
+abbreviation: "Lightning"
+category: "attention"
+year: 2024
+month: 5
+introduced_by: "Zhen Qin et al. (MiniMax)"
+paper_title: "Lightning Attention-2: A Free Lunch for Handling Unlimited Sequence Lengths in Large Language Models"
+arxiv_id: "2401.04658"
+paper_url: "https://arxiv.org/abs/2401.04658"
+status: "production-adopted"
+problem_solved: "Make linear attention actually fast at moderate sequence lengths by tile-fusing the computation so the constant overhead of the linear recurrence doesn't dominate against optimized FlashAttention kernels."
+predecessors: ["linear-attention", "flash-attention"]
+successors: []
+adopted_by: []
+summary: "Tile and fuse linear attention's prefix-sum recurrence so it runs faster than FlashAttention at long context. Interleaved 7:1 with softmax attention in MiniMax-01 to recover what linear attention loses on absolute quality while keeping its linear-in-T scaling."
+tags: ["attention", "linear", "production"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Linear attention is fast in theory only
+
+Standard linear attention ([entry](/llm-arch-kb/attention/linear-attention/)) replaces softmax
+with a decomposable kernel so attention's compute becomes $O(T \cdot d^2)$ rather than
+$O(T^2 \cdot d)$. Asymptotically this wins past some crossover sequence length — but the
+constant factors are bad. The prefix-sum recurrence has poor parallelism, and naive
+implementations spend more time on memory traffic than on math.
+
+In practice, vanilla linear attention is *slower* than FlashAttention for sequences up to
+~32K tokens on modern GPUs. The asymptotic win is real but the constant is large.
+
+Lightning Attention's bet: linear attention's compute pattern can be tiled and fused similarly
+to FlashAttention's, removing the memory bottleneck and closing the constant-factor gap. Then
+the linear scaling kicks in earlier.
+
+<p class="section-eyebrow">§ 2 · The construction</p>
+## Tile the prefix sum
+
+Recall the causal linear-attention recurrence:
+
+$$S_t = S_{t-1} + \phi(\mathbf{k}_t)\mathbf{v}_t^\top,\quad \mathrm{out}_t = \phi(\mathbf{q}_t)^\top S_t.$$
+
+Naively this runs serially per token. Lightning Attention partitions the sequence into tiles
+of size $T_B$ (e.g., 128 tokens). Within each tile, attention is dense — every query attends
+to every key in the tile via standard attention math. Across tiles, the running state $S$
+propagates as a single matrix update at tile boundaries:
+
+$$S_{\text{block}_b} = S_{\text{block}_{b-1}} + \sum_{t \in \text{block}_b} \phi(\mathbf{k}_t)\mathbf{v}_t^\top.$$
+
+Each tile's intra-block attention runs in SRAM with the same I/O-aware pattern as
+FlashAttention. The inter-block state update is a single $O(d^2)$ outer product per tile, also
+SRAM-resident. The result is the same recurrence's exact output, executed with the memory
+pattern of a tiled GEMM.
+
+```python
+def lightning_attention(Q, K, V, T_B=128):
+    # Q, K, V: [B, H, T, d_h]
+    S = zeros(d', d_v)
+    out = []
+    for q_tile, k_tile, v_tile in tiled(Q, K, V, T_B):
+        # Intra-block: standard causal attention within the tile
+        intra = causal_attention(q_tile, k_tile, v_tile)
+        # Inter-block: contribution from running linear state
+        inter = phi(q_tile) @ S
+        out.append(intra + inter)
+        S = S + phi(k_tile).T @ v_tile     # update running state
+    return cat(out, dim=2)
+```
+
+<p class="section-eyebrow">§ 3 · Results</p>
+## Where lightning wins
+
+Qin et al. (Table 1) report Lightning Attention beating FlashAttention-2 on H100 starting at
+~4K context, with the gap widening past 32K. At 128K, Lightning Attention runs 2–3× faster.
+For 1M-token sequences the gap is roughly 10×.
+
+The hybrid model used in MiniMax-01 (the first production deployment, Jan 2025) interleaves
+Lightning Attention with periodic softmax-attention layers — 7 Lightning : 1 softmax —
+to recover the recall that pure linear attention sacrifices. The mix gets near-softmax quality
+on context-rich tasks plus near-linear cost on long sequences.
+
+<p class="section-eyebrow">§ 4 · Where it sits in the lineage</p>
+## Two paths past quadratic
+
+The 2024-25 attention-cost frontier has two contesting recipes:
+
+- **Sparse softmax**: keep softmax, prune the keys each query sees. SWA + global interleave (Gemma 3)
+  and the various sparse-attention proposals (NSA, etc.) live here.
+- **Tiled linear**: replace softmax with a decomposable kernel; tile-fuse the prefix sum.
+  Lightning Attention is the most production-credible instance.
+
+Both reach $O(T)$ scaling. The sparse-softmax path keeps the model's expressive surface
+closer to standard attention but commits to a specific sparsity pattern. The tiled-linear path
+preserves the operator's dense structure but accepts the loss-of-sharpening cost from dropping
+softmax. The verdict is genuinely open as of mid-2026.
+
+<Summary>
+**Lightning Attention in one breath.** Tile-fuse the linear-attention prefix-sum recurrence so
+it runs faster than FlashAttention at long context. Production-deployed in MiniMax-01,
+interleaved 7:1 with softmax attention. The most credible 2024-25 case for "linear attention,
+but actually fast".
+</Summary>

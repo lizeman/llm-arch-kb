@@ -1,0 +1,96 @@
+---
+title: "Root Mean Square Layer Normalization"
+abbreviation: "RMSNorm"
+category: "normalization"
+year: 2019
+month: 10
+introduced_by: "Biao Zhang and Rico Sennrich"
+paper_title: "Root Mean Square Layer Normalization"
+arxiv_id: "1910.07467"
+paper_url: "https://arxiv.org/abs/1910.07467"
+status: "foundational"
+problem_solved: "Drop the mean-centering step of LayerNorm — keep almost all of the stability benefit at meaningfully less compute."
+predecessors: []
+successors: []
+adopted_by:
+  - model: "llama-3-1-70b"
+    source_url: "https://arxiv.org/abs/2407.21783"
+    notes: "RMSNorm throughout, Pre-Norm placement."
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "RMSNorm, Pre-Norm, across all 61 layers."
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "RMSNorm, applied as both Pre-Norm and Post-Norm per block."
+summary: "Normalize by RMS instead of subtracting the mean — drop one statistic, one bias, and ~5-10% of normalization compute, with no measurable quality cost."
+tags: ["normalization", "consensus-stack"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## What LayerNorm actually does
+
+For an input vector $\mathbf{x} \in \mathbb{R}^d$ at a single token position, LayerNorm computes:
+
+$$\mathrm{LN}(\mathbf{x}) = \frac{\mathbf{x} - \mu}{\sigma}\,\boldsymbol{\gamma} + \boldsymbol{\beta},
+\quad \mu = \tfrac{1}{d}\sum_i x_i,\quad \sigma = \sqrt{\tfrac{1}{d}\sum_i (x_i - \mu)^2 + \varepsilon}.$$
+
+Two statistics are estimated per token: the mean $\mu$ (re-centering) and the standard deviation
+$\sigma$ (re-scaling). The learnable gain $\boldsymbol{\gamma}$ and bias $\boldsymbol{\beta}$ then
+re-introduce per-feature degrees of freedom.
+
+The hypothesis Zhang and Sennrich tested in 2019: the re-centering step does very little. Most
+of LayerNorm's stabilizing effect comes from the re-scaling.
+
+<p class="section-eyebrow">§ 2 · The simplification</p>
+## Just normalize by RMS
+
+RMSNorm drops $\mu$ and $\boldsymbol{\beta}$, normalizing instead by the root mean square:
+
+$$\mathrm{RMSNorm}(\mathbf{x}) = \frac{\mathbf{x}}{\mathrm{RMS}(\mathbf{x})}\,\boldsymbol{\gamma},
+\quad \mathrm{RMS}(\mathbf{x}) = \sqrt{\tfrac{1}{d}\sum_i x_i^{\,2} + \varepsilon}.$$
+
+The activation is rescaled to unit RMS, then a per-feature gain $\boldsymbol{\gamma}$ is applied.
+No mean subtraction, no additive bias.
+
+```python
+def rms_norm(x, g, eps=1e-6):
+    # x: [..., d]  g: [d] learnable gain
+    rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
+    return x * rms * g
+```
+
+<p class="section-eyebrow">§ 3 · Why it works</p>
+## Re-scaling is what matters
+
+The original paper's analysis: the gradient of LayerNorm with respect to $\mathbf{x}$ decomposes
+into a re-scaling term and a re-centering term. Empirically the re-centering term contributes
+little to gradient flow at the scales relevant to large transformers. Dropping it does not
+destabilize training.
+
+Concretely: removing the mean estimation eliminates one reduction along the feature dimension
+per call, plus the subtraction, plus the bias parameters. On GPUs, the reduction itself is the
+bottleneck — fewer reductions means lower memory traffic.
+
+<p class="section-eyebrow">§ 4 · Results</p>
+## Empirical evidence
+
+The original paper (Table 4) reports RMSNorm reducing per-step time by 7–64% across translation
+and language-modeling benchmarks vs LayerNorm, with no statistically significant quality
+difference on the tested tasks.
+
+In modern transformer training, the reported speedup is smaller in absolute terms because
+attention dominates wall-clock time. But RMSNorm is invoked twice per block (Pre-Norm) or more
+(sandwich placements), so the cumulative savings are non-trivial — and there is no quality
+reason to prefer LayerNorm.
+
+Every open frontier dense LLM family from Llama 1 onward uses RMSNorm. It is the consensus
+choice and a load-bearing piece of the 2024–26 stack.
+
+<Summary>
+**RMSNorm in one breath.** Same stabilization as LayerNorm, minus the mean subtraction and the
+bias. Slightly faster, identical or better quality, no compelling reason ever to choose otherwise.
+The default for every open frontier LLM.
+</Summary>

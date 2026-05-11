@@ -1,0 +1,80 @@
+---
+interface Props {
+  paper_title: string;
+  introduced_by: string;
+  year: number;
+  arxiv_id: string;
+  paper_url: string;
+}
+
+const { paper_title, introduced_by, year, arxiv_id, paper_url } = Astro.props;
+
+// Build a BibTeX key from arxiv_id (replaces dots with underscores for valid LaTeX keys).
+const bibKey = `arxiv${arxiv_id.replace(/\./g, "_")}`;
+
+// Author field: take everything before " et al." or the first comma; flip to "Last, First" if a space is present.
+function bibAuthor(intro: string): string {
+  // We just emit the lab/group name as-is since intro is normally short — BibTeX accepts text.
+  return intro.replace(" et al.", " and others");
+}
+
+const bib = `@article{${bibKey},
+  title  = {${paper_title}},
+  author = {${bibAuthor(introduced_by)}},
+  year   = {${year}},
+  eprint = {${arxiv_id}},
+  archivePrefix = {arXiv},
+  url    = {${paper_url}}
+}`;
+---
+
+<section class="cite">
+  <p class="section-eyebrow">Cite</p>
+  <details>
+    <summary>BibTeX entry for the original paper</summary>
+    <pre><code>{bib}</code></pre>
+    <p class="note">
+      Or cite the paper directly: <a href={paper_url} rel="noopener noreferrer">arXiv:{arxiv_id}</a>.
+    </p>
+  </details>
+</section>
+
+<style>
+  .cite {
+    margin: 32px 0;
+  }
+  details {
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 0;
+  }
+  summary {
+    cursor: pointer;
+    font-size: var(--t-small);
+    color: var(--text-soft);
+    padding: 4px 0;
+    list-style: none;
+  }
+  summary::before {
+    content: "+ ";
+    font-family: var(--mono);
+    color: var(--accent);
+  }
+  details[open] summary::before { content: "− "; }
+  summary::-webkit-details-marker { display: none; }
+  pre {
+    background: var(--bg-soft);
+    padding: 16px;
+    margin: 12px 0 8px;
+    border-radius: 2px;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    overflow-x: auto;
+  }
+  pre code { background: transparent; padding: 0; font-family: var(--mono); }
+  .note {
+    font-size: var(--t-small);
+    color: var(--text-soft);
+    margin: 0;
+  }
+</style>

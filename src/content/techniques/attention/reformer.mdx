@@ -1,0 +1,107 @@
+---
+title: "Reformer — LSH Attention"
+abbreviation: "Reformer"
+category: "attention"
+year: 2020
+month: 1
+introduced_by: "Nikita Kitaev, Łukasz Kaiser, Anselm Levskaya (Google Research)"
+paper_title: "Reformer: The Efficient Transformer"
+arxiv_id: "2001.04451"
+paper_url: "https://arxiv.org/abs/2001.04451"
+status: "research"
+problem_solved: "Replace dense O(N²) attention with locality-sensitive hashing — bucket similar Q, K together and only attend within buckets. O(N · log N) attention, learnable rather than fixed sparsity pattern."
+predecessors: ["sparse-transformer"]
+successors: []
+adopted_by: []
+summary: "Hash Q and K to discrete buckets via random rotation; restrict attention to queries and keys in the same bucket. O(N · log N) compute via learned (not hand-designed) sparsity. Lost to FlashAttention's I/O-aware exact computation on practical grounds."
+tags: ["attention", "sparse", "hashing"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Learned sparsity instead of fixed patterns
+
+The 2019-20 sparse-attention literature mostly committed to *fixed* sparsity patterns —
+Sparse Transformer's strided + fixed, BigBird's window + global + random, dilated patterns,
+etc. Each pattern was chosen by hand.
+
+Reformer's bet: let the model *learn* which keys are similar to each query, and only compute
+attention on the genuinely-similar ones. The mechanism is locality-sensitive hashing (LSH):
+hash Q and K vectors to discrete buckets such that similar vectors land in the same bucket
+with high probability. Attention then runs only within buckets.
+
+<p class="section-eyebrow">§ 2 · LSH attention</p>
+## Hash, sort, attend within buckets
+
+The hashing scheme is random projection plus sign: pick $r$ random vectors $\boldsymbol{\omega}_1,
+\ldots, \boldsymbol{\omega}_r$, hash a vector $\mathbf{x}$ to the bit string
+$(\mathrm{sign}(\boldsymbol{\omega}_1^\top \mathbf{x}), \ldots, \mathrm{sign}(\boldsymbol{\omega}_r^\top \mathbf{x}))$.
+Vectors that point in similar directions get similar hash bit strings; cosine similarity is
+approximately preserved by hash similarity.
+
+For Reformer, $Q = K$ (the same projection is used for both — a small simplification of the
+standard transformer): each token is hashed once. Tokens with the same hash form a *bucket*.
+Attention then runs within each bucket via standard scaled-dot-product.
+
+```python
+def lsh_attention(q, k, v, num_buckets, num_hashes):
+    # q, k, v: [B, T, d_h]
+    # Hash via random rotation; q and k use the same projection
+    rotations = sample_random_rotations(num_hashes, num_buckets, d_h)
+    hashes = (q @ rotations.T).argmax(-1)         # [B, T]
+    # Sort by hash, group into buckets of size ~T/num_buckets
+    sorted_idx = hashes.argsort(-1)
+    # Within each bucket, run standard attention
+    return bucketed_attention(q, k, v, sorted_idx, bucket_size=T // num_buckets)
+```
+
+Compute drops from $O(T^2 d_h)$ to $O(T \cdot B \cdot d_h)$ where $B$ is bucket size, typically
+$\sqrt T$ — yielding $O(T \sqrt T)$. With multiple hash rounds (different random rotations
+per round) and union of the resulting buckets, the approximation quality improves at additional
+compute cost.
+
+<p class="section-eyebrow">§ 3 · Reversible residual layers</p>
+## The memory trick
+
+Reformer's second contribution is *reversible* residual layers — a memory-saving technique
+borrowed from RevNets:
+
+$$y_1 = x_1 + f(x_2),\qquad y_2 = x_2 + g(y_1).$$
+
+The forward computation produces $(y_1, y_2)$ from $(x_1, x_2)$. The reverse computation —
+$(x_1, x_2)$ from $(y_1, y_2)$ — is also defined:
+
+$$x_2 = y_2 - g(y_1),\qquad x_1 = y_1 - f(x_2).$$
+
+This means the layer's input activations don't need to be stored during the forward pass; they
+can be recomputed during backprop from the output. Memory usage becomes $O(1)$ in depth rather
+than $O(L)$.
+
+Combined with LSH attention, Reformer can train transformers with ~64K context on a single
+GPU — vs the standard transformer's ~1-2K limit at the same memory budget.
+
+<p class="section-eyebrow">§ 4 · Why it lost</p>
+## The FlashAttention dominance
+
+Three things conspired against Reformer's adoption:
+
+1. **The LSH approximation has variance.** Multiple hash rounds reduce variance but at compute
+   cost; the trade-off ends up uncomfortable.
+2. **Bucket sizes are uneven.** Some hashes cluster more tokens than others; load balancing
+   the resulting attention compute is awkward on GPUs that prefer fixed-shape tensors.
+3. **FlashAttention solved the wall-clock problem differently.** Exact softmax attention with
+   I/O-aware tiling (see [FlashAttention](/llm-arch-kb/attention/flash-attention/)) gave the
+   same memory savings at $T \leq 64K$ without approximation. Once that landed in 2022, the
+   demand for approximate alternatives at moderate context disappeared.
+
+Reformer's reversible-residual idea survived as a general memory-saving technique (used in
+some long-training-horizon setups). LSH attention itself is largely historical.
+
+<Summary>
+**Reformer in one breath.** LSH-bucketed attention (hash similar Q, K together, attend within
+buckets) plus reversible residual layers. O(T·√T) compute and O(1) layer memory. Lost to
+FlashAttention's I/O-aware exact computation in the moderate-context regime; reversible
+layers remain useful in their own right.
+</Summary>

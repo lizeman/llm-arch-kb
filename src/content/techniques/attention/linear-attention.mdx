@@ -1,0 +1,110 @@
+---
+title: "Linear Attention"
+abbreviation: "Linear Attention"
+category: "attention"
+year: 2020
+month: 6
+introduced_by: "Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, François Fleuret"
+paper_title: "Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention"
+arxiv_id: "2006.16236"
+paper_url: "https://arxiv.org/abs/2006.16236"
+status: "research"
+problem_solved: "Replace softmax with a kernel that lets you reorder QKV multiplications — making attention compute linear in sequence length, with a constant-size recurrent state at autoregressive inference."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Replace softmax(QK^T)V with φ(Q)·(φ(K)^T·V). The K^T·V term is a small (d×d) state independent of sequence length; the operator becomes a recurrence at inference. Approximate, but linear in T."
+tags: ["attention", "approximate"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The quadratic cost is in the softmax
+
+Standard attention computes $\mathrm{softmax}(QK^\top / \sqrt{d}) V$. The expensive part is
+the explicit $QK^\top \in \mathbb{R}^{T \times T}$ matrix, which has to be formed before
+softmax can be applied. Replacing softmax with a similarity function that *decomposes* — that
+can be written as an inner product of feature maps — removes the need for the $T \times T$
+matrix entirely.
+
+For any feature map $\phi: \mathbb{R}^{d_h} \to \mathbb{R}^{d'}$ with $\phi(\mathbf{x})^\top
+\phi(\mathbf{y})$ approximating the desired similarity:
+
+$$\mathrm{Attn}(Q, K, V)_i = \frac{\sum_j \phi(\mathbf{q}_i)^\top \phi(\mathbf{k}_j) \mathbf{v}_j}{\sum_j \phi(\mathbf{q}_i)^\top \phi(\mathbf{k}_j)} = \frac{\phi(\mathbf{q}_i)^\top \sum_j \phi(\mathbf{k}_j) \mathbf{v}_j^\top}{\phi(\mathbf{q}_i)^\top \sum_j \phi(\mathbf{k}_j)}.$$
+
+The trick is in the second equality: the sums over $j$ no longer depend on $i$. They form a
+fixed $(d' \times d_h)$ matrix and a $d'$-vector that can be computed *once* and reused for
+every query.
+
+<p class="section-eyebrow">§ 2 · Linear compute</p>
+## The reordered multiplication
+
+Define
+
+$$S = \sum_{j=1}^T \phi(\mathbf{k}_j) \mathbf{v}_j^\top \in \mathbb{R}^{d' \times d_h},\qquad z = \sum_{j=1}^T \phi(\mathbf{k}_j) \in \mathbb{R}^{d'}.$$
+
+Then for each query
+
+$$\mathrm{Attn}_i = \frac{\phi(\mathbf{q}_i)^\top S}{\phi(\mathbf{q}_i)^\top z}.$$
+
+Building $S$ and $z$ costs $O(T \cdot d' \cdot d_h)$ — linear in $T$. The per-query cost is
+$O(d' \cdot d_h)$ — constant in $T$.
+
+```python
+def linear_attention(Q, K, V, phi):
+    # Q, K: [B, T, d_h]   V: [B, T, d_v]
+    phi_Q = phi(Q)                            # [B, T, d']
+    phi_K = phi(K)                            # [B, T, d']
+    S = einsum("btd,btv->bdv", phi_K, V)      # [B, d', d_v]
+    z = phi_K.sum(dim=1)                      # [B, d']
+    num = einsum("btd,bdv->btv", phi_Q, S)
+    den = einsum("btd,bd->bt", phi_Q, z).unsqueeze(-1)
+    return num / (den + 1e-6)
+```
+
+<p class="section-eyebrow">§ 3 · As a recurrence</p>
+## The "Transformers are RNNs" claim
+
+In causal attention, the prefix sums can be maintained incrementally. At time step $t$:
+
+$$S_t = S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top,\qquad z_t = z_{t-1} + \phi(\mathbf{k}_t).$$
+
+This is the paper's title result: causal linear attention is mathematically a recurrent neural
+network with a $(d' \times d_h)$-dimensional hidden state. Autoregressive generation runs at
+$O(1)$ per token in $T$ — like an RNN, unlike standard transformers — and the KV cache becomes
+the fixed-size $S_t, z_t$ pair, not a growing list of past K, V.
+
+For long-context inference this is a vast asymptotic improvement. The catch is in the next
+section.
+
+<p class="section-eyebrow">§ 4 · The approximation cost</p>
+## Where linear attention loses
+
+Two things go wrong empirically:
+
+1. **No softmax means no sharpening.** Softmax can produce nearly-one-hot attention
+   distributions (one or two keys dominate). Linear approximations are smoother by construction,
+   so the model cannot perfectly attend to a specific past token.
+2. **Fixed-rank state cannot store arbitrary key-value pairs.** A $(d' \times d_h)$ state holds
+   roughly $d' \cdot d_h$ scalar values total. Once the model has accumulated more
+   information-per-token than this state can hold, the new key-value pairs overwrite old ones.
+   Recall over long contexts degrades.
+
+Both costs are real and have prevented Linear Attention as originally formulated from displacing
+softmax attention in production decoders. The lineage descended from it — Performer, Linformer,
+RetNet, Mamba (state-space models), Lightning Attention (the MiniMax-01 variant) — each
+addresses one or both of these costs with a different trick. None has yet matched softmax on
+absolute quality at frontier scale.
+
+For inference latency at very long contexts, the case for some form of linear attention remains
+genuinely open. The 2024–25 lineage (Mamba 2, Lightning Attention, Linear Transformer with
+delta rule) is actively contested.
+
+<Summary>
+**Linear Attention in one breath.** Replace softmax with a decomposable kernel; reorder QKV
+matrix multiplications; autoregressive inference becomes an RNN with a fixed-size state. Linear
+in sequence length and constant per token at inference. Approximate; loses to softmax on absolute
+quality at frontier scale; the lineage (Performer, Mamba, Lightning) is still actively contested.
+</Summary>

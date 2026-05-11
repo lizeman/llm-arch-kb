@@ -1,0 +1,107 @@
+---
+title: "Sinusoidal Position Encoding"
+abbreviation: "Sinusoidal"
+category: "positional"
+year: 2017
+month: 6
+introduced_by: "Ashish Vaswani et al. (Google Brain)"
+paper_title: "Attention Is All You Need"
+arxiv_id: "1706.03762"
+paper_url: "https://arxiv.org/abs/1706.03762"
+status: "foundational"
+problem_solved: "Tell self-attention where each token lives in the sequence — without a learnable position table — using a closed-form sinusoidal embedding added to the token embedding."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Add a fixed sinusoid of geometrically-spaced frequencies to every token embedding. Closed-form, no learned parameters, extrapolates moderately. The 2017 transformer's original answer to 'how does the model know where each token is'."
+tags: ["positional", "foundational"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Self-attention is permutation-equivariant
+
+Without any positional information, attention treats its input as a set: permuting the tokens
+gives a permuted output, period. Language is not a set. The 2017 transformer needed *some*
+mechanism to inject "where in the sequence am I" into the input.
+
+The available options at the time:
+
+1. A *learned* position embedding table — one vector per position, trained jointly with the
+   model. Simple but caps the maximum supported position at the table size.
+2. A *fixed* deterministic position encoding — closed form, no parameters. No cap; potentially
+   extrapolates.
+
+Vaswani et al. chose option 2, with a specific sinusoidal form.
+
+<p class="section-eyebrow">§ 2 · The encoding</p>
+## A geometric frequency ladder
+
+For position $t \in \{0, 1, \ldots\}$ and embedding dimension index $i \in \{0, 1, \ldots, d/2 - 1\}$,
+the sinusoidal embedding is
+
+$$\mathrm{PE}(t, 2i) = \sin\!\left(\frac{t}{10000^{2i/d}}\right),\quad \mathrm{PE}(t, 2i+1) = \cos\!\left(\frac{t}{10000^{2i/d}}\right).$$
+
+The two adjacent dimensions $(2i, 2i+1)$ together encode position via the angle
+$\theta_i(t) = t / 10000^{2i/d}$. Low-$i$ dimensions oscillate quickly across positions (the
+denominator is small); high-$i$ dimensions oscillate slowly.
+
+```python
+def sinusoidal_pe(seq_len, d_model, device):
+    pos = torch.arange(seq_len, device=device).unsqueeze(1)        # [T, 1]
+    i = torch.arange(0, d_model, 2, device=device).unsqueeze(0)    # [1, d/2]
+    angle = pos / 10000.0**(i / d_model)                            # [T, d/2]
+    pe = torch.zeros(seq_len, d_model, device=device)
+    pe[:, 0::2] = angle.sin()
+    pe[:, 1::2] = angle.cos()
+    return pe
+```
+
+The result is added to the token embedding before the first attention layer:
+$\mathbf{x}_t = \mathbf{e}_{\text{tok}(t)} + \mathrm{PE}(t)$.
+
+<p class="section-eyebrow">§ 3 · The relative-position property</p>
+## Why this particular form
+
+The reason Vaswani et al. chose sin/cos rather than any other closed-form function: for any
+fixed offset $\Delta$, the sinusoidal encoding at position $t + \Delta$ is a *linear function*
+of the encoding at position $t$. That is, there exists a fixed matrix $M_\Delta$ such that
+$\mathrm{PE}(t + \Delta) = M_\Delta \cdot \mathrm{PE}(t)$.
+
+The hope was that this linearity would let attention learn relative-position arithmetic easily —
+that a single matrix in $W_Q$ could represent "shift left by $\Delta$" for any $\Delta$.
+
+In practice this property is not very useful. The transformer adds the encoding to the
+embedding rather than concatenating, so the linearity is on a subspace whose recovery requires
+nontrivial projection work. RoPE later used the same frequency ladder but applied it as a
+*rotation* of Q and K directly, which gives the relative-position property for free in the
+inner product — see the [RoPE entry](/llm-arch-kb/positional/rope/).
+
+<p class="section-eyebrow">§ 4 · Why it lost</p>
+## Extrapolation cliff, not relative-position math
+
+Sinusoidal encoding works fine within the training context but extrapolates poorly. Trained at
+length 1024, a model evaluated at length 4096 sees encodings with phases its attention layers
+never saw — perplexity spikes badly within 2× of trained length.
+
+The successor encodings each fix this from a different angle:
+
+- [RoPE](/llm-arch-kb/positional/rope/): same frequency ladder, applied as rotation. Same
+  extrapolation cliff but easier to stretch with YaRN.
+- [ALiBi](/llm-arch-kb/positional/alibi/): linear bias on attention scores. Free length
+  extrapolation; gives up expressive flexibility.
+- [NoPE](/llm-arch-kb/positional/nope/): no positional encoding at all. The causal mask leaks
+  enough information; extrapolates best of all on certain tasks.
+
+For modern open decoders, sinusoidal is purely historical. Its 10000-base frequency ladder
+remains the most-copied design choice in this entire knowledge base — RoPE inherits it nearly
+unchanged.
+
+<Summary>
+**Sinusoidal in one breath.** Add fixed geometrically-spaced sin/cos to token embeddings as
+position. Closed-form, no parameters, the original transformer's answer. Replaced everywhere in
+modern decoders by RoPE — which kept Sinusoidal's frequency ladder but applied it as Q,K
+rotation, giving the relative-position property the original form was reaching for.
+</Summary>

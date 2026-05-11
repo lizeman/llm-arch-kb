@@ -1,0 +1,96 @@
+---
+title: "Query-Key Normalization"
+abbreviation: "QK-Norm"
+category: "normalization"
+year: 2020
+month: 10
+introduced_by: "Alex Henry, Prudhvi Raj Dachapally, Shubham Pawar, Yuxuan Chen"
+paper_title: "Query-Key Normalization for Transformers"
+arxiv_id: "2010.04245"
+paper_url: "https://arxiv.org/abs/2010.04245"
+status: "production-adopted"
+problem_solved: "Stop attention logits from blowing up when a single outlier appears in Q or K — common at long contexts and in mixed-precision training."
+predecessors: ["rmsnorm"]
+successors: []
+adopted_by:
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "RMSNorm applied to Q and K before the attention dot product."
+summary: "Normalize Q and K before the attention dot product so the logit magnitude stays bounded — a near-free fix for the outlier blow-ups that wreck attention at long context."
+tags: ["normalization", "attention-stability"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Why attention logits blow up
+
+Attention computes softmax over scaled dot products:
+
+$$\mathrm{Attn}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \mathrm{softmax}\!\left(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d_h}}\right)\mathbf{V}.$$
+
+The $\sqrt{d_h}$ scaling is a *statistical* assumption: if Q and K entries are zero-mean unit-variance,
+the dot product has variance $d_h$, so dividing by $\sqrt{d_h}$ keeps it $O(1)$. But the assumption
+breaks the moment a single component of $\mathbf{q}$ or $\mathbf{k}$ is large. Then $\mathbf{q}^\top\mathbf{k}$
+becomes dominated by that one term, the softmax sharpens to a single key, and gradients vanish on
+every other key.
+
+This shows up at long context, in mixed-precision (fp16/bf16) training, and during the first few
+hundred steps before LayerNorm has stabilized the residual stream.
+
+<p class="section-eyebrow">§ 2 · The fix</p>
+## Normalize Q and K first
+
+Apply a per-head RMSNorm (or LayerNorm) to Q and K *before* taking the dot product:
+
+$$\tilde{\mathbf{q}} = \mathrm{RMSNorm}(\mathbf{q}),\quad \tilde{\mathbf{k}} = \mathrm{RMSNorm}(\mathbf{k}),$$
+$$\mathrm{logits} = s\cdot\tilde{\mathbf{Q}}\tilde{\mathbf{K}}^\top.$$
+
+Each vector now has unit RMS, so the dot product is bounded by the head dim regardless of input
+outliers. A small learnable scale $s$ (often a single scalar per head) replaces the $1/\sqrt{d_h}$
+factor since the statistics are now fixed.
+
+```python
+def qk_norm_attn(q, k, v, q_norm, k_norm, scale, mask=None):
+    # q, k, v: [B, H, T, d_h]
+    q = q_norm(q)
+    k = k_norm(k)
+    logits = (q @ k.transpose(-2, -1)) * scale
+    if mask is not None:
+        logits = logits.masked_fill(mask, float("-inf"))
+    return logits.softmax(-1) @ v
+```
+
+The per-head norm parameters are tiny (a single gain vector of size $d_h$ per head) and add
+negligible compute.
+
+<p class="section-eyebrow">§ 3 · Why it matters at scale</p>
+## Empirical evidence
+
+Dehghani et al. (2023, "Scaling Vision Transformers to 22B Parameters", arXiv 2302.05442) report
+that without QK-Norm, attention logits diverged catastrophically during ViT-22B training,
+preventing the model from training at all in bf16. Adding QK-Norm let the same recipe complete
+training. The paper presents this as a hard requirement past a certain scale.
+
+Gemma 3 (2025) adopted QK-Norm as standard, citing similar stability concerns on text-only
+training at 27B and below. The technique has also been picked up by several closed-frontier
+recipes (per public blog disclosures), though those models do not enter this knowledge base per
+the [closed-model policy](/llm-arch-kb/about/).
+
+<p class="section-eyebrow">§ 4 · The cost</p>
+## Almost nothing
+
+QK-Norm adds two RMSNorm calls per attention layer — one on Q, one on K. Both reduce over the
+head-dim axis, which is small. On a typical 70B model with 64 heads at 128 head-dim, the extra
+compute is well under 1% of attention's total flop count.
+
+The only conceptual cost is that the softmax sharpness is now controlled entirely by the
+learnable scale $s$ rather than by the magnitude of Q and K. In practice this is easier to tune,
+not harder.
+
+<Summary>
+**QK-Norm in one breath.** A small RMSNorm on Q and K before the dot product caps attention logit
+magnitude regardless of activation outliers. Mandatory for stable bf16 training past a few
+billion parameters; nearly free in compute; adopted in Gemma 3 and frontier-scale ViTs.
+</Summary>

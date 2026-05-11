@@ -1,0 +1,118 @@
+---
+title: "DeepSeekMoE"
+abbreviation: "DeepSeekMoE"
+category: "ffn-moe"
+year: 2024
+month: 1
+introduced_by: "Damai Dai et al. (DeepSeek-AI)"
+paper_title: "DeepSeekMoE: Towards Ultimate Expert Specialization in Mixture-of-Experts Language Models"
+arxiv_id: "2401.06066"
+paper_url: "https://arxiv.org/abs/2401.06066"
+status: "production-adopted"
+problem_solved: "Get sharper expert specialization than vanilla MoE by combining fine-grained expert segmentation with isolated shared experts that absorb the common-knowledge load."
+predecessors: ["swiglu"]
+successors: []
+adopted_by:
+  - model: "deepseek-v3"
+    source_url: "https://arxiv.org/abs/2412.19437"
+    notes: "256 routed experts + 1 shared expert per MoE layer; top-8 routing; aux-loss-free balancing on top."
+figure_component: "MoeRouting"
+figure_caption: "Drag K and E to see how the activated-parameter footprint changes. Toggle the shared expert to see the routes that DeepSeekMoE always keeps on regardless of input."
+summary: "Split the FFN into many small experts, route each token to top-K, and reserve a few always-on shared experts for common-knowledge work. Activated parameter count stays small; specialization sharpens."
+tags: ["moe", "deepseek"]
+last_verified: "2026-05-11"
+---
+
+import MoeRouting from "~/components/figures/MoeRouting";
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The MoE setup
+
+A Mixture-of-Experts layer replaces a dense FFN with $E$ parallel "expert" FFNs and a small
+gating network that picks which experts handle each token:
+
+$$\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathrm{topK}(g(\mathbf{x}))} g_i(\mathbf{x})\,f_i(\mathbf{x}),$$
+
+where $g(\mathbf{x}) \in \mathbb{R}^E$ is the gate's softmax over experts and only the top-K
+weights and expert outputs are computed. Total parameter count scales with $E$; *activated*
+parameter count per token scales only with $K$. Sparse on both forward and backward.
+
+This is what makes 1T-parameter models inferable on real hardware: only ~30B parameters fire
+per token, not the whole network.
+
+<p class="section-eyebrow">§ 2 · Two failure modes of vanilla MoE</p>
+## Coarse experts, redundant common work
+
+Pre-DeepSeekMoE designs (GShard, Switch Transformer, Mixtral) typically used a moderate number
+of large experts (8–16, each roughly the size of a full dense FFN). Two issues followed:
+
+1. **Coarse expert granularity.** With only 8 experts, each one has to cover a huge slice of
+   input space — a single expert ends up handling both "Python syntax" and "Russian grammar".
+   Specialization is weak.
+2. **Common knowledge gets stored everywhere.** Tokens that need basic linguistic competence
+   (almost every token) route through different experts each time, forcing every expert to
+   redundantly learn the same common-knowledge weights.
+
+<p class="section-eyebrow">§ 3 · The two changes</p>
+## Fine-grained segmentation + shared experts
+
+DeepSeekMoE makes two coupled changes:
+
+**Fine-grained segmentation.** Split each "expert" into $m$ smaller pieces, then increase top-K
+by the same factor. Where vanilla had top-2 of 8 large experts, DeepSeekMoE has top-2m of 8m
+small experts. Activated parameter count is identical, but specialization is much sharper —
+each tiny expert can afford to learn one narrow concept.
+
+**Shared expert isolation.** Reserve a small set $K_s$ of "shared" experts that are *always*
+active for every token (they bypass the gate). They absorb the common-knowledge work, freeing
+the routed experts to specialize.
+
+The new layer is
+
+$$\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathrm{topK}(g(\mathbf{x}))} g_i\,f_i(\mathbf{x}) + \sum_{j \in \mathrm{shared}} f_j(\mathbf{x}).$$
+
+<MoeRouting client:visible />
+
+```python
+def deepseek_moe(x, experts, shared_experts, gate, K):
+    # x: [B, T, d_model]   experts: list of E fine-grained FFNs
+    logits = gate(x)                        # [B, T, E]
+    topk_w, topk_idx = logits.topk(K, dim=-1)
+    topk_w = topk_w.softmax(-1)             # normalize over the chosen K only
+    routed = dispatch_and_combine(x, experts, topk_idx, topk_w)
+    shared = sum(f(x) for f in shared_experts)
+    return routed + shared
+```
+
+<p class="section-eyebrow">§ 4 · Load balancing</p>
+## Keep experts from collapsing
+
+A second concern in MoE training: nothing in the loss directly prevents the gate from sending
+all tokens to a single expert. Switch Transformer and Mixtral use an auxiliary load-balancing
+loss that penalizes uneven expert utilization. The auxiliary term has a small but measurable
+cost on downstream quality — it pulls the gate away from what it would choose for accuracy.
+
+DeepSeek V3 introduced an **auxiliary-loss-free** routing scheme: instead of a balance loss,
+maintain a per-expert bias term that is incremented when an expert is over-used and decremented
+when under-used. The bias enters at top-K selection time but does *not* enter the final
+attention/FFN output computation, so it costs nothing in expressivity. See the DeepSeek V3
+paper §3.4 for the exact update rule. This is the variant in production DeepSeek V3.
+
+<p class="section-eyebrow">§ 5 · Results</p>
+## Empirical evidence
+
+DeepSeekMoE (Table 1, the original 2024 paper) reports a 16B/2.8B-active MoE matching the
+quality of a 7B dense model with ~40% of the training compute. The follow-up V2 (236B/21B
+active) and V3 (671B/37B active) papers reuse the same routing scheme essentially unchanged.
+
+The technique is now the dominant MoE recipe in open releases: DeepSeek V2/V3 use it, Kimi K2
+uses a closely related variant. The contrast with Mixtral's coarser routing remains a clean
+ablation in the literature.
+
+<Summary>
+**DeepSeekMoE in one breath.** Many small experts plus a few always-on shared experts. The
+gate routes top-K out of many; the shared lane handles common-knowledge work so routed experts
+can specialize sharply. Activated parameter count stays under 6% of total; quality matches
+dense models at under half the training compute.
+</Summary>

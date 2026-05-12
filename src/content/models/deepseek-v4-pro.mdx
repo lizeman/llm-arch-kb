@@ -1,0 +1,173 @@
+---
+name: "DeepSeek V4-Pro"
+organization: "DeepSeek-AI"
+release_date: "2026-05-06"
+parameters_total: "1.6T"
+parameters_active: "49B"
+context_length: 1048576
+open_weights: true
+paper_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf"
+model_card_url: "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro"
+disclosure_level: "open"
+parent_model: "deepseek-v3-2"
+architecture:
+  positional: "Partial RoPE (last 64 dims of queries / KV entries / core-attention outputs) + YaRN scaling (factor 16, 64K → 1M)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "SwiGLU"
+  attention: "Hybrid: Compressed Sparse Attention (CSA) + Heavily Compressed Attention (HCA), interleaved, with a 128-token sliding-window branch and attention sink"
+  moe: "DeepSeekMoE — 1 shared + 384 routed experts (intermediate dim 3072), top-6 per token, aux-loss-free (noaux_tc) with √Softplus scoring; FP4 quantization-aware training for routed experts; first 3 MoE layers use Hash routing"
+  other:
+    - "61 transformer layers, hidden 7168, 128 query heads, shared-KV MQA with head dim 512, query compression d_c=1536"
+    - "Layer pattern: first 2 layers pure HCA, remaining 59 layers interleave CSA and HCA"
+    - "CSA: compress KV every m=4 tokens, then sparse top-k=1024 selection via a 64-head Lightning Indexer (indexer head dim 128)"
+    - "HCA: compress KV every m'=128 tokens, no sparse selection (dense over compressed sequence)"
+    - "Grouped output projection: g=16 groups, intermediate dim d_g=1024, to keep o-projection cheap when c·n_h is large"
+    - "Manifold-Constrained Hyper-Connections (mHC) replace standard residuals: expansion n_hc=4, residual mixing matrix B_l projected onto the doubly-stochastic Birkhoff manifold via 20 Sinkhorn-Knopp iterations"
+    - "Muon optimizer (with hybrid Newton-Schulz orthogonalization) for most weights; AdamW retained for embeddings, prediction head, mHC static biases/gates, and RMSNorms"
+    - "Trained on 33T tokens; sequence length curriculum: 4K → 16K → 64K → 1M; dense attention warmup for first ~1T tokens before introducing sparsity at 64K"
+    - "MTP head (depth 1) inherited unchanged from V3; auxiliary-loss-free routing inherited from V3; device-limited routing constraint removed"
+    - "KV cache: BF16 for RoPE dims, FP8 for the rest; routed experts stored in FP4 (E4M3) post-training; everything else FP8 with UE8M0 scale"
+    - "Three reasoning effort modes: Non-think, Think High, Think Max (with a dedicated system-prompt prefix)"
+    - "Companion model: DeepSeek-V4-Flash (43 layers, hidden 4096, 256 routed experts, 64 query heads, 284B total / 13B active, 32T training tokens)"
+source_urls:
+  - "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro"
+  - "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf"
+  - "https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/raw/main/config.json"
+notes: "Preview release of the V4 series (May 2026). The architectural line from V3 → V3.2-Exp → V4 is: MLA, then MLA + DSA, now a full attention rewrite — CSA (DSA on a 4× compressed sequence) and HCA (128× compressed dense attention) interleaved, with QK-Norm enabling Muon training without QK-Clip. The model also debuts Manifold-Constrained Hyper-Connections (mHC) replacing standard residuals and scales DeepSeekMoE to 384 routed experts with FP4 expert weights."
+---
+
+DeepSeek V4-Pro (May 2026) is the headline model of the V4 preview release — a 1.6T-parameter
+MoE with 49B activated per token and a one-million-token context window. It continues the
+architectural line from [V3.2-Exp](/llm-arch-kb/models/deepseek-v3-2/) but reworks the
+attention block end to end: V3's [MLA](/llm-arch-kb/attention/mla/) is replaced by a hybrid of
+two new mechanisms — **Compressed Sparse Attention (CSA)** and **Heavily Compressed
+Attention (HCA)** — interleaved across the stack. The other two banner changes are
+**Manifold-Constrained Hyper-Connections (mHC)** replacing standard residuals, and the
+**Muon optimizer** at frontier scale.
+
+## What carries over from V3
+
+- 61 transformer layers, Pre-Norm RMSNorm, [SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) FFN
+- [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) with
+  [aux-loss-free routing](/llm-arch-kb/ffn-moe/aux-loss-free/)
+- Multi-Token Prediction head (depth 1)
+- [YaRN](/llm-arch-kb/positional/yarn/) for context extension
+- Vocabulary 128K, tokenizer largely unchanged
+
+## What's new in V4
+
+### 1. Hybrid attention: CSA + HCA replace MLA
+
+V3.2-Exp introduced [DeepSeek Sparse Attention (DSA)](/llm-arch-kb/attention/dsa/) — a
+learned Lightning Indexer that selects top-K keys per query, sitting on top of MLA. V4
+generalizes this into a **two-mechanism hybrid attention** that replaces MLA entirely.
+Both mechanisms share the same backbone — low-rank query compression
+(d_c=1536) feeding 128 query heads with head dim 512, shared-KV multi-query attention,
+and a grouped output projection (g=16, d_g=1024) — and differ only in how the KV
+sequence is reduced:
+
+- **CSA** compresses every m=4 tokens into one KV entry, then applies DSA on top: 64
+  Lightning-Indexer heads (head dim 128) select the top **k=1024** compressed KV entries
+  per query.
+- **HCA** compresses every m'=**128** tokens into one KV entry and runs dense attention
+  over the compressed sequence — no sparse selection, just aggressive compression.
+
+Layer pattern: the first 2 layers are pure HCA, and the remaining 59 layers interleave
+CSA and HCA. The config file's `compress_ratios` list (`[128, 128, 4, 128, 4, 128, …]`)
+is the layer-by-layer schedule.
+
+Two supplementary mechanisms are bolted onto every CSA/HCA layer:
+
+- An **additional sliding-window branch** of n_win=128 uncompressed KV entries, so
+  the most recent context is always attended to at full resolution. (Compressed-only
+  attention can't reach inside the current compression block.)
+- An **attention sink** with learnable per-head sink logits added to the softmax
+  denominator, letting heads choose to attend to nothing.
+
+[RoPE](/llm-arch-kb/positional/rope/) is applied to only the **last 64 dimensions** of
+each query / KV entry / core-attention output (the rest stays positional-free) — the same
+[decoupled-RoPE](/llm-arch-kb/positional/decoupled-rope/) idea from MLA, carried into the
+new attention block. Inverse RoPE on the output recovers a relative-position interpretation
+through the weighted-sum-of-KVs.
+
+[QK-Norm](/llm-arch-kb/normalization/qk-norm/) appears here as **RMSNorm on each query
+head and on the single compressed KV head**, just before the core attention dot product.
+DeepSeek note that this is what lets them drop the QK-Clip hack that Muon-trained models
+usually need to keep attention logits bounded.
+
+DeepSeek report that this hybrid uses ~27% of V3.2's single-token inference FLOPs and ~10%
+of V3.2's KV cache at 1M-token contexts.
+
+### 2. Manifold-Constrained Hyper-Connections (mHC)
+
+V4 replaces the standard `x + f(x)` residual with **Manifold-Constrained Hyper-Connections**
+— a variant of the [Hyper-Connections](/llm-arch-kb/residual/hyper-connections/) scheme.
+The residual stream is widened to R^(n_hc × d) (with n_hc=4), and the per-layer update is
+parameterized by three small matrices — input mapping A_l, residual mixing B_l, and output
+mapping C_l — which are dynamically generated from the input.
+
+The constraint that gives mHC its name: B_l is projected onto the **Birkhoff polytope** of
+doubly-stochastic matrices via 20 Sinkhorn-Knopp iterations. This bounds ‖B_l‖₂ ≤ 1 — the
+residual transformation is non-expansive — which the paper credits for stable signal
+propagation across 61 layers at 1.6T parameters. A and C are constrained to be non-negative
+via a Sigmoid.
+
+mHC is the residual-connection analogue of QK-Norm for attention: a parameter-light
+stability move, justified by behavior at scale rather than benchmark deltas.
+
+### 3. Muon optimizer
+
+V4 is the first DeepSeek production model trained with **Muon** (orthogonalized momentum
+on weight matrices) instead of AdamW. They use a hybrid Newton-Schulz scheme — 8
+fast-convergence steps (a=3.4445, b=−4.7750, c=2.0315) followed by 2 stabilization steps
+(a=2, b=−1.5, c=0.5). AdamW is kept for the embedding module, prediction head, mHC static
+biases and gating factors, and all RMSNorm weights.
+
+The hard part — keeping attention logits from blowing up under Muon — is handled by the
+RMSNorm on Q and the compressed K above, so no QK-Clip is needed.
+
+### 4. MoE scale-up + Hash routing
+
+DeepSeekMoE itself gets reshaped:
+
+- **384 routed experts** (V3 had 256) with **6 active per token** (V3 had 8) — finer-grained
+  routing
+- New gating: **√Softplus** affinity score (V3 used Sigmoid), with the same `noaux_tc`
+  aux-loss-free balancing plus a small sequence-wise balance loss
+- **Hash routing in the first 3 MoE layers**: V3 used dense FFN in the first few
+  Transformer blocks; V4 instead uses MoE with token-ID-keyed Hash routing for these
+  layers — early layers still get sparse compute, but routing is deterministic and
+  imbalance-free
+- The device-limited routing constraint from V3 is **removed**, with the parallelism
+  strategy redesigned to keep training efficient
+- **FP4 quantization-aware training for routed expert weights** — the experts hold the
+  bulk of the parameters, and FP4 makes the 1.6T checkpoint storage- and inference-tractable
+
+### 5. 1M context, gradually
+
+Sequence length curriculum during pretraining: **4K → 16K → 64K → 1M**. Dense attention is
+used for the first ~1T tokens; attention sparsity is introduced once the training sequence
+hits 64K, with a short Lightning-Indexer warmup before sparse selection takes over. YaRN
+(factor 16, β_fast=32, β_slow=1) is the final length extension to 1,048,576 tokens.
+
+## Family
+
+The V4 preview ships two models on the same architecture family:
+
+| Model | Layers | Hidden | Routed experts | Total | Active | Tokens | Context |
+|---|---|---|---|---|---|---|---|
+| DeepSeek-V4-Flash | 43 | 4096 | 256 | 284B | 13B | 32T | 1M |
+| DeepSeek-V4-Pro | 61 | 7168 | 384 | 1.6T | 49B | 33T | 1M |
+
+V4-Flash's first 2 layers are pure sliding-window attention rather than HCA, and it uses 64
+query heads (vs 128 for Pro) with a smaller CSA top-k of 512. Both expose three reasoning
+effort modes (Non-think / Think High / Think Max); Think Max is gated by a dedicated
+system-prompt prefix and is the headline benchmark configuration ("DeepSeek-V4-Pro-Max").
+
+For the predecessor line, see [V3](/llm-arch-kb/models/deepseek-v3/),
+[V3.1](/llm-arch-kb/models/deepseek-v3-1/), and
+[V3.2-Exp](/llm-arch-kb/models/deepseek-v3-2/). The CSA/HCA/mHC details are documented in
+DeepSeek's V4 technical report (PDF on the Hugging Face model page); no arXiv version had
+appeared as of this preview release.

@@ -1,0 +1,45 @@
+---
+name: "Gemma 2 27B"
+organization: "Google DeepMind"
+release_date: "2024-06-27"
+parameters_total: "27B"
+context_length: 8192
+open_weights: true
+paper_url: "https://arxiv.org/abs/2408.00118"
+model_card_url: "https://huggingface.co/google/gemma-2-27b"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm + Post-Norm (sandwich-style)"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "GeGLU"
+  attention: "GQA (16 KV heads, 32 query heads) + interleaved local/global SWA (window 4096)"
+  moe: null
+  other:
+    - "Soft attention logit cap (tanh clamping at ±50)"
+    - "Knowledge distillation from a larger Gemma teacher model"
+source_urls:
+  - "https://arxiv.org/abs/2408.00118"
+  - "https://huggingface.co/google/gemma-2-27b"
+notes: "The Gemma family's transition model: sandwich-norm placement adopted; interleaved SWA + global pattern established. QK-Norm not yet added (Gemma 3 introduces it). Distillation-trained from a larger Gemma teacher."
+---
+
+Gemma 2 27B (June 2024) is the Gemma family's transition model — the release where Google's
+"norm-everywhere" sandwich placement first appeared, and where the interleaved SWA + global
+attention pattern was established. The architectural delta from Gemma 1:
+
+- **Sandwich norm placement**: RMSNorm before *and* after the attention/FFN sub-layers, inside
+  the residual branch. The "norm-everywhere" pattern that [Gemma 3](/llm-arch-kb/models/gemma-3-27b/)
+  inherits unchanged. See the [norm-placement entry](/llm-arch-kb/normalization/norm-placement/).
+- **Interleaved SWA + global**: most layers use sliding-window attention at window 4096; every
+  other layer uses global attention. The 1:1 alternation was tightened to 5:1 in Gemma 3.
+- **Soft attention logit cap**: a tanh-based clamp at ±50 prevents attention logit blow-up
+  without requiring QK-Norm. Gemma 3 adds QK-Norm on top of this cap.
+
+The 27B model uses 32 query heads sharing 16 KV heads (G = 2, modest GQA). The context length
+is 8K base, with no positional extension beyond that in the released checkpoint.
+
+For the Gemma family's current frontier, see [Gemma 3 27B](/llm-arch-kb/models/gemma-3-27b/).
+The two entries together let readers compare what changed between the family's 2024 and 2025
+generations.

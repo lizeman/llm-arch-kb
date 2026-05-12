@@ -13,6 +13,9 @@ problem_solved: "Same gated bilinear FFN as SwiGLU, with GELU as the gate activa
 predecessors: ["swiglu"]
 successors: []
 adopted_by:
+  - model: "gemma-2-27b"
+    source_url: "https://arxiv.org/abs/2408.00118"
+    notes: "GeGLU FFN."
   - model: "gemma-3-27b"
     source_url: "https://arxiv.org/abs/2503.19786"
     notes: "GeGLU FFN; the dominant variant choice in the Gemma family."

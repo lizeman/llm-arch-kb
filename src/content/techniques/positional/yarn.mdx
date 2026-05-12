@@ -19,11 +19,14 @@ adopted_by:
   - model: "deepseek-v3"
     source_url: "https://arxiv.org/abs/2412.19437"
     notes: "YaRN used for the 128K context extension from the base 4K window."
+figure_component: "YarnBands"
+figure_caption: "Drag context scale s to see the slow band get pushed down to θ/s while the fast band stays untouched."
 summary: "Treat RoPE's rotation bands as three regimes — preserve the fast ones, linearly interpolate the slow ones — and rescale the softmax temperature. The 2023 long-context extension recipe of choice."
 tags: ["positional", "long-context"]
 last_verified: "2026-05-11"
 ---
 
+import YarnBands from "~/components/figures/YarnBands";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -89,6 +92,8 @@ def yarn_theta(theta_i, s, rot_count_i, r_min=1, r_max=32):
     h = (rot_count_i - r_min) / (r_max - r_min)
     return theta_i * (1 - h) + (theta_i / s) * h
 ```
+
+<YarnBands client:visible />
 
 <p class="section-eyebrow">§ 4 · Temperature scaling</p>
 ## Adjust softmax sharpness

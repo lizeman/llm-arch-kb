@@ -19,11 +19,14 @@ adopted_by:
   - model: "gemma-3-27b"
     source_url: "https://arxiv.org/abs/2503.19786"
     notes: "Norm-everywhere — sandwich placement applied to both attention and FFN sublayers."
+figure_component: "SandwichVsPre"
+figure_caption: "Residual stream RMS by depth: Pre-Norm grows like √L, Sandwich keeps each block's contribution unit-RMS, DeepNet-scaled Post-Norm renormalizes."
 summary: "Two RMSNorms per sublayer: one before, one after, both inside the residual branch. Bounds the per-block contribution to the residual stream while keeping the identity path unnormalized. Used by Gemma 2 and 3."
 tags: ["normalization", "stability", "gemma"]
 last_verified: "2026-05-11"
 ---
 
+import SandwichVsPre from "~/components/figures/SandwichVsPre";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -85,6 +88,8 @@ training stays stable with simpler init recipes and without spike-suppression ha
 this is causally due to sandwich placement or co-occurs with other Gemma-specific design
 choices (very wide FFN, deep stacks, careful tokenizer) is hard to isolate, but Gemma's
 training reports cite the placement specifically.
+
+<SandwichVsPre client:visible />
 
 <p class="section-eyebrow">§ 4 · Gemma's "norm everywhere"</p>
 ## The 2025 maximal form

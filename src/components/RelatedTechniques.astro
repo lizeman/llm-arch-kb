@@ -17,6 +17,10 @@ type Related = {
   title: string;
   abbreviation: string;
   category: string;
+  year: number;
+  status: string;
+  hook: string;
+  adopters: number;
   score: number;
 };
 
@@ -51,6 +55,12 @@ if (current) {
         title: t.data.title,
         abbreviation: t.data.abbreviation,
         category: t.data.category,
+        year: t.data.year,
+        status: t.data.status,
+        // problem_solved is the editorial hook; fall back to summary
+        // for entries that don't surface it.
+        hook: t.data.problem_solved ?? t.data.summary,
+        adopters: (t.data.adopted_by ?? []).length,
         score,
       });
     }
@@ -64,11 +74,23 @@ const top = related.slice(0, 5);
 {top.length > 0 && (
   <section class="related">
     <p class="section-eyebrow">See also</p>
-    <ul>
+    <ul class="entry-row-list">
       {top.map((r) => (
         <li>
-          <a href={`${BASE}/${r.category}/${r.slug}/`}>
-            {r.title}<span class="abbr">{r.abbreviation}</span>
+          <a href={`${BASE}/${r.category}/${r.slug}/`} class="entry-row">
+            <div class="entry-row__title">
+              <strong>{r.title}</strong>
+              <span class="entry-row__abbr">{r.abbreviation}</span>
+            </div>
+            <p class="entry-row__hook">{r.hook}</p>
+            <div class="entry-row__meta">
+              <span>{r.year}</span>
+              <span aria-hidden="true">·</span>
+              <span>{r.status}</span>
+              <span aria-hidden="true">·</span>
+              <span><span class="entry-row__adopters">{r.adopters}</span> {r.adopters === 1 ? "adopter" : "adopters"}</span>
+              <span class="entry-row__cta" aria-hidden="true">Read entry <span class="entry-row__chevron">→</span></span>
+            </div>
           </a>
         </li>
       ))}
@@ -80,26 +102,11 @@ const top = related.slice(0, 5);
   .related {
     margin: 40px 0 32px;
   }
-  ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
+  /* The list uses the shared .entry-row utility in global.css.
+     Local rules just tighten the top border so the list reads as
+     a single rhythmic block under the eyebrow. */
+  .related .entry-row-list {
+    margin-top: 8px;
     border-top: 1px solid var(--border);
-  }
-  li {
-    padding: 10px 0;
-    border-bottom: 1px solid var(--border);
-  }
-  a {
-    color: var(--text);
-    text-decoration: none;
-  }
-  a:hover { color: var(--accent); text-decoration: underline; }
-  .abbr {
-    font-family: var(--mono);
-    font-size: 0.78rem;
-    color: var(--text-faint);
-    margin-left: 10px;
-    letter-spacing: 0.04em;
   }
 </style>

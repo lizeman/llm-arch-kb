@@ -94,8 +94,8 @@ th { font-weight: 600; background: var(--bg-soft); }
 
 .section-eyebrow {
   font-family: var(--mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.08em;
+  font-size: var(--t-eyebrow);
+  letter-spacing: var(--ls-eyebrow);
   text-transform: uppercase;
   color: var(--accent);
   margin: var(--space-12) 0 var(--space-2) 0;
@@ -103,7 +103,121 @@ th { font-weight: 600; background: var(--bg-soft); }
 }
 .section-eyebrow + h2 { margin-top: 0; }
 
+/* Astro <ClientRouter /> view-transition styling.
+   Tasteful crossfade on the main article column (design spec §2.4).
+   Durations come from tokens, so prefers-reduced-motion zeros them. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--motion-base);
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(main-article) {
+  animation: kb-fade-out var(--motion-fast) var(--ease-out) both;
+}
+::view-transition-new(main-article) {
+  animation: kb-fade-in var(--motion-base) var(--ease-out) both;
+}
+@keyframes kb-fade-out {
+  to { opacity: 0; }
+}
+@keyframes kb-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 ::selection { background: var(--accent-soft); }
+
+/* Editorial display row — shared card surface used by:
+   - Homepage Featured list           (.cards.entry-row-list)
+   - Category page entry list         (.entry-list)
+   - Related techniques panel         (.related ul)
+   No card chrome. A single 1px bottom-border separator is the only
+   surface affordance (plan-final.md §3.4). */
+.entry-row-list {
+  list-style: none;
+  margin: 32px 0 0;
+  padding: 0;
+}
+.entry-row-list > li {
+  border-bottom: 1px solid var(--border);
+}
+.entry-row {
+  display: block;
+  padding: 22px 0;
+  color: var(--text);
+  text-decoration: none;
+}
+.entry-row__title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.entry-row__title strong {
+  font-family: var(--serif);
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--text);
+  transition: color var(--motion-base) var(--ease-out);
+}
+.entry-row__abbr {
+  font-family: var(--mono);
+  font-size: var(--t-chip-count);
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+.entry-row__hook {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: var(--t-body);
+  color: var(--text-soft);
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+.entry-row__meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  letter-spacing: 0.04em;
+  margin-top: 10px;
+}
+.entry-row__adopters { color: var(--accent); }
+.entry-row__cta {
+  margin-left: auto;
+  color: var(--text-faint);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  opacity: 0;
+  transform: translateX(-2px);
+  transition: opacity var(--motion-base) var(--ease-out),
+              transform var(--motion-base) var(--ease-out),
+              color var(--motion-base) var(--ease-out);
+}
+.entry-row__chevron {
+  display: inline-block;
+  transition: transform var(--motion-base) var(--ease-out);
+}
+.entry-row:hover .entry-row__title strong,
+.entry-row:focus-visible .entry-row__title strong { color: var(--accent); }
+.entry-row:hover .entry-row__cta,
+.entry-row:focus-visible .entry-row__cta {
+  opacity: 1;
+  transform: translateX(0);
+  color: var(--accent);
+}
+.entry-row:hover .entry-row__chevron,
+.entry-row:focus-visible .entry-row__chevron {
+  transform: translateX(4px);
+}
+.entry-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 /* KaTeX overflow guard */
 .katex-display {

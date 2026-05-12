@@ -10,43 +10,246 @@ function isActive(href: string): boolean {
   return path.startsWith(target);
 }
 
-const sections = [
-  ...Object.entries(CATEGORY_LABELS).map(([slug, label]) => ({ href: `/${slug}/`, label })),
+// Two columns inside the "Browse" mega-dropdown (design spec §2.1).
+const browseByCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => ({
+  href: `/${slug}/`,
+  label,
+}));
+const browseByLens = [
+  { href: "/facets/", label: "Facets" },
+  { href: "/paths/", label: "Learning paths" },
+  { href: "/glossary/", label: "Glossary" },
+  { href: "/references/", label: "References" },
+];
+
+// Top-row primary links — Browse is rendered separately as a disclosure.
+const primary = [
   { href: "/models/", label: "Models" },
   { href: "/compare/", label: "Compare" },
   { href: "/timeline/", label: "Timeline" },
-  { href: "/facets/", label: "Facets" },
-  { href: "/paths/", label: "Paths" },
-  { href: "/glossary/", label: "Glossary" },
-  { href: "/references/", label: "References" },
-  { href: "/search/", label: "Search" },
   { href: "/about/", label: "About" },
 ];
+
+const browseActive =
+  browseByCategory.some((i) => isActive(i.href)) ||
+  browseByLens.some((i) => isActive(i.href));
 ---
 
 <header class="site-nav">
   <div class="site-nav__inner">
     <a href={`${BASE}/`} class="site-nav__title">LLM Architecture KB</a>
-    <nav aria-label="Primary">
-      <ul>
-        {sections.map(({ href, label }) => (
-          <li>
+
+    <button
+      type="button"
+      class="site-nav__hamburger"
+      aria-controls="primary-nav"
+      aria-expanded="false"
+      aria-label="Toggle navigation"
+    >
+      <span aria-hidden="true">≡</span>
+    </button>
+
+    <nav id="primary-nav" class="site-nav__primary" aria-label="Primary">
+      <ul class="site-nav__list">
+        <li class="site-nav__item site-nav__item--browse">
+          <button
+            type="button"
+            class:list={["site-nav__link site-nav__browse-trigger", { "is-active": browseActive }]}
+            aria-haspopup="true"
+            aria-expanded="false"
+            aria-controls="browse-panel"
+          >
+            Browse <span class="site-nav__caret" aria-hidden="true">▾</span>
+          </button>
+          <div
+            id="browse-panel"
+            class="site-nav__panel"
+            role="region"
+            aria-label="Browse"
+            hidden
+          >
+            <div class="site-nav__panel-inner">
+              <div class="site-nav__panel-col">
+                <p class="section-eyebrow">By category</p>
+                <ul>
+                  {browseByCategory.map(({ href, label }) => (
+                    <li>
+                      <a
+                        href={`${BASE}${href}`}
+                        class:list={["site-nav__panel-link", { "is-active": isActive(href) }]}
+                      >{label}</a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div class="site-nav__panel-col">
+                <p class="section-eyebrow">By lens</p>
+                <ul>
+                  {browseByLens.map(({ href, label }) => (
+                    <li>
+                      <a
+                        href={`${BASE}${href}`}
+                        class:list={["site-nav__panel-link", { "is-active": isActive(href) }]}
+                      >{label}</a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        </li>
+
+        {primary.map(({ href, label }) => (
+          <li class="site-nav__item">
             <a
               href={`${BASE}${href}`}
               class:list={["site-nav__link", { "is-active": isActive(href) }]}
             >{label}</a>
           </li>
         ))}
+
+        <li class="site-nav__item site-nav__item--search">
+          <a
+            href={`${BASE}/search/`}
+            class:list={["site-nav__link", { "is-active": isActive("/search/") }]}
+          >Search</a>
+        </li>
       </ul>
     </nav>
   </div>
 </header>
 
+<script>
+  // Browse mega-dropdown behavior:
+  //  - hover (desktop) with a small intent delay before opening
+  //  - focus (keyboard) toggles via click on the trigger
+  //  - click (touch / accessibility) toggles
+  //  - close on outside click, Esc, or pointerleave (80ms grace)
+  // Mobile: hamburger toggles the whole primary list; Browse becomes accordion.
+  const HOVER_OPEN_DELAY = 90;
+  const HOVER_CLOSE_GRACE = 80;
+  const MOBILE_BREAKPOINT = 720;
+
+  const nav = document.querySelector<HTMLElement>(".site-nav");
+  if (nav) {
+    const hamburger = nav.querySelector<HTMLButtonElement>(".site-nav__hamburger");
+    const primary = nav.querySelector<HTMLElement>(".site-nav__primary");
+    const browseItem = nav.querySelector<HTMLElement>(".site-nav__item--browse");
+    const trigger = nav.querySelector<HTMLButtonElement>(".site-nav__browse-trigger");
+    const panel = nav.querySelector<HTMLElement>(".site-nav__panel");
+
+    const isMobile = () => window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`).matches;
+
+    let openTimer: number | undefined;
+    let closeTimer: number | undefined;
+
+    function openPanel() {
+      if (!panel || !trigger) return;
+      panel.hidden = false;
+      // double-rAF so the `hidden` removal lands before we toggle the open class
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        panel.classList.add("is-open");
+      }));
+      trigger.setAttribute("aria-expanded", "true");
+    }
+    function closePanel() {
+      if (!panel || !trigger) return;
+      panel.classList.remove("is-open");
+      trigger.setAttribute("aria-expanded", "false");
+      // honor prefers-reduced-motion by hiding immediately when there's no transition
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduce) {
+        panel.hidden = true;
+      } else {
+        window.setTimeout(() => {
+          if (!panel.classList.contains("is-open")) panel.hidden = true;
+        }, 200);
+      }
+    }
+    function togglePanel() {
+      if (!panel) return;
+      if (panel.classList.contains("is-open")) closePanel();
+      else openPanel();
+    }
+
+    // Hamburger (mobile)
+    if (hamburger && primary) {
+      hamburger.addEventListener("click", () => {
+        const open = primary.classList.toggle("is-open");
+        hamburger.setAttribute("aria-expanded", open ? "true" : "false");
+        if (!open) closePanel();
+      });
+    }
+
+    // Browse trigger — click works in all modes (touch + keyboard + mouse fallback)
+    if (trigger) {
+      trigger.addEventListener("click", (e) => {
+        e.preventDefault();
+        togglePanel();
+      });
+    }
+
+    // Hover with intent delay (desktop only)
+    if (browseItem) {
+      browseItem.addEventListener("pointerenter", (e) => {
+        if (e.pointerType !== "mouse") return;
+        if (isMobile()) return;
+        if (closeTimer) { window.clearTimeout(closeTimer); closeTimer = undefined; }
+        openTimer = window.setTimeout(openPanel, HOVER_OPEN_DELAY);
+      });
+      browseItem.addEventListener("pointerleave", (e) => {
+        if (e.pointerType !== "mouse") return;
+        if (isMobile()) return;
+        if (openTimer) { window.clearTimeout(openTimer); openTimer = undefined; }
+        closeTimer = window.setTimeout(closePanel, HOVER_CLOSE_GRACE);
+      });
+    }
+
+    // Close on Esc
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && panel?.classList.contains("is-open")) {
+        closePanel();
+        trigger?.focus();
+      }
+    });
+
+    // Close on outside click
+    document.addEventListener("click", (e) => {
+      if (!panel?.classList.contains("is-open")) return;
+      const target = e.target as Node;
+      if (browseItem && !browseItem.contains(target)) closePanel();
+    });
+
+    // Close panel on viewport resize across the breakpoint
+    let lastMobile = isMobile();
+    window.addEventListener("resize", () => {
+      const now = isMobile();
+      if (now !== lastMobile) {
+        lastMobile = now;
+        closePanel();
+        if (!now && primary) {
+          primary.classList.remove("is-open");
+          hamburger?.setAttribute("aria-expanded", "false");
+        }
+      }
+    });
+
+    // Reset state on Astro view-transition navigation so the panel
+    // never persists across pages.
+    document.addEventListener("astro:after-swap", () => {
+      closePanel();
+      if (primary) primary.classList.remove("is-open");
+      hamburger?.setAttribute("aria-expanded", "false");
+    });
+  }
+</script>
+
 <style>
   .site-nav {
     border-bottom: 1px solid var(--border);
-    padding: 18px 24px;
+    padding: 16px 24px;
     background: var(--bg);
+    position: relative;
   }
   .site-nav__inner {
     max-width: 1080px;
@@ -55,7 +258,6 @@ const sections = [
     align-items: center;
     justify-content: space-between;
     gap: 32px;
-    flex-wrap: wrap;
   }
   .site-nav__title {
     font-family: var(--serif);
@@ -64,29 +266,181 @@ const sections = [
     text-decoration: none;
     font-size: 1.0625rem;
     letter-spacing: -0.005em;
+    flex: 0 0 auto;
   }
-  nav ul {
+
+  /* Hamburger — visible only under the mobile breakpoint */
+  .site-nav__hamburger {
+    display: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 10px;
+    font-family: var(--mono);
+    font-size: 1.25rem;
+    line-height: 1;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .site-nav__primary {
+    flex: 1 1 auto;
     display: flex;
-    gap: 18px;
+    justify-content: flex-end;
+  }
+  .site-nav__list {
+    display: flex;
+    align-items: center;
+    gap: 24px;
     margin: 0;
     padding: 0;
     list-style: none;
-    flex-wrap: wrap;
   }
+  .site-nav__item { position: relative; }
+  .site-nav__item--search { margin-left: 8px; }
+
   .site-nav__link {
     color: var(--text-soft);
     text-decoration: none;
     font-size: var(--t-small);
     padding: 4px 2px;
     border-bottom: 2px solid transparent;
+    background: transparent;
+    font-family: var(--serif);
+    cursor: pointer;
+    transition: color var(--motion-fast) var(--ease-out),
+                border-color var(--motion-base) var(--ease-out);
   }
   .site-nav__link:hover { color: var(--text); }
   .site-nav__link.is-active {
     color: var(--accent);
     border-bottom-color: var(--accent);
   }
+  .site-nav__browse-trigger {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    border: none;
+  }
+  .site-nav__caret {
+    font-size: 0.7em;
+    transition: transform var(--motion-fast) var(--ease-out);
+  }
+  .site-nav__browse-trigger[aria-expanded="true"] .site-nav__caret {
+    transform: translateY(1px) rotate(180deg);
+  }
+
+  /* Dropdown panel */
+  .site-nav__panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    min-width: 480px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 24px 28px;
+    z-index: 100;
+    opacity: 0;
+    transform: translateY(-4px);
+    transition: opacity var(--motion-base) var(--ease-out),
+                transform var(--motion-base) var(--ease-out);
+    pointer-events: none;
+  }
+  .site-nav__panel.is-open {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+  .site-nav__panel-inner {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+  }
+  .site-nav__panel-col .section-eyebrow {
+    margin: 0 0 var(--space-3) 0;
+  }
+  .site-nav__panel-col ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .site-nav__panel-link {
+    display: inline-block;
+    color: var(--text);
+    text-decoration: none;
+    font-size: var(--t-small);
+    padding: 2px 0;
+    border-bottom: 1px solid transparent;
+    transition: color var(--motion-fast) var(--ease-out),
+                border-color var(--motion-base) var(--ease-out);
+  }
+  .site-nav__panel-link:hover { color: var(--accent); }
+  .site-nav__panel-link.is-active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  /* Mobile (<720px): hamburger + collapsed primary list + accordion panel */
   @media (max-width: 720px) {
-    .site-nav__inner { gap: 12px; }
-    nav ul { gap: 14px; }
+    .site-nav__inner {
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .site-nav__hamburger { display: inline-flex; align-items: center; }
+    .site-nav__primary {
+      display: none;
+      flex: 1 0 100%;
+      justify-content: flex-start;
+    }
+    .site-nav__primary.is-open { display: flex; }
+    .site-nav__list {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 4px;
+      width: 100%;
+      padding-top: 8px;
+    }
+    .site-nav__item--search { margin-left: 0; }
+    .site-nav__link {
+      display: block;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .site-nav__link.is-active { border-bottom-color: var(--accent); }
+    .site-nav__browse-trigger {
+      width: 100%;
+      text-align: left;
+      justify-content: space-between;
+    }
+    .site-nav__panel {
+      position: static;
+      min-width: 0;
+      width: 100%;
+      border: none;
+      padding: 8px 0 0 12px;
+      opacity: 1;
+      transform: none;
+      pointer-events: auto;
+    }
+    .site-nav__panel:not(.is-open) { display: none; }
+    .site-nav__panel-inner {
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+  }
+
+  /* Graceful no-JS fallback: the panel is hidden by `hidden` attribute,
+     but we expose it on :focus-within so keyboard users can still reach
+     the links without script. */
+  .site-nav__item--browse:focus-within .site-nav__panel[hidden] {
+    display: block;
+  }
+  .site-nav__item--browse:focus-within .site-nav__panel {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
   }
 </style>

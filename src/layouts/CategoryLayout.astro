@@ -16,6 +16,8 @@ interface Props {
       month?: number;
       summary: string;
       status: string;
+      problem_solved?: string;
+      adopted_by?: { model: string }[];
     };
   }[];
 }
@@ -64,22 +66,31 @@ for (const e of entries) {
           ))}
         </fieldset>
 
-        <ul class="entry-list">
-          {entries.map((e) => (
-            <li data-status={e.data.status}>
-              <a href={`${BASE}/${category}/${slugTail(e.slug)}/`}>
-                <div class="entry-list__title">
-                  <strong>{e.data.title}</strong>
-                  <span class="abbr">{e.data.abbreviation}</span>
-                  <span class:list={["status-pill", `status-${e.data.status}`]}>{e.data.status}</span>
-                </div>
-                <div class="entry-list__meta">
-                  <span>{isoMonth(e.data.year, e.data.month)}</span>
-                  <span class="entry-list__summary">{e.data.summary}</span>
-                </div>
-              </a>
-            </li>
-          ))}
+        <ul class="entry-list entry-row-list">
+          {entries.map((e) => {
+            const adopters = (e.data.adopted_by ?? []).length;
+            const hook = e.data.problem_solved ?? e.data.summary;
+            return (
+              <li data-status={e.data.status}>
+                <a href={`${BASE}/${category}/${slugTail(e.slug)}/`} class="entry-row">
+                  <div class="entry-row__title">
+                    <strong>{e.data.title}</strong>
+                    <span class="entry-row__abbr">{e.data.abbreviation}</span>
+                    <span class:list={["status-pill", `status-${e.data.status}`]}>{e.data.status}</span>
+                  </div>
+                  <p class="entry-row__hook">{hook}</p>
+                  <div class="entry-row__meta">
+                    <span>{isoMonth(e.data.year, e.data.month)}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{e.data.status}</span>
+                    <span aria-hidden="true">·</span>
+                    <span><span class="entry-row__adopters">{adopters}</span> {adopters === 1 ? "adopter" : "adopters"}</span>
+                    <span class="entry-row__cta" aria-hidden="true">Read entry <span class="entry-row__chevron">→</span></span>
+                  </div>
+                </a>
+              </li>
+            );
+          })}
         </ul>
       </div>
     )}
@@ -152,7 +163,7 @@ for (const e of entries) {
   }
   .chip-count {
     font-family: var(--mono);
-    font-size: 0.72rem;
+    font-size: var(--t-chip-count);
     color: var(--text-faint);
   }
   .chip.is-active .chip-count { color: var(--accent); }
@@ -167,52 +178,17 @@ for (const e of entries) {
     white-space: nowrap;
     border: 0;
   }
-  .entry-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-  }
-  .entry-list li {
-    border-bottom: 1px solid var(--border);
-  }
-  .entry-list a {
-    display: block;
-    padding: 24px 0;
-    color: var(--text);
-    text-decoration: none;
-  }
-  .entry-list a:hover .entry-list__title strong { color: var(--accent); }
-  .entry-list__title {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin-bottom: 6px;
-    flex-wrap: wrap;
-  }
-  .entry-list__title strong { font-size: 1.25rem; font-weight: 600; }
-  .abbr {
-    font-family: var(--mono);
-    font-size: 0.78rem;
-    color: var(--text-faint);
-    letter-spacing: 0.04em;
-  }
+  /* Entry list uses the shared .entry-row utility in global.css.
+     Local rules here just position the status pill and reset margins. */
+  .entry-list.entry-row-list { margin-top: 0; }
   .status-pill {
     font-family: var(--mono);
-    font-size: 0.7rem;
+    font-size: var(--t-pill);
     letter-spacing: 0.04em;
     color: var(--text-faint);
     border: 1px solid var(--border);
     border-radius: 999px;
-    padding: 1px 8px;
+    padding: 2px 9px;
     margin-left: auto;
   }
-  .entry-list__meta {
-    color: var(--text-soft);
-    font-size: var(--t-small);
-    display: flex;
-    gap: 16px;
-    align-items: baseline;
-    flex-wrap: wrap;
-  }
-  .entry-list__summary { line-height: 1.55; }
 </style>

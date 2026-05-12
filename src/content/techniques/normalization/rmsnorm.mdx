@@ -70,8 +70,10 @@ import Summary from "~/components/Summary.astro";
 
 For an input vector $\mathbf{x} \in \mathbb{R}^d$ at a single token position, LayerNorm computes:
 
-$$\mathrm{LN}(\mathbf{x}) = \frac{\mathbf{x} - \mu}{\sigma}\,\boldsymbol{\gamma} + \boldsymbol{\beta},
-\quad \mu = \tfrac{1}{d}\sum_i x_i,\quad \sigma = \sqrt{\tfrac{1}{d}\sum_i (x_i - \mu)^2 + \varepsilon}.$$
+$$
+\mathrm{LN}(\mathbf{x}) = \frac{\mathbf{x} - \mu}{\sigma}\,\boldsymbol{\gamma} + \boldsymbol{\beta},
+\quad \mu = \tfrac{1}{d}\sum_i x_i,\quad \sigma = \sqrt{\tfrac{1}{d}\sum_i (x_i - \mu)^2 + \varepsilon}.
+$$
 
 Two statistics are estimated per token: the mean $\mu$ (re-centering) and the standard deviation
 $\sigma$ (re-scaling). The learnable gain $\boldsymbol{\gamma}$ and bias $\boldsymbol{\beta}$ then
@@ -85,8 +87,10 @@ of LayerNorm's stabilizing effect comes from the re-scaling.
 
 RMSNorm drops $\mu$ and $\boldsymbol{\beta}$, normalizing instead by the root mean square:
 
-$$\mathrm{RMSNorm}(\mathbf{x}) = \frac{\mathbf{x}}{\mathrm{RMS}(\mathbf{x})}\,\boldsymbol{\gamma},
-\quad \mathrm{RMS}(\mathbf{x}) = \sqrt{\tfrac{1}{d}\sum_i x_i^{\,2} + \varepsilon}.$$
+$$
+\mathrm{RMSNorm}(\mathbf{x}) = \frac{\mathbf{x}}{\mathrm{RMS}(\mathbf{x})}\,\boldsymbol{\gamma},
+\quad \mathrm{RMS}(\mathbf{x}) = \sqrt{\tfrac{1}{d}\sum_i x_i^{\,2} + \varepsilon}.
+$$
 
 The activation is rescaled to unit RMS, then a per-feature gain $\boldsymbol{\gamma}$ is applied.
 No mean subtraction, no additive bias.

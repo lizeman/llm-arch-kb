@@ -34,8 +34,10 @@ Standard RoPE rotates each head's $\mathbf{q}$ and $\mathbf{k}$ vector by an ang
 on token position. The rotation is applied **after** the per-head linear projections and
 **before** the dot product:
 
-$$\text{attn}(t, s) = \bigl(R_t \mathbf{q}_t\bigr)^{\!\top}\!\bigl(R_s \mathbf{k}_s\bigr) =
-\mathbf{q}_t^{\!\top}\, R_{t-s}\, \mathbf{k}_s.$$
+$$
+\text{attn}(t, s) = \bigl(R_t \mathbf{q}_t\bigr)^{\!\top}\!\bigl(R_s \mathbf{k}_s\bigr) =
+\mathbf{q}_t^{\!\top}\, R_{t-s}\, \mathbf{k}_s.
+$$
 
 The cached object is the rotated $\mathbf{k}_s$ — one full per-head K vector per token per
 layer. That cache is what makes long-context inference expensive, and what
@@ -71,8 +73,10 @@ Decoupled RoPE splits the K projection into two parts:
 - A **position-aware head** of dimension $d_R$ (a single shared head, not per-head),
   projected directly from the unrotated input and rotated by RoPE.
 
-$$\mathbf{k}_s = \bigl[\, \underbrace{W_{UK}\,\mathbf{c}^{KV}_s}_{\text{from latent}} \,;\,
-\underbrace{R_s\bigl(W_{KR}\,\mathbf{h}_s\bigr)}_{\text{decoupled RoPE head}} \,\bigr]$$
+$$
+\mathbf{k}_s = \bigl[\, \underbrace{W_{UK}\,\mathbf{c}^{KV}_s}_{\text{from latent}} \,;\,
+\underbrace{R_s\bigl(W_{KR}\,\mathbf{h}_s\bigr)}_{\text{decoupled RoPE head}} \,\bigr]
+$$
 
 The query is split symmetrically:
 

@@ -97,8 +97,10 @@ RoPE encodes position not on the embedding but on the *query and key vectors dir
 rotation. Group the head-dim coordinates into pairs $(2i, 2i+1)$. For position $t$, multiply
 each pair by a 2D rotation matrix:
 
-$$R_t^{(i)} = \begin{pmatrix} \cos(t\theta_i) & -\sin(t\theta_i) \\ \sin(t\theta_i) & \cos(t\theta_i) \end{pmatrix},\quad
-\theta_i = b^{-2i/d_h}, \quad b = 10000.$$
+$$
+R_t^{(i)} = \begin{pmatrix} \cos(t\theta_i) & -\sin(t\theta_i) \\ \sin(t\theta_i) & \cos(t\theta_i) \end{pmatrix},\quad
+\theta_i = b^{-2i/d_h}, \quad b = 10000.
+$$
 
 Apply $R_t$ to $W_Q \mathbf{x}_t$ and $W_K \mathbf{x}_t$ before the attention dot product. The
 resulting Q and K vectors live on rotating subspaces, with fast rotation in low-index dimensions

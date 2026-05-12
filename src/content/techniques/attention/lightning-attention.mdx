@@ -21,6 +21,7 @@ tags: ["attention", "linear", "production"]
 last_verified: "2026-05-11"
 ---
 
+import LightningTiles from "~/components/figures/LightningTiles";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -72,6 +73,8 @@ def lightning_attention(Q, K, V, T_B=128):
         S = S + phi(k_tile).T @ v_tile     # update running state
     return cat(out, dim=2)
 ```
+
+<LightningTiles client:visible />
 
 <p class="section-eyebrow">§ 3 · Results</p>
 ## Where lightning wins

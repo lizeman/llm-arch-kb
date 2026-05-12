@@ -18,6 +18,7 @@ tags: ["moe", "foundational"]
 last_verified: "2026-05-11"
 ---
 
+import SwitchTopK from "~/components/figures/SwitchTopK";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -53,6 +54,8 @@ def switch_layer(x, experts, gate):
     # Dispatch each token to its single expert; multiply output by top_w.
     return dispatch_and_combine(x, experts, top_idx.unsqueeze(-1), top_w.unsqueeze(-1))
 ```
+
+<SwitchTopK client:visible />
 
 <p class="section-eyebrow">§ 3 · The balance loss everyone copies</p>
 ## Switch's auxiliary objective

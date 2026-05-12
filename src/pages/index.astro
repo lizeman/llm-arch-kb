@@ -4,6 +4,9 @@ import { getCollection } from "astro:content";
 import { sortChronological } from "~/utils/chronological-sort";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
 import { BASE, slugTail } from "~/utils/site";
+import { buildTimeline, type RawModel } from "~/utils/model-timeline";
+import ModelTimeline from "~/components/ModelTimeline";
+import "~/styles/model-timeline.css";
 
 const all = await getCollection("techniques");
 type TechniqueEntry = (typeof all)[number];
@@ -18,6 +21,9 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
   const newest = items[items.length - 1];
   return { slug, label, count: items.length, newest };
 });
+
+const rawModels = (await getCollection("models")) as unknown as RawModel[];
+const { points: timelinePoints, legend: timelineLegend } = buildTimeline(rawModels, BASE);
 ---
 
 <BaseLayout title="LLM Architecture Knowledge Base">
@@ -137,6 +143,17 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
       </figure>
     </section>
 
+    <section class="prose-wide timeline-section">
+      <p class="section-eyebrow">The open frontier</p>
+      <h2>Eight years of open-weight models</h2>
+      <p class="timeline-lede">
+        Every open-weight model with a disclosed parameter count tracked in this knowledge base,
+        plotted by release date and total parameters. Color encodes the releasing organization;
+        dense models are circles, mixture-of-experts models are stars.
+      </p>
+      <ModelTimeline client:visible points={timelinePoints} legend={timelineLegend} />
+    </section>
+
     {featured.length > 0 && (
       <section class="prose featured">
         <p class="section-eyebrow">Featured</p>
@@ -246,4 +263,12 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
   .stack-figure svg a:hover text { fill: #0e3357; }
   .stack-figure svg a:hover rect { stroke-width: 1.75; }
   .stack-figure figcaption { line-height: 1.6; max-width: 640px; margin-left: auto; margin-right: auto; }
+
+  .timeline-section { margin-top: 80px; }
+  .timeline-section h2 { margin-top: 8px; }
+  .timeline-lede {
+    color: var(--text-soft);
+    line-height: 1.6;
+    margin-bottom: 32px;
+  }
 </style>

@@ -1,0 +1,238 @@
+/* Homepage model-timeline scatter. Imported by index.astro. */
+
+.timeline {
+  margin: 0;
+}
+
+/* ---------- Legend ---------- */
+
+.timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 0 20px;
+}
+
+.tl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg);
+  font-family: var(--serif);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+.tl-chip:hover { border-color: var(--accent); }
+
+.tl-chip.is-active {
+  border-color: var(--swatch);
+  background: color-mix(in srgb, var(--swatch) 8%, var(--bg));
+}
+
+.tl-chip__swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--swatch);
+}
+
+.tl-chip__label {
+  font-family: var(--serif);
+  font-size: 0.85rem;
+}
+
+.tl-chip__count {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+
+.tl-chip-sep {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+  padding: 0 4px;
+}
+
+.tl-chip--shape {
+  cursor: default;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-soft);
+  padding-left: 2px;
+}
+.tl-chip--shape:hover { border-color: transparent; }
+
+.tl-shape {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  position: relative;
+}
+.tl-shape--dot {
+  border-radius: 50%;
+  background: var(--text-soft);
+}
+.tl-shape--star {
+  background: var(--text-soft);
+  /* CSS 5-point star via clip-path */
+  clip-path: polygon(
+    50% 0%, 61% 35%, 98% 35%, 68% 57%,
+    79% 91%, 50% 70%, 21% 91%, 32% 57%,
+    2% 35%, 39% 35%
+  );
+}
+
+/* ---------- SVG body ---------- */
+
+.timeline-svg-wrap {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 14px 12px 6px;
+}
+
+.timeline-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.tl-grid {
+  stroke: var(--border);
+  stroke-width: 0.5;
+  stroke-dasharray: 2 3;
+}
+
+.tl-axis {
+  stroke: var(--text);
+  stroke-width: 0.6;
+}
+
+.tl-tick-v {
+  stroke: var(--text);
+  stroke-width: 0.6;
+}
+
+.tl-axis-tick {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--text-faint);
+}
+
+.tl-axis-label {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 11px;
+  fill: var(--text-soft);
+}
+
+/* ---------- Points ---------- */
+
+.tl-point {
+  cursor: pointer;
+  opacity: 0;
+  transform: translate(0, 8px);
+}
+
+.timeline.is-mounted .tl-point {
+  opacity: 1;
+  transform: translate(0, 0);
+  transition:
+    opacity 360ms ease,
+    transform 360ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transition-delay: calc(var(--idx) * 22ms);
+}
+
+.timeline.is-mounted .tl-point.is-dim {
+  opacity: 0.14;
+  transition: opacity 200ms ease;
+}
+
+.tl-hit { cursor: pointer; }
+
+/* ---------- Tooltip ---------- */
+
+.tl-cross {
+  stroke: var(--accent);
+  stroke-width: 0.5;
+  stroke-dasharray: 2 3;
+  opacity: 0.6;
+}
+
+.tl-tt-box {
+  fill: var(--bg);
+  stroke: var(--text);
+  stroke-width: 0.6;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.08));
+}
+
+.tl-tt-title {
+  font-family: var(--serif);
+  font-size: 13px;
+  font-weight: 500;
+  fill: var(--text);
+}
+
+.tl-tt-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  fill: var(--text-soft);
+}
+
+/* ---------- Anchor reset so SVG <a> doesn't underline ---------- */
+
+.timeline-svg a { text-decoration: none; }
+.timeline-svg a:focus-visible .tl-hit {
+  fill: var(--accent);
+  fill-opacity: 0.08;
+}
+
+/* ---------- Caption ---------- */
+
+.timeline > figcaption {
+  font-family: var(--serif);
+  font-size: var(--t-small);
+  color: var(--text-soft);
+  font-style: italic;
+  margin-top: 14px;
+  text-align: center;
+  line-height: 1.5;
+  max-width: 720px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .tl-point {
+    opacity: 1;
+    transform: none;
+    transition: none !important;
+  }
+  .timeline.is-mounted .tl-point {
+    transition: opacity 120ms ease !important;
+    transition-delay: 0 !important;
+  }
+}
+
+/* ---------- Mobile sizing ---------- */
+
+@media (max-width: 640px) {
+  .timeline-svg-wrap { padding: 10px 6px 4px; }
+  .tl-axis-tick { font-size: 11px; }
+  .tl-axis-label { font-size: 12px; }
+  .tl-tt-title { font-size: 14px; }
+  .tl-tt-meta { font-size: 11px; }
+}

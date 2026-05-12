@@ -1,0 +1,51 @@
+---
+name: "DeepSeek V3.1"
+organization: "DeepSeek-AI"
+release_date: "2025-08-21"
+parameters_total: "671B"
+parameters_active: "37B"
+context_length: 128000
+open_weights: true
+model_card_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.1"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (decoupled head for MLA)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "MLA"
+  moe: "DeepSeekMoE with aux-loss-free routing"
+  other:
+    - "Same base architecture as DeepSeek V3 / R1 (671B total, 37B active, 61 layers)"
+    - "Hybrid thinking + non-thinking modes selected by chat template"
+    - "Continued pretraining and post-training on top of the V3 base"
+source_urls:
+  - "https://huggingface.co/deepseek-ai/DeepSeek-V3.1"
+  - "https://github.com/deepseek-ai/DeepSeek-V3"
+notes: "Architecturally identical to V3. The V3.1 release packages the V3 base with additional pretraining and a hybrid reasoning post-training recipe; the architectural details are unchanged. See the DeepSeek V3 entry for the technical specifics."
+---
+
+DeepSeek V3.1 (August 2025) is a continuation of the
+[DeepSeek V3](/llm-arch-kb/models/deepseek-v3/) base model with additional pretraining and a
+post-training recipe that supports both reasoning ("thinking") and direct ("non-thinking")
+inference modes from a single checkpoint. Architecturally it inherits the V3 stack unchanged:
+
+- 671B-parameter MoE, 37B active per token, 61 layers
+- [MLA](/llm-arch-kb/attention/mla/) attention with a
+  [decoupled RoPE head](/llm-arch-kb/positional/decoupled-rope/)
+- [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) with
+  [aux-loss-free routing](/llm-arch-kb/ffn-moe/aux-loss-free/)
+- Pre-Norm RMSNorm, SwiGLU FFN
+- 128K context window via [YaRN](/llm-arch-kb/positional/yarn/) extension
+
+The V3.1 contribution is at the post-training and weight level — extended pretraining,
+unified thinking/non-thinking distillation, refined tool-use behavior — not at the
+architecture level. For the architecture, the [V3 entry](/llm-arch-kb/models/deepseek-v3/) is
+the source of truth.
+
+This page exists for navigability. Readers landing here from "what does V3.1 use for
+attention?" should know the answer is "the same MLA configuration as V3."
+
+The [DeepSeek V3.2-Exp](/llm-arch-kb/models/deepseek-v3-2/) release (when added) is where the
+architecture line resumes — V3.2 introduces DeepSeek Sparse Attention on top of MLA.

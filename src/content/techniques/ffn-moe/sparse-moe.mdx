@@ -12,7 +12,19 @@ status: "foundational"
 problem_solved: "Make conditional computation actually work at scale: sparsely gate each token through a small number of experts out of many, with per-expert noise and a load-balance loss that lets the gate train end-to-end."
 predecessors: []
 successors: ["gshard"]
-adopted_by: []
+adopted_by:
+  - model: "qwen3-235b-a22b"
+    source_url: "https://arxiv.org/abs/2505.09388"
+    notes: "128 experts, top-8 routing, no shared expert; global-batch load balancing instead of per-batch aux loss."
+  - model: "qwen3-30b-a3b"
+    source_url: "https://arxiv.org/abs/2505.09388"
+    notes: "Same 128-expert top-8 design as the Qwen 3 flagship at smaller hidden dim."
+  - model: "mistral-large-3-675b"
+    source_url: "https://mistral.ai/news/mistral-3"
+    notes: "'Granular Mixture-of-Experts' per Mistral's announcement; exact expert count and routing top-K not disclosed in the public materials at release."
+  - model: "nemotron-3-nano-30b"
+    source_url: "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+    notes: "128 routed experts + 1 shared expert per MoE layer; top-6 routing; 23 MoE layers in the 52-layer hybrid stack."
 summary: "Top-K gating with per-expert noise plus an importance-balancing loss. The 2017 paper that established that 'sparse activation + load balance' is a viable training-time recipe; every modern MoE descends from it."
 tags: ["moe", "foundational"]
 last_verified: "2026-05-11"

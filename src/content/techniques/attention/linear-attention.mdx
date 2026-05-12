@@ -12,7 +12,13 @@ status: "research"
 problem_solved: "Replace softmax with a kernel that lets you reorder QKV multiplications — making attention compute linear in sequence length, with a constant-size recurrent state at autoregressive inference."
 predecessors: []
 successors: ["performer", "lightning-attention"]
-adopted_by: []
+adopted_by:
+  - model: "qwen3-next-80b-a3b"
+    source_url: "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct"
+    notes: "Gated DeltaNet (a linear-attention variant) on 36 of 48 layers, interleaved 3:1 with Gated Attention; 75% of layers use linear cost."
+  - model: "nemotron-3-nano-30b"
+    source_url: "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+    notes: "23 Mamba-2 layers (the descendant of structured-state-space variants of the linear-attention family) in a 52-layer hybrid stack."
 summary: "Replace softmax(QK^T)V with φ(Q)·(φ(K)^T·V). The K^T·V term is a small (d×d) state independent of sequence length; the operator becomes a recurrence at inference. Approximate, but linear in T."
 tags: ["attention", "approximate"]
 last_verified: "2026-05-11"

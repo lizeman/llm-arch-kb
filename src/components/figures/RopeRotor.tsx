@@ -126,6 +126,7 @@ export default function RopeRotor() {
           <span>Position t</span>
           <input
             type="range"
+            aria-label="Position t"
             min={0}
             max={MAX_POS}
             step={1}
@@ -139,6 +140,7 @@ export default function RopeRotor() {
           <span>Dimension pair i</span>
           <input
             type="range"
+            aria-label="Dimension pair i"
             min={0}
             max={D_H / 2 - 1}
             step={1}

@@ -138,6 +138,7 @@ export default function SwitchTopK() {
           <span>Comparison K (top-K branch only)</span>
           <input
             type="range"
+            aria-label="Comparison K (top-K branch only)"
             min={2}
             max={8}
             step={1}

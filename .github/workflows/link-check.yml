@@ -1,0 +1,28 @@
+name: Link check (weekly)
+
+# Probes every paper_url, model_card_url, adopted_by source_url, and model source_urls
+# entry across content frontmatter. Reports broken/timeout URLs but never fails the
+# build — link rot is informational only.
+
+on:
+  schedule:
+    - cron: '0 5 * * 1'  # every Monday at 05:00 UTC
+  workflow_dispatch:
+
+jobs:
+  link-check:
+    runs-on: ubuntu-latest
+    # Don't gate anything on this job.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Probe content URLs
+        run: pnpm check:links

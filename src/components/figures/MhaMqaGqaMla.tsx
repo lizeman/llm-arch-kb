@@ -176,6 +176,7 @@ export default function MhaMqaGqaMla() {
           <span>Group count G</span>
           <input
             type="range"
+            aria-label="Group count G"
             min={1}
             max={H}
             step={1}
@@ -201,6 +202,7 @@ export default function MhaMqaGqaMla() {
           <span>Latent dim d_c</span>
           <input
             type="range"
+            aria-label="Latent dim d_c"
             min={64}
             max={1024}
             step={32}

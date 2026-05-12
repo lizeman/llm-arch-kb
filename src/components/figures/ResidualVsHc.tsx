@@ -159,6 +159,7 @@ export default function ResidualVsHc() {
           <span>HC streams n</span>
           <input
             type="range"
+            aria-label="HC streams n"
             min={1}
             max={8}
             step={1}
@@ -172,6 +173,7 @@ export default function ResidualVsHc() {
           <span>Layers L</span>
           <input
             type="range"
+            aria-label="Layers L"
             min={2}
             max={8}
             step={1}

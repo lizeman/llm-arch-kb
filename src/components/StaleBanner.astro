@@ -1,0 +1,57 @@
+---
+/**
+ * Stale-content banner.
+ *
+ * If `last_verified` (YYYY-MM-DD) is more than 9 months old, renders a subtle
+ * inline notice. Otherwise renders nothing. Uses only existing CSS tokens.
+ */
+interface Props {
+  last_verified?: string;
+}
+
+const { last_verified } = Astro.props;
+
+function parseISODate(s: string): Date | null {
+  // Accept YYYY-MM-DD strictly; bail on malformed inputs (banner suppressed).
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return null;
+  const [_, y, mo, d] = m;
+  const date = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  // Defend against e.g. 2024-02-31 by round-tripping.
+  if (
+    date.getUTCFullYear() !== Number(y) ||
+    date.getUTCMonth() !== Number(mo) - 1 ||
+    date.getUTCDate() !== Number(d)
+  ) return null;
+  return date;
+}
+
+function monthsBetween(then: Date, now: Date): number {
+  const yDiff = now.getUTCFullYear() - then.getUTCFullYear();
+  const mDiff = now.getUTCMonth() - then.getUTCMonth();
+  const dDiff = now.getUTCDate() - then.getUTCDate();
+  return yDiff * 12 + mDiff + (dDiff < 0 ? -1 : 0);
+}
+
+const parsed = last_verified ? parseISODate(last_verified) : null;
+const now = new Date();
+const months = parsed ? monthsBetween(parsed, now) : 0;
+const isStale = parsed !== null && months > 9;
+---
+
+{isStale && (
+  <p class="stale-banner" role="note" aria-label="Stale content notice">
+    Last verified {last_verified} — over 9 months ago. Some details may be out of date.
+  </p>
+)}
+
+<style>
+  .stale-banner {
+    color: var(--text-faint);
+    font-size: var(--t-small);
+    font-style: italic;
+    margin: 24px 0 0 0;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+</style>

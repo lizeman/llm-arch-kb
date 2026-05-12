@@ -3,6 +3,7 @@ import BaseLayout from "./BaseLayout.astro";
 import AdoptionList from "~/components/AdoptionList.astro";
 import Lineage from "~/components/Lineage.astro";
 import Cite from "~/components/Cite.astro";
+import StaleBanner from "~/components/StaleBanner.astro";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
 import { monthName } from "~/utils/chronological-sort";
 import { BASE } from "~/utils/site";
@@ -35,6 +36,7 @@ const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
 
 <BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary}>
   <article class="prose">
+    <StaleBanner last_verified={frontmatter.last_verified} />
     <header class="entry-header">
       <p class="section-eyebrow">
         <a href={`${BASE}/${frontmatter.category}/`}>{CATEGORY_LABELS[frontmatter.category]}</a>

@@ -160,6 +160,7 @@ export default function GshardCapacity() {
           <span>Capacity factor C</span>
           <input
             type="range"
+            aria-label="Capacity factor C"
             min={0.5}
             max={3}
             step={0.05}

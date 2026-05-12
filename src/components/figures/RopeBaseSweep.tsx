@@ -132,6 +132,7 @@ export default function RopeBaseSweep() {
           <span>RoPE base (log10)</span>
           <input
             type="range"
+            aria-label="RoPE base (log10)"
             min={2}
             max={7}
             step={0.05}

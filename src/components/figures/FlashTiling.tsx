@@ -188,6 +188,7 @@ export default function FlashTiling() {
           <span>Q tile size B_r</span>
           <input
             type="range"
+            aria-label="Q tile size B_r"
             min={4}
             max={32}
             step={4}
@@ -205,6 +206,7 @@ export default function FlashTiling() {
           <span>K tile size B_c</span>
           <input
             type="range"
+            aria-label="K tile size B_c"
             min={4}
             max={32}
             step={4}
@@ -222,6 +224,7 @@ export default function FlashTiling() {
           <span>Active Q-tile index</span>
           <input
             type="range"
+            aria-label="Active Q-tile index"
             min={0}
             max={tilesQ() - 1}
             step={1}
@@ -235,6 +238,7 @@ export default function FlashTiling() {
           <span>Active K-tile index</span>
           <input
             type="range"
+            aria-label="Active K-tile index"
             min={0}
             max={tilesK() - 1}
             step={1}

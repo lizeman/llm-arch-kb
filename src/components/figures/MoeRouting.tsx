@@ -197,6 +197,7 @@ export default function MoeRouting() {
           <span>top-K</span>
           <input
             type="range"
+            aria-label="top-K"
             min={1}
             max={Math.max(1, expertCount())}
             step={1}
@@ -210,6 +211,7 @@ export default function MoeRouting() {
           <span>Expert count E</span>
           <input
             type="range"
+            aria-label="Expert count E"
             min={2}
             max={32}
             step={1}

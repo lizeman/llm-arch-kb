@@ -137,6 +137,7 @@ export default function PiSqueeze() {
           <span>Extension factor s</span>
           <input
             type="range"
+            aria-label="Extension factor s"
             min={1}
             max={32}
             step={0.5}

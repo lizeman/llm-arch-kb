@@ -1,0 +1,58 @@
+---
+name: "GLM-4.5"
+organization: "Zhipu AI"
+release_date: "2025-07-28"
+parameters_total: "355B"
+parameters_active: "32B"
+context_length: 131072
+open_weights: true
+paper_url: "https://arxiv.org/abs/2508.06471"
+model_card_url: "https://huggingface.co/zai-org/GLM-4.5"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (theta 1e6; partial rotary factor 0.5)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "SwiGLU (SiLU)"
+  attention: "GQA (96 query heads, 8 KV heads)"
+  moe: "Sparse MoE — 160 routed experts, top-8 routing, 1 shared expert; routed_scaling_factor 2.5"
+  other:
+    - "92 layers, hidden dim 5120, expert intermediate dim 1536"
+    - "Depth-over-width: 92 layers with hidden dim 5120 (vs ~64 layers at hidden 7K for similar-active-param models)"
+    - "Multi-Token Prediction (MTP) head"
+    - "Muon optimizer for training"
+    - "MIT license"
+source_urls:
+  - "https://arxiv.org/abs/2508.06471"
+  - "https://huggingface.co/zai-org/GLM-4.5"
+  - "https://huggingface.co/zai-org/GLM-4.5/blob/main/config.json"
+notes: "Architecture config from the released config.json: 92 layers, 96 Q heads, 8 KV heads, 160 routed experts + 1 shared, top-8. The technical report (arXiv:2508.06471) explicitly calls out QK-Norm, GQA, MTP, and Muon as the architectural / optimizer choices distinguishing GLM-4.5 from the 4.x line. The companion GLM-4.5-Air uses the same architecture at 106B total / 12B active."
+---
+
+GLM-4.5 (July 2025) is Zhipu AI's open-weights MoE flagship — 355B total parameters, 32B
+active per token, 92 transformer layers. The technical report (arXiv:2508.06471) and the
+released `config.json` together document a Pre-Norm RMSNorm + RoPE + GQA + SwiGLU
++ MoE stack with two notable choices:
+
+- **Depth over width.** 92 layers at hidden dim 5120 (vs the more common ~60–65 layers at
+  hidden dim 7K–8K for similar active-parameter MoEs). The report frames the choice as a
+  bet that depth improves reasoning at fixed active-param budget.
+- **96 attention heads, 8 KV heads.** A high query-head count — large query bandwidth per
+  layer — combined with aggressive [GQA](/llm-arch-kb/attention/gqa/) sharing (G = 12).
+- **QK-Norm** in attention, plus **Multi-Token Prediction (MTP)** head for speculative
+  decoding, and **Muon** as the pre-training optimizer.
+
+The MoE is sized at 160 routed experts plus one always-on shared expert, top-8 routing,
+expert intermediate dim 1536. This puts the routing density (8 + 1 active per token) in
+between [DeepSeek V3](/llm-arch-kb/models/deepseek-v3/) (8 + 1 of 256 + 1) and
+[Qwen3 235B](/llm-arch-kb/models/qwen3-235b-a22b/) (8 of 128, no shared expert).
+
+A companion model, **GLM-4.5-Air**, uses the same architectural recipe at 106B total / 12B
+active for lower-cost deployment. Both ship under the MIT license.
+
+Context handling at 128K uses RoPE with theta = 10⁶ and a partial rotary factor of 0.5 —
+half the head dim carries rotary position information, the other half is plain.
+
+For Zhipu's earlier dense entry see [GLM-4 9B](/llm-arch-kb/models/glm-4-9b/) and the
+2022 baseline [GLM 130B](/llm-arch-kb/models/glm-130b/).

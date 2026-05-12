@@ -1,0 +1,60 @@
+---
+name: "Nemotron 3 Nano 30B-A3B"
+organization: "NVIDIA"
+release_date: "2025-12-15"
+parameters_total: "30B"
+parameters_active: "3.5B"
+context_length: 1000000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2512.20856"
+model_card_url: "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+disclosure_level: "documented"
+architecture:
+  positional: null
+  normalization_placement: null
+  normalization_type: null
+  qk_norm: null
+  activation: null
+  attention: "Hybrid: 23 Mamba-2 + 6 GQA attention layers (2 KV groups); MoE FFN on 23 layers"
+  moe: "Sparse MoE — 128 routed experts + 1 shared expert per MoE layer, top-6 routing"
+  other:
+    - "52 layers total: 23 Mamba-2, 6 attention, 23 MoE FFN"
+    - "30B total / 3.5B active per token"
+    - "1M-token native context (default 256K due to VRAM)"
+    - "Reasoning + non-reasoning unified in one model with thinking-budget control"
+    - "NVIDIA Open Model License"
+source_urls:
+  - "https://arxiv.org/abs/2512.20856"
+  - "https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+  - "https://huggingface.co/blog/nvidia/nemotron-3-nano-efficient-open-intelligent-models"
+notes: "Architecture details from the official model card. The exact 52-layer composition (23 Mamba-2 / 6 GQA attention / 23 MoE FFN) and MoE shape (128 experts + 1 shared, top-6) are stated explicitly. Slots not surfaced in the card — norm type/placement, activation, positional encoding for the attention layers, QK-Norm — are left null per the citation policy."
+---
+
+Nemotron 3 Nano 30B-A3B (December 2025) is NVIDIA's first hybrid Mamba-Transformer MoE
+release in the Nemotron 3 family. The model card documents an unusual 52-layer composition:
+
+- **23 [Mamba-2](/llm-arch-kb/attention/linear-attention/) state-space layers.** Linear-cost
+  sequence mixing — the bulk of the layer budget — providing $O(L)$ scaling for the 1M-token
+  context.
+- **6 [GQA](/llm-arch-kb/attention/gqa/) attention layers** with 2 KV groups. The few
+  full-attention layers anchor high-fidelity token-token reasoning that Mamba-2 alone
+  underperforms on.
+- **23 MoE FFN layers.** 128 routed experts plus one always-on shared expert, top-6 routing.
+
+Active parameters per token: 3.5B (out of 30B total).
+
+The model supports a configurable thinking budget: a single unified model produces internal
+reasoning traces when asked or responds directly otherwise. Native context is 1M tokens;
+the default deployment config caps at 256K due to VRAM.
+
+Per the [citation policy](/llm-arch-kb/about/), architectural slots not surfaced in the
+model card or arXiv white paper — norm type and placement, activation function, positional
+encoding for the attention layers, QK-Norm presence — are left **null** rather than
+guessed.
+
+The Nemotron 3 family white paper (arXiv:2512.20856) announces Super and Ultra variants
+forthcoming after the Nano release. Those add **LatentMoE** and Multi-Token Prediction
+layers per the paper but their weights are not yet released at this entry's verified date.
+
+For NVIDIA's earlier dense flagship see Nemotron-4 340B (a 2024 release; not present in
+this knowledge base as a separate entry).

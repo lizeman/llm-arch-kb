@@ -1,0 +1,58 @@
+---
+name: "Qwen3 235B-A22B"
+organization: "Alibaba (Qwen Team)"
+release_date: "2025-05-14"
+parameters_total: "235B"
+parameters_active: "22B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2505.09388"
+model_card_url: "https://huggingface.co/Qwen/Qwen3-235B-A22B"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10K → 1M via ABF; YaRN + DCA for long context)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "SwiGLU"
+  attention: "GQA (64 query heads, 4 KV heads)"
+  moe: "Sparse MoE — 128 experts, top-8 routing, no shared expert, global-batch load balancing"
+  other:
+    - "94 layers in the MoE flagship"
+    - "Apache 2.0 license"
+    - "Unified thinking / non-thinking modes via prompt template"
+    - "Removes QKV bias (vs Qwen 2.5) and introduces QK-Norm for training stability"
+source_urls:
+  - "https://arxiv.org/abs/2505.09388"
+  - "https://huggingface.co/Qwen/Qwen3-235B-A22B"
+  - "https://qwenlm.github.io/blog/qwen3/"
+notes: "Flagship MoE of the Qwen 3 generation. The technical report (§2.1) documents the Pre-Norm RMSNorm + GQA + SwiGLU + RoPE stack, the addition of QK-Norm, and the MoE design that drops the shared expert used in Qwen 2.5-MoE in favor of global-batch load balancing. Layer/head counts from §2 Table 1."
+---
+
+Qwen3 235B-A22B (May 2025) is Alibaba's flagship MoE in the Qwen 3 generation: 235B total
+parameters, 22B active per token. Architecturally it stays close to the consensus open-weights
+stack, with two deliberate departures from Qwen 2.5:
+
+- **QK-Norm.** Qwen 3 drops the QKV bias used in Qwen 2.5 and adds
+  [QK-Norm](/llm-arch-kb/normalization/qk-norm/) to the attention mechanism for training
+  stability at scale. The technical report (§2.1) attributes the change to stability issues
+  seen at the 235B scale.
+- **No shared expert, global-batch load balancing.** Unlike Qwen 2.5-MoE and the
+  DeepSeek-MoE-derived families, Qwen 3 MoE drops the always-on shared expert and uses a
+  global-batch load-balancing loss to encourage expert specialization.
+
+The rest of the stack follows the dominant 2024–25 pattern: Pre-Norm
+[RMSNorm](/llm-arch-kb/normalization/rmsnorm/), [GQA](/llm-arch-kb/attention/gqa/) with 64
+query heads sharing 4 KV heads, [SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) FFN inside each MoE
+expert, [RoPE](/llm-arch-kb/positional/rope/) with the base scaled from 10K to 1M via ABF for
+long-context training, plus YaRN and Dual Chunk Attention (DCA) for sequence-length extension
+at inference.
+
+The unified thinking / non-thinking inference mode — a single model that produces internal
+reasoning traces when asked, or responds directly otherwise — is selected at the prompt
+template level rather than via a separate model variant.
+
+For the dense flagship in the same generation see
+[Qwen3 32B](/llm-arch-kb/models/qwen3-32b/); for the small MoE see
+[Qwen3 30B-A3B](/llm-arch-kb/models/qwen3-30b-a3b/); for the hybrid-attention follow-up see
+[Qwen3-Next 80B-A3B](/llm-arch-kb/models/qwen3-next-80b-a3b/).

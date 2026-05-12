@@ -1,0 +1,45 @@
+---
+name: "Qwen3 30B-A3B"
+organization: "Alibaba (Qwen Team)"
+release_date: "2025-05-14"
+parameters_total: "30B"
+parameters_active: "3B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2505.09388"
+model_card_url: "https://huggingface.co/Qwen/Qwen3-30B-A3B"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10K → 1M via ABF; YaRN + DCA for long context)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "SwiGLU"
+  attention: "GQA (32 query heads, 4 KV heads)"
+  moe: "Sparse MoE — 128 experts, top-8 routing, no shared expert, global-batch load balancing"
+  other:
+    - "48 layers"
+    - "Apache 2.0 license"
+    - "30B total, 3B active per token — small-MoE complement to the 235B-A22B flagship"
+source_urls:
+  - "https://arxiv.org/abs/2505.09388"
+  - "https://huggingface.co/Qwen/Qwen3-30B-A3B"
+notes: "Smaller MoE of the Qwen 3 generation. Same MoE pattern as the 235B-A22B flagship (128 experts, top-8, no shared expert, global-batch load balancing) at smaller layer/hidden dimensions. Layer/head counts from the technical report Table 1."
+---
+
+Qwen3 30B-A3B (May 2025) is the small MoE variant of the Qwen 3 family — 30B total
+parameters, 3B active per token. It carries the same architectural pattern as the
+[235B-A22B flagship](/llm-arch-kb/models/qwen3-235b-a22b/) at a smaller scale: 48 layers,
+32 query heads sharing 4 KV heads under [GQA](/llm-arch-kb/attention/gqa/), Pre-Norm
+[RMSNorm](/llm-arch-kb/normalization/rmsnorm/), [SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) FFN
+inside each expert, [RoPE](/llm-arch-kb/positional/rope/) with ABF-scaled base, and
+[QK-Norm](/llm-arch-kb/normalization/qk-norm/) in attention.
+
+The MoE configuration is unchanged from the flagship: **128 experts, top-8 routing, no
+shared expert**, global-batch load balancing. The intent — laid out in §2.1 of the technical
+report — is that the same routing recipe can be carried across both MoE sizes without
+retuning.
+
+3B active parameters at competitive quality is the headline efficiency claim of the small
+MoE: the model achieves quality that the technical report compares to the 32B dense at a
+fraction of the per-token compute.

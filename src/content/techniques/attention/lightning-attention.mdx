@@ -16,6 +16,9 @@ adopted_by:
   - model: "minimax-01"
     source_url: "https://arxiv.org/abs/2501.08313"
     notes: "7 Lightning Attention layers : 1 softmax attention layer interleave; 4M context."
+  - model: "minimax-m1"
+    source_url: "https://arxiv.org/abs/2506.13585"
+    notes: "Same 7:1 Lightning + softmax stack as MiniMax-01; paper claims 25% of DeepSeek R1's FLOPs at 100K generation length."
 summary: "Tile and fuse linear attention's prefix-sum recurrence so it runs faster than FlashAttention at long context. Interleaved 7:1 with softmax attention in MiniMax-01 to recover what linear attention loses on absolute quality while keeping its linear-in-T scaling."
 tags: ["attention", "linear", "production"]
 last_verified: "2026-05-11"

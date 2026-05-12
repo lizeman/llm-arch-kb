@@ -1,0 +1,59 @@
+---
+name: "MiniMax-M1"
+organization: "MiniMax"
+release_date: "2025-06-16"
+parameters_total: "456B"
+parameters_active: "45.9B"
+context_length: 1000000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2506.13585"
+model_card_url: "https://huggingface.co/MiniMaxAI/MiniMax-M1-80k"
+disclosure_level: "open"
+parent_model: "minimax-01"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "Lightning Attention (7 layers) interleaved with softmax attention (1 layer); ratio 7:1"
+  moe: "32 routed experts + 1 shared expert; top-2 routing"
+  other:
+    - "Same MiniMax-Text-01 base architecture (456B / 45.9B / 7:1 hybrid)"
+    - "Reasoning model trained with CISPO reinforcement learning"
+    - "Released as 40K and 80K 'thinking budget' variants"
+source_urls:
+  - "https://arxiv.org/abs/2506.13585"
+  - "https://huggingface.co/MiniMaxAI/MiniMax-M1-80k"
+  - "https://github.com/MiniMax-AI/MiniMax-M1"
+notes: "MiniMax-M1 is the reasoning variant of MiniMax-Text-01 — same architecture, post-trained with the CISPO RL algorithm. The paper highlights the FLOP advantage of the hybrid Lightning + softmax stack at 100K generation lengths (≈25% of DeepSeek R1's cost). The 1M context length supported by M1 is roughly 1/4 of MiniMax-01's 4M, reflecting the longer outputs of reasoning workloads."
+---
+
+MiniMax-M1 (June 2025) is the reasoning-tuned successor to
+[MiniMax-Text-01](/llm-arch-kb/models/minimax-01/). The architecture is identical — 456B
+total parameters, 45.9B active per token, 7:1 hybrid
+[Lightning Attention](/llm-arch-kb/attention/lightning-attention/) + softmax stack, 32
+routed experts plus 1 shared expert at top-2 routing — but the post-training pipeline is
+new.
+
+The headline claim of the paper (arXiv:2506.13585) is that the hybrid attention stack
+gives M1 a sustained per-token FLOP advantage at long generation lengths:
+
+> Compared to DeepSeek R1, M1 consumes 25% of the FLOPs at a generation length of 100K
+> tokens.
+
+This is the FLOP profile that the Lightning Attention design targeted — every fourth or
+eighth layer pays the quadratic cost of full softmax; the rest scale linearly with sequence
+length.
+
+The other contribution is **CISPO** (Clipped Importance Sampling Policy Optimization), a
+reinforcement-learning algorithm that the team uses to train the reasoning variant within
+~$535K of compute on 512 H800 GPUs.
+
+Two checkpoints are released: a 40K-thinking-budget variant and an 80K-thinking-budget
+variant. Architecturally they are identical; the difference is in the post-training
+configuration of the maximum reasoning trace length.
+
+For the broader Lightning Attention story see the
+[Lightning Attention entry](/llm-arch-kb/attention/lightning-attention/) and the
+[MiniMax-Text-01 spec sheet](/llm-arch-kb/models/minimax-01/).

@@ -1,0 +1,48 @@
+---
+name: "Qwen3 32B"
+organization: "Alibaba (Qwen Team)"
+release_date: "2025-05-14"
+parameters_total: "32B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2505.09388"
+model_card_url: "https://huggingface.co/Qwen/Qwen3-32B"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10K → 1M via ABF; YaRN + DCA for long context)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "SwiGLU"
+  attention: "GQA (64 query heads, 8 KV heads)"
+  moe: null
+  other:
+    - "64 layers"
+    - "Apache 2.0 license"
+    - "Unified thinking / non-thinking modes via prompt template"
+    - "Removes QKV bias (vs Qwen 2.5) and adds QK-Norm"
+source_urls:
+  - "https://arxiv.org/abs/2505.09388"
+  - "https://huggingface.co/Qwen/Qwen3-32B"
+  - "https://qwenlm.github.io/blog/qwen3/"
+notes: "Dense flagship of the Qwen 3 generation. The technical report Table 1 lists 64 layers, 64 Q heads, 8 KV heads (G = 8) for the 32B dense. Same QK-Norm + no-QKV-bias change as the MoE flagship."
+---
+
+Qwen3 32B (May 2025) is the largest dense decoder in the Qwen 3 generation: 32B parameters,
+64 layers, [GQA](/llm-arch-kb/attention/gqa/) with 64 query heads sharing 8 KV heads. The
+stack matches the Qwen 3 family pattern — Pre-Norm
+[RMSNorm](/llm-arch-kb/normalization/rmsnorm/), [SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) FFN,
+[RoPE](/llm-arch-kb/positional/rope/) with ABF-scaled base — plus the two Qwen 3 changes
+from Qwen 2.5:
+
+- **QK-Norm** replaces the QKV bias in attention for training stability.
+- **Unified inference modes.** Thinking and non-thinking outputs come from the same model,
+  selected by prompt template; there is no separate "Instruct" vs "Reasoning" variant.
+
+Context handling at 128K uses YaRN with Dual Chunk Attention (DCA) at inference time.
+Training data covers 119 languages (up from 29 in Qwen 2.5).
+
+The dense 32B trades the MoE flagship's quality-per-active-param efficiency for a simpler
+deployment footprint. For the MoE flagship in the same family see
+[Qwen3 235B-A22B](/llm-arch-kb/models/qwen3-235b-a22b/); for the small MoE see
+[Qwen3 30B-A3B](/llm-arch-kb/models/qwen3-30b-a3b/).

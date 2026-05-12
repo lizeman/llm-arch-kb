@@ -1,0 +1,50 @@
+---
+name: "Kimi K1.5"
+organization: "Moonshot AI"
+release_date: "2025-01-22"
+parameters_total: "Not publicly disclosed"
+context_length: 128000
+open_weights: false
+paper_url: "https://arxiv.org/abs/2501.12599"
+disclosure_level: "documented"
+architecture:
+  positional: null
+  normalization_placement: null
+  normalization_type: null
+  qk_norm: null
+  activation: null
+  attention: null
+  moe: null
+  other:
+    - "Multimodal (text + image inputs)"
+    - "Long-context training: up to 128K, with reported strong results at long needle-in-haystack tasks"
+    - "Architecture details (parameter count, attention recipe, MoE/dense, normalization choices) not publicly disclosed in the tech report"
+source_urls:
+  - "https://arxiv.org/abs/2501.12599"
+notes: "Moonshot's January 2025 release. The accompanying paper is primarily a study of RL post-training for reasoning rather than an architecture report; specific architecture parameters are not surfaced publicly. Per the §9 citation policy, fields without a public source are left null."
+---
+
+Kimi K1.5 (January 2025) is Moonshot AI's reasoning-focused release, predating the open-weights
+[Kimi K2](/llm-arch-kb/models/kimi-k2/) by about six months. The paper "Kimi k1.5: Scaling
+Reinforcement Learning with LLMs" (arXiv 2501.12599) reports the model's training recipe in
+detail — long-context training, multimodal input handling, and a custom RL post-training stack
+that scaled to long chain-of-thought reasoning behaviors competitive with frontier closed
+models at the time of release.
+
+What the paper does *not* report at the level needed for an architecture entry:
+
+- Total or active parameter counts
+- Specific attention recipe (MHA / GQA / MLA / other)
+- Normalization placement and type
+- Activation function inside the FFN
+- Whether the model is dense or MoE
+
+Per the [citation policy](/llm-arch-kb/about/), those architecture fields are left **null**
+rather than guessed. The model is included for navigability — readers arriving from "what does
+Kimi K1.5 use?" should land here and learn that the architecture is not publicly documented at
+the paper's level of detail.
+
+Disclosure level is `documented`: paper available, weights closed at the time of release. Kimi
+K2 (July 2025) is the open-weights successor in the Kimi family; that entry has full
+architecture detail because Moonshot released the model card and inference code alongside the
+weights.

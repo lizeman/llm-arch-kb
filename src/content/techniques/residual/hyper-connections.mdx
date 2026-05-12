@@ -13,11 +13,14 @@ problem_solved: "Replace the single residual stream with a small bank of paralle
 predecessors: []
 successors: []
 adopted_by: []
+figure_component: "ResidualVsHc"
+figure_caption: "Drag n; at n=1 both panels match; at n>1 the right panel routes layer reads/writes across multiple streams."
 summary: "Generalize the residual connection to n parallel streams. Each sublayer learns a depth-wise read/write matrix that mixes streams in and out. Recovers the standard residual at n=1 and gives a strict superset of expressivity above that."
 tags: ["residual", "research", "bytedance"]
 last_verified: "2026-05-11"
 ---
 
+import ResidualVsHc from "~/components/figures/ResidualVsHc";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -71,6 +74,8 @@ def hyper_connection_block(X, sublayer, A, B):
 The parameter count cost is small: two $n$-vectors per layer instead of nothing for the
 standard residual. Memory is $n \times$ the residual stream size — for $n = 4$, that's a 4×
 KV-cache-equivalent overhead on the activation memory during training.
+
+<ResidualVsHc client:visible />
 
 <p class="section-eyebrow">§ 3 · Static vs dynamic</p>
 ## Two variants

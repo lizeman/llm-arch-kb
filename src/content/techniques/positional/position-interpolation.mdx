@@ -18,6 +18,7 @@ tags: ["positional", "long-context", "foundational"]
 last_verified: "2026-05-11"
 ---
 
+import PiSqueeze from "~/components/figures/PiSqueeze";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -55,6 +56,8 @@ def position_interpolation_rope(x, position, theta, scale):
     x1, x2 = x[..., 0::2], x[..., 1::2]
     return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
 ```
+
+<PiSqueeze client:visible />
 
 <p class="section-eyebrow">§ 3 · The cost</p>
 ## All bands lose resolution equally

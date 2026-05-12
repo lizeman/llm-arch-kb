@@ -23,6 +23,42 @@ type Issue = { file: string; message: string };
 const issues: Issue[] = [];
 const warnings: string[] = [];
 
+export type StructureIssue = { message: string };
+
+export function checkEntryStructure(body: string, paperUrl: string): StructureIssue[] {
+  const out: StructureIssue[] = [];
+  const required = ["§ 1 · Premise", "§ 2 · Derivation", "§ 3 ·", "§ 4 · Empirical evidence"];
+  for (const s of required) {
+    if (!body.includes(s)) out.push({ message: `missing section eyebrow "${s}"` });
+  }
+
+  const derivStart = body.indexOf("§ 2 · Derivation");
+  const derivEnd = body.indexOf("§ 3 ·", derivStart + 1);
+  if (derivStart >= 0 && derivEnd > derivStart) {
+    const deriv = body.slice(derivStart, derivEnd);
+    const eqs = (deriv.match(/\$\$[\s\S]+?\$\$/g) ?? []).length;
+    if (eqs < 3) out.push({ message: `§ 2 Derivation has ${eqs} display equation(s); need ≥3` });
+  }
+
+  const empStart = body.indexOf("§ 4 · Empirical evidence");
+  if (empStart >= 0) {
+    const emp = body.slice(empStart);
+    const links = [...emp.matchAll(/\]\((https?:\/\/[^)]+)\)/g)].map((m) => m[1]!);
+    const self = paperUrl.replace(/^https?:\/\//, "");
+    const nonSelf = links.filter((u) => self === "" || !u.includes(self));
+    if (nonSelf.length === 0) {
+      out.push({ message: "§ 4 Empirical evidence has no non-original citation link" });
+    }
+  }
+
+  const bodyLines = body.split("\n").filter((l) => l.trim() !== "").length;
+  if (bodyLines < 200 || bodyLines > 600) {
+    out.push({ message: `body line count ${bodyLines} outside expected range 200..600` });
+  }
+
+  return out;
+}
+
 function readFrontmatter(filePath: string): Record<string, unknown> | null {
   const text = fs.readFileSync(filePath, "utf8");
   const match = text.match(/^---\s*\n([\s\S]*?)\n---/);
@@ -245,7 +281,18 @@ function validate() {
     }
   }
 
-  // 3. Reporting
+  // 3. Structural depth (warnings only until pilot ships)
+  for (const t of techniques) {
+    const text = fs.readFileSync(t.file, "utf8");
+    const bodyMatch = text.match(/^---[\s\S]*?\n---\n([\s\S]*)$/);
+    const body = bodyMatch ? bodyMatch[1]! : "";
+    const paperUrl = String(t.data.paper_url ?? "");
+    for (const s of checkEntryStructure(body, paperUrl)) {
+      warnings.push(`[structure] ${rel(t.file)}: ${s.message}`);
+    }
+  }
+
+  // 4. Reporting
   for (const w of warnings) {
     console.warn(w);
   }
@@ -262,4 +309,7 @@ function validate() {
   process.exit(1);
 }
 
-validate();
+const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  validate();
+}

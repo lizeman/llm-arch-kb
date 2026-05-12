@@ -1,0 +1,54 @@
+---
+name: "Kimi K2"
+organization: "Moonshot AI"
+release_date: "2025-07-11"
+parameters_total: "1T"
+parameters_active: "32B"
+context_length: 128000
+open_weights: true
+model_card_url: "https://huggingface.co/moonshotai/Kimi-K2-Instruct"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (decoupled head, MLA-style)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "MLA-style latent attention"
+  moe: "Sparse MoE with 384 routed experts + 1 shared expert; top-K routing"
+  other:
+    - "1T total parameters / 32B active per token — first publicly released open-weights model at the trillion-parameter scale"
+    - "Trained with MuonClip optimizer (Muon family with weight clipping for large-scale stability)"
+    - "Modified MIT-style license"
+source_urls:
+  - "https://huggingface.co/moonshotai/Kimi-K2-Instruct"
+  - "https://github.com/MoonshotAI/Kimi-K2"
+notes: "First publicly released model at 1T total parameters with open weights. Architecture details drawn from the model card and repo; specifics not in those sources (exact head/layer counts, routing recipe parameters) are left out rather than guessed."
+---
+
+Kimi K2 (July 2025) is Moonshot AI's open-weights flagship — the first publicly released model
+at the trillion-parameter scale. The architecture is in the
+[DeepSeek V3](/llm-arch-kb/models/deepseek-v3/) family lineage:
+
+- **MLA-style latent attention** with a decoupled RoPE head — the same
+  [MLA](/llm-arch-kb/attention/mla/) pattern that compresses K and V to a per-token latent
+  while carrying position information through a separate small head.
+- **Sparse MoE** with an unusually large expert count: 384 routed experts plus one always-on
+  shared expert. By comparison, [DeepSeek V3](/llm-arch-kb/models/deepseek-v3/) uses 256 + 1.
+  The wider expert pool changes the routing dynamics and training-stability tradeoffs without
+  changing the fundamental [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) shape.
+- **Pre-Norm RMSNorm + SwiGLU** for the rest of the stack — the dominant 2024–25 open
+  consensus.
+
+The headline non-architectural difference from DeepSeek's training recipe is the **MuonClip
+optimizer** — a variant of the Muon optimizer family (Jordan et al., a 2024 line of work on
+matrix-aware second-order updates) with weight clipping for large-scale stability. The
+Moonshot team's writeup attributes part of K2's training-cost efficiency at trillion-scale to
+this optimizer choice.
+
+Specific architecture parameters not surfaced in the public model card and repo at release —
+exact layer count, exact head dim, exact routing top-K, exact load-balancing recipe — are not
+reproduced here (per the [citation policy](/llm-arch-kb/about/)). The model card lists the
+high-level shape; the GitHub repo holds the inference code and confirms the MoE expert count.
+
+For the smaller / earlier Moonshot release see the Kimi K1.5 entry (when added).

@@ -3,6 +3,8 @@ import BaseLayout from "./BaseLayout.astro";
 import AdoptionList from "~/components/AdoptionList.astro";
 import Lineage from "~/components/Lineage.astro";
 import Cite from "~/components/Cite.astro";
+import CiteButton from "~/components/CiteButton.astro";
+import { entryToCitationFields } from "~/lib/citations";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
 import { monthName } from "~/utils/chronological-sort";
 import { BASE } from "~/utils/site";
@@ -31,9 +33,14 @@ interface Props {
 const { frontmatter } = Astro.props;
 const month = monthName(frontmatter.month, "long");
 const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
+const citationFields = entryToCitationFields(frontmatter);
+
+// OG card filename matches scripts/generate-og.ts convention: <category>__<slug-tail>.png
+const ogSlugTail = Astro.url.pathname.replace(/\/$/, "").split("/").pop() ?? "";
+const ogImage = `${BASE}/og/${frontmatter.category}__${ogSlugTail}.png`;
 ---
 
-<BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary}>
+<BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary} ogImage={ogImage}>
   <article class="prose">
     <header class="entry-header">
       <p class="section-eyebrow">
@@ -65,6 +72,8 @@ const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
       arxiv_id={frontmatter.arxiv_id}
       paper_url={frontmatter.paper_url}
     />
+
+    <CiteButton fields={citationFields} />
 
     <footer class="entry-footer">
       <p>Last verified {frontmatter.last_verified}.</p>

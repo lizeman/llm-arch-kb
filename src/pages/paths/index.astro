@@ -1,0 +1,106 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "~/layouts/BaseLayout.astro";
+import { BASE } from "~/utils/site";
+
+const paths = (await getCollection("paths")).sort((a, b) => {
+  const ao = a.data.order ?? 999;
+  const bo = b.data.order ?? 999;
+  if (ao !== bo) return ao - bo;
+  return a.data.title.localeCompare(b.data.title);
+});
+
+const DIFFICULTY_LABEL: Record<string, string> = {
+  intro: "Intro",
+  intermediate: "Intermediate",
+  advanced: "Advanced",
+};
+---
+
+<BaseLayout
+  title="Learning paths"
+  description="Short curated reading orders through the knowledge base — pick a starting point and walk a chronology."
+>
+  <article class="prose">
+    <header class="paths-header">
+      <p class="section-eyebrow">Browse</p>
+      <h1>Learning paths</h1>
+      <p class="lede">
+        Each path is a hand-picked ordering of three or four technique entries that, taken
+        together, tell one coherent story. Short, chronological, and not a substitute for the
+        full category index.
+      </p>
+    </header>
+
+    <ul class="path-list">
+      {paths.map((p) => (
+        <li>
+          <a href={`${BASE}/paths/${p.slug}/`}>
+            <div class="path-list__title">
+              <strong>{p.data.title}</strong>
+              <span class="difficulty">{DIFFICULTY_LABEL[p.data.difficulty] ?? p.data.difficulty}</span>
+            </div>
+            <p class="path-list__desc">{p.data.description}</p>
+            <p class="path-list__count">
+              {p.data.techniques.length} {p.data.techniques.length === 1 ? "step" : "steps"}
+            </p>
+          </a>
+        </li>
+      ))}
+    </ul>
+  </article>
+</BaseLayout>
+
+<style>
+  .paths-header { margin: 48px 0 40px; }
+  .paths-header h1 { margin: 8px 0 24px; }
+  .lede {
+    font-size: 1.125rem;
+    color: var(--text-soft);
+    line-height: 1.6;
+  }
+  .path-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .path-list li {
+    border-bottom: 1px solid var(--border);
+  }
+  .path-list a {
+    display: block;
+    padding: 24px 0;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .path-list a:hover .path-list__title strong { color: var(--accent); }
+  .path-list__title {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+  .path-list__title strong { font-size: 1.25rem; font-weight: 600; }
+  .difficulty {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+  }
+  .path-list__desc {
+    margin: 0;
+    color: var(--text-soft);
+    line-height: 1.55;
+  }
+  .path-list__count {
+    margin: 6px 0 0;
+    color: var(--text-faint);
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.04em;
+  }
+</style>

@@ -22,6 +22,19 @@ interface Props {
 
 const { category, description, entries } = Astro.props;
 const label = CATEGORY_LABELS[category];
+
+const STATUS_FILTERS = [
+  { key: "all", label: "All" },
+  { key: "foundational", label: "Foundational" },
+  { key: "production-adopted", label: "Production-adopted" },
+  { key: "research", label: "Research" },
+  { key: "deprecated", label: "Deprecated" },
+] as const;
+
+const counts: Record<string, number> = { all: entries.length };
+for (const e of entries) {
+  counts[e.data.status] = (counts[e.data.status] ?? 0) + 1;
+}
 ---
 
 <BaseLayout title={label} description={description}>
@@ -35,28 +48,70 @@ const label = CATEGORY_LABELS[category];
     {entries.length === 0 ? (
       <p class="empty">No entries yet — this category is on the v1 → v3 roadmap.</p>
     ) : (
-      <ul class="entry-list">
-        {entries.map((e) => (
-          <li>
-            <a href={`${BASE}/${category}/${slugTail(e.slug)}/`}>
-              <div class="entry-list__title">
-                <strong>{e.data.title}</strong>
-                <span class="abbr">{e.data.abbreviation}</span>
-              </div>
-              <div class="entry-list__meta">
-                <span>{isoMonth(e.data.year, e.data.month)}</span>
-                <span class="entry-list__summary">{e.data.summary}</span>
-              </div>
-            </a>
-          </li>
-        ))}
-      </ul>
+      <div class="filter-shell" data-current="all">
+        <fieldset class="filter-chips" aria-label="Filter by status">
+          <legend class="visually-hidden">Filter by status</legend>
+          {STATUS_FILTERS.map((f) => (
+            <button
+              type="button"
+              class:list={["chip", { "is-active": f.key === "all" }]}
+              data-filter={f.key}
+              aria-pressed={f.key === "all" ? "true" : "false"}
+            >
+              <span class="chip-label">{f.label}</span>
+              <span class="chip-count">{counts[f.key] ?? 0}</span>
+            </button>
+          ))}
+        </fieldset>
+
+        <ul class="entry-list">
+          {entries.map((e) => (
+            <li data-status={e.data.status}>
+              <a href={`${BASE}/${category}/${slugTail(e.slug)}/`}>
+                <div class="entry-list__title">
+                  <strong>{e.data.title}</strong>
+                  <span class="abbr">{e.data.abbreviation}</span>
+                  <span class:list={["status-pill", `status-${e.data.status}`]}>{e.data.status}</span>
+                </div>
+                <div class="entry-list__meta">
+                  <span>{isoMonth(e.data.year, e.data.month)}</span>
+                  <span class="entry-list__summary">{e.data.summary}</span>
+                </div>
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
     )}
   </article>
+
+  <script>
+    const shell = document.querySelector<HTMLElement>(".filter-shell");
+    if (shell) {
+      const chips = shell.querySelectorAll<HTMLButtonElement>(".chip");
+      const items = shell.querySelectorAll<HTMLElement>(".entry-list > li");
+      chips.forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const target = chip.dataset.filter ?? "all";
+          shell.dataset.current = target;
+          chips.forEach((c) => {
+            const active = c.dataset.filter === target;
+            c.classList.toggle("is-active", active);
+            c.setAttribute("aria-pressed", active ? "true" : "false");
+          });
+          items.forEach((li) => {
+            const status = li.dataset.status ?? "";
+            const show = target === "all" || status === target;
+            li.hidden = !show;
+          });
+        });
+      });
+    }
+  </script>
 </BaseLayout>
 
 <style>
-  .cat-header { margin: 48px 0 56px; }
+  .cat-header { margin: 48px 0 32px; }
   .cat-header h1 { margin: 8px 0 24px; }
   .lede {
     font-size: 1.125rem;
@@ -67,6 +122,50 @@ const label = CATEGORY_LABELS[category];
     color: var(--text-soft);
     font-style: italic;
     padding: 32px 0;
+  }
+  .filter-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    border: none;
+    padding: 0;
+    margin: 0 0 24px;
+  }
+  .chip {
+    appearance: none;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-family: var(--serif);
+    font-size: var(--t-small);
+    color: var(--text-soft);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  .chip:hover { color: var(--text); border-color: var(--text-faint); }
+  .chip.is-active {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .chip-count {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    color: var(--text-faint);
+  }
+  .chip.is-active .chip-count { color: var(--accent); }
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
   .entry-list {
     list-style: none;
@@ -88,6 +187,7 @@ const label = CATEGORY_LABELS[category];
     align-items: baseline;
     gap: 12px;
     margin-bottom: 6px;
+    flex-wrap: wrap;
   }
   .entry-list__title strong { font-size: 1.25rem; font-weight: 600; }
   .abbr {
@@ -95,6 +195,16 @@ const label = CATEGORY_LABELS[category];
     font-size: 0.78rem;
     color: var(--text-faint);
     letter-spacing: 0.04em;
+  }
+  .status-pill {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    margin-left: auto;
   }
   .entry-list__meta {
     color: var(--text-soft);

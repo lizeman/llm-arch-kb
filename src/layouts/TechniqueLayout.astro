@@ -2,6 +2,7 @@
 import BaseLayout from "./BaseLayout.astro";
 import AdoptionList from "~/components/AdoptionList.astro";
 import Lineage from "~/components/Lineage.astro";
+import RelatedTechniques from "~/components/RelatedTechniques.astro";
 import Cite from "~/components/Cite.astro";
 import StaleBanner from "~/components/StaleBanner.astro";
 import CiteButton from "~/components/CiteButton.astro";
@@ -38,6 +39,7 @@ const { frontmatter } = Astro.props;
 const month = monthName(frontmatter.month, "long");
 const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
 const citationFields = entryToCitationFields(frontmatter);
+const routeSlug = (Astro.params as { slug?: string }).slug ?? "";
 
 // OG card filename matches scripts/generate-og.ts convention: <category>__<slug-tail>.png
 const ogSlugTail = Astro.url.pathname.replace(/\/$/, "").split("/").pop() ?? "";
@@ -74,6 +76,8 @@ const ogImage = `${BASE}/og/${frontmatter.category}__${ogSlugTail}.png`;
     <slot />
 
     <AdoptionList adopted_by={frontmatter.adopted_by} />
+
+    <RelatedTechniques slug={routeSlug} category={frontmatter.category} />
 
     <Lineage
       predecessors={frontmatter.predecessors ?? []}

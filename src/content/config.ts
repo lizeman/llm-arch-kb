@@ -118,5 +118,16 @@ const models = defineCollection({
   }),
 });
 
-export const collections = { techniques, models };
+const paths = defineCollection({
+  type: "content",
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    techniques: z.array(z.string()),
+    difficulty: z.enum(["intro", "intermediate", "advanced"]),
+    order: z.number().int().optional(),
+  }),
+});
+
+export const collections = { techniques, models, paths };
 export { TECHNIQUE_CATEGORIES };

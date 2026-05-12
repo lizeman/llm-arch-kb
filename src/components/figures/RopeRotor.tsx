@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { createMemo, createSignal, For } from "solid-js";
+import { createMemo, createSignal } from "solid-js";
 
 /**
  * RoPE position-dependent rotation visualizer.

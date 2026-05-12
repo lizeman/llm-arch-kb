@@ -5,7 +5,6 @@ import { getCollection } from "astro:content";
 const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 
 const techniques = await getCollection("techniques");
-type TechniqueEntry = (typeof techniques)[number];
 
 // Build a deduplicated list of (arxiv_id, paper_title, year, introduced_by, paper_url) tuples,
 // keyed by arxiv_id, with the entries that cite each paper.

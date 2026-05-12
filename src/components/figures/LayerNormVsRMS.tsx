@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { createMemo, createSignal } from "solid-js";
+import { createMemo, createSignal, Index } from "solid-js";
 
 /**
  * Visualizer for the difference between LayerNorm and RMSNorm on a small input vector.
@@ -58,51 +58,50 @@ export default function LayerNormVsRMS() {
   const BAR_W = 22;
   const SCALE_PX = 40; // pixels per unit
 
-  function renderBars(values: number[], yCenter: number, color: string, label: string) {
+  function Row(props: { values: () => number[]; yCenter: number; color: string; label: string }) {
     return (
       <g>
         <text
           x={X0 - 12}
-          y={yCenter + 4}
+          y={props.yCenter + 4}
           text-anchor="end"
           font-family="var(--mono)"
           font-size="11"
           fill="#5a5a55"
         >
-          {label}
+          {props.label}
         </text>
         <line
           x1={X0}
-          y1={yCenter}
+          y1={props.yCenter}
           x2={X0 + D * COL_W}
-          y2={yCenter}
+          y2={props.yCenter}
           stroke="#e3e3dc"
           stroke-width="1"
         />
-        {values.map((v, i) => {
-          const x = X0 + i * COL_W + (COL_W - BAR_W) / 2;
-          const h = Math.abs(v) * SCALE_PX;
-          const y = v >= 0 ? yCenter - h : yCenter;
-          // Label sits just outside the far end of the bar:
-          //   positive bar extends upward → label below the row baseline.
-          //   negative bar extends downward → label below the bar's bottom.
-          const labelY = v >= 0 ? yCenter + 14 : yCenter + h + 12;
-          return (
-            <g>
-              <rect x={x} y={y} width={BAR_W} height={h} fill={color} opacity="0.85" />
-              <text
-                x={x + BAR_W / 2}
-                y={labelY}
-                text-anchor="middle"
-                font-family="var(--mono)"
-                font-size="9"
-                fill="#5a5a55"
-              >
-                {v.toFixed(2)}
-              </text>
-            </g>
-          );
-        })}
+        <Index each={props.values()}>
+          {(vAccessor, i) => {
+            const x = X0 + i * COL_W + (COL_W - BAR_W) / 2;
+            const h = () => Math.abs(vAccessor()) * SCALE_PX;
+            const y = () => (vAccessor() >= 0 ? props.yCenter - h() : props.yCenter);
+            const labelY = () => (vAccessor() >= 0 ? props.yCenter + 14 : props.yCenter + h() + 12);
+            return (
+              <g>
+                <rect x={x} y={y()} width={BAR_W} height={h()} fill={props.color} opacity="0.85" />
+                <text
+                  x={x + BAR_W / 2}
+                  y={labelY()}
+                  text-anchor="middle"
+                  font-family="var(--mono)"
+                  font-size="9"
+                  fill="#5a5a55"
+                >
+                  {vAccessor().toFixed(2)}
+                </text>
+              </g>
+            );
+          }}
+        </Index>
       </g>
     );
   }
@@ -127,7 +126,7 @@ export default function LayerNormVsRMS() {
         >
           Input vector x (8 dims)
         </text>
-        {renderBars(vec(), Y0 + ROW_H / 2, "#5a5a55", "x")}
+        <Row values={vec} yCenter={Y0 + ROW_H / 2} color="#5a5a55" label="x" />
 
         {/* LayerNorm row */}
         <text
@@ -141,7 +140,7 @@ export default function LayerNormVsRMS() {
         >
           LayerNorm: (x − μ) / σ
         </text>
-        {renderBars(ln(), Y0 + ROW_H + 18 + ROW_H / 2, "#1a4f7a", "LN")}
+        <Row values={ln} yCenter={Y0 + ROW_H + 18 + ROW_H / 2} color="#1a4f7a" label="LN" />
 
         {/* RMSNorm row */}
         <text
@@ -155,7 +154,7 @@ export default function LayerNormVsRMS() {
         >
           RMSNorm: x / RMS(x)
         </text>
-        {renderBars(rmsn(), Y0 + 2 * ROW_H + 36 + ROW_H / 2, "#1a4f7a", "RMS")}
+        <Row values={rmsn} yCenter={Y0 + 2 * ROW_H + 36 + ROW_H / 2} color="#1a4f7a" label="RMS" />
       </svg>
 
       <div class="controls">

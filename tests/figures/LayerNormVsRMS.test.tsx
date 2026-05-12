@@ -29,4 +29,23 @@ describe("LayerNormVsRMS figure", () => {
     const after = container.querySelector("svg")!.textContent ?? "";
     expect(after).not.toEqual(before);
   });
+
+  it("bar heights actually change when sliders move", () => {
+    const { container } = render(() => <LayerNormVsRMS />);
+    const sliders = container.querySelectorAll("input[type=range]");
+    const biasSlider = sliders[0] as HTMLInputElement;
+    const scaleSlider = sliders[1] as HTMLInputElement;
+
+    const heightsOf = () =>
+      Array.from(container.querySelectorAll("rect")).map((r) => r.getAttribute("height"));
+
+    const before = heightsOf();
+    fireEvent.input(scaleSlider, { target: { value: "2.5" } });
+    const afterScale = heightsOf();
+    expect(afterScale).not.toEqual(before);
+
+    fireEvent.input(biasSlider, { target: { value: "1.5" } });
+    const afterBias = heightsOf();
+    expect(afterBias).not.toEqual(afterScale);
+  });
 });

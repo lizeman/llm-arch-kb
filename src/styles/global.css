@@ -94,14 +94,36 @@ th { font-weight: 600; background: var(--bg-soft); }
 
 .section-eyebrow {
   font-family: var(--mono);
-  font-size: 0.75rem;
-  letter-spacing: 0.08em;
+  font-size: var(--t-eyebrow);
+  letter-spacing: var(--ls-eyebrow);
   text-transform: uppercase;
   color: var(--accent);
   margin: var(--space-12) 0 var(--space-2) 0;
   font-style: normal;
 }
 .section-eyebrow + h2 { margin-top: 0; }
+
+/* Astro <ClientRouter /> view-transition styling.
+   Tasteful crossfade on the main article column (design spec §2.4).
+   Durations come from tokens, so prefers-reduced-motion zeros them. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--motion-base);
+  animation-timing-function: var(--ease-out);
+}
+::view-transition-old(main-article) {
+  animation: kb-fade-out var(--motion-fast) var(--ease-out) both;
+}
+::view-transition-new(main-article) {
+  animation: kb-fade-in var(--motion-base) var(--ease-out) both;
+}
+@keyframes kb-fade-out {
+  to { opacity: 0; }
+}
+@keyframes kb-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 
 ::selection { background: var(--accent-soft); }
 

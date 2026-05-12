@@ -18,6 +18,12 @@ figure_caption: "Drag t past the window size with S = 0 to see naive sliding-win
 summary: "The first 1-4 tokens of any pretrained decoder act as attention sinks — they absorb the softmax mass that has nowhere else to go. Pin them in the KV cache and you can slide the rest of the window over arbitrarily long input without quality collapse."
 tags: ["long-context", "inference"]
 last_verified: "2026-05-11"
+difficulty: "intermediate"
+facets:
+  - "long-context"
+  - "inference-only"
+cost:
+  inference_only: true
 ---
 
 import AttentionSinks from "~/components/figures/AttentionSinks";

@@ -5,9 +5,10 @@ import { BASE, slugTail } from "~/utils/site";
 interface Props {
   predecessors: string[];
   successors: string[];
+  prerequisites?: string[];
 }
 
-const { predecessors, successors } = Astro.props;
+const { predecessors, successors, prerequisites = [] } = Astro.props;
 
 const all = await getCollection("techniques");
 const lookup = new Map<string, { title: string; abbreviation: string; category: string }>();
@@ -30,6 +31,7 @@ function resolve(slugs: string[]): Item[] {
 }
 
 const rows: { label: string; items: Item[] }[] = [
+  { label: "Prerequisites", items: resolve(prerequisites) },
   { label: "Predecessors", items: resolve(predecessors) },
   { label: "Successors", items: resolve(successors) },
 ].filter((r) => r.items.length > 0);

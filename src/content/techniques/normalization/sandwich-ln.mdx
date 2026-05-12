@@ -24,6 +24,9 @@ figure_caption: "Residual stream RMS by depth: Pre-Norm grows like √L, Sandwic
 summary: "Two RMSNorms per sublayer: one before, one after, both inside the residual branch. Bounds the per-block contribution to the residual stream while keeping the identity path unnormalized. Used by Gemma 2 and 3."
 tags: ["normalization", "stability", "gemma"]
 last_verified: "2026-05-11"
+difficulty: "intermediate"
+facets:
+  - "training-stability"
 ---
 
 import SandwichVsPre from "~/components/figures/SandwichVsPre";

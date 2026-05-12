@@ -36,6 +36,9 @@ figure_caption: "Drag the bias slider: LayerNorm absorbs the offset (mean-subtra
 summary: "Normalize by RMS instead of subtracting the mean — drop one statistic, one bias, and ~5-10% of normalization compute, with no measurable quality cost."
 tags: ["normalization", "consensus-stack"]
 last_verified: "2026-05-11"
+difficulty: "intro"
+facets:
+  - "training-stability"
 ---
 
 import LayerNormVsRMS from "~/components/figures/LayerNormVsRMS";

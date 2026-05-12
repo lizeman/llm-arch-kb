@@ -21,6 +21,10 @@ figure_caption: "Drag the top-K budget. Indexer scores concentrate on needle pos
 summary: "A two-stage attention: a fast Lightning Indexer scores how relevant each historical key is to the current query, then full attention runs only over the top-K keys. Built on top of MLA — the latent KV cache is unchanged; the sparsity is in which cached entries get attended."
 tags: ["attention", "sparse", "long-context", "deepseek"]
 last_verified: "2026-05-11"
+difficulty: "intermediate"
+facets:
+  - "long-context"
+  - "efficiency"
 ---
 
 import DsaIndexer from "~/components/figures/DsaIndexer";

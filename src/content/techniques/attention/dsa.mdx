@@ -16,11 +16,14 @@ adopted_by:
   - model: "deepseek-v3-2"
     source_url: "https://arxiv.org/abs/2509.04559"
     notes: "First DSA-enabled DeepSeek release; experimental V3 derivative that ships sparse attention as the long-context efficiency lever."
+figure_component: "DsaIndexer"
+figure_caption: "Drag the top-K budget. Indexer scores concentrate on needle positions; DSA attends only to those, paying O(K) instead of O(L)."
 summary: "A two-stage attention: a fast Lightning Indexer scores how relevant each historical key is to the current query, then full attention runs only over the top-K keys. Built on top of MLA — the latent KV cache is unchanged; the sparsity is in which cached entries get attended."
 tags: ["attention", "sparse", "long-context", "deepseek"]
 last_verified: "2026-05-11"
 ---
 
+import DsaIndexer from "~/components/figures/DsaIndexer";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -71,6 +74,8 @@ out     = mla_attention(q[t], c_kv[top_idx])    # O(K * d)
 
 The latent KV cache itself is unchanged — DSA piggybacks on MLA's compression. What's new is
 the **selection** layer that decides which cached entries each query gets to see.
+
+<DsaIndexer client:visible />
 
 <p class="section-eyebrow">§ 3 · How the indexer is trained</p>
 ## A distillation target

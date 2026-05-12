@@ -1,0 +1,523 @@
+/* Compare-page Solid-island styles.
+   All chrome reuses existing tokens — no new colors.
+   §3.4 disciplines: no card surfaces, no shadows, no rounded > 3px.
+   Motion uses the Track A motion tokens with safe fallbacks inlined,
+   because Track B's worktree branched before Track A landed those tokens.
+*/
+
+:root {
+  /* Local fallbacks if Track A's motion tokens haven't merged yet.
+     They are no-ops once those tokens exist (cascade-equal). */
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.cmp-matrix {
+  margin: 24px 0;
+}
+
+/* --- Controls bar (chips + search + year + sort) ----------------------- */
+.cmp-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px 20px;
+  margin: 0 0 16px;
+}
+
+.cmp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  border: none;
+  padding: 0;
+  margin: 0;
+  align-items: baseline;
+}
+.cmp-chips-legend {
+  display: block;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  padding: 0;
+  margin: 0 0 6px;
+  width: 100%;
+}
+.cmp-chip {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 11px;
+  font-family: var(--serif);
+  font-size: var(--t-small);
+  color: var(--text-soft);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  transition: color var(--motion-fast) var(--ease-out),
+              border-color var(--motion-fast) var(--ease-out);
+}
+.cmp-chip:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+.cmp-chip.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.cmp-chip:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.cmp-chip-count {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+.cmp-chip.is-active .cmp-chip-count {
+  color: var(--accent);
+}
+.cmp-chip-label {
+  font: inherit;
+}
+
+/* --- Year-range two-input group ---------------------------------------- */
+.cmp-year-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+.cmp-year-range > .cmp-chips-legend {
+  width: 100%;
+  margin-bottom: 6px;
+}
+.cmp-year-label {
+  display: inline-flex;
+}
+.cmp-year-input {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  color: var(--text);
+  width: 72px;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+.cmp-year-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.cmp-year-sep {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  padding: 0 4px;
+}
+
+/* --- Search box -------------------------------------------------------- */
+.cmp-search {
+  display: inline-flex;
+  flex-direction: column;
+  margin-left: auto;
+}
+.cmp-search-input {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 5px 10px;
+  font-family: var(--serif);
+  font-size: var(--t-small);
+  color: var(--text);
+  width: 220px;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+.cmp-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* --- Multi-select focus ----------------------------------------------- */
+.cmp-focus {
+  margin: 0 0 16px;
+}
+.cmp-focus-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.cmp-focus-legend {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.cmp-focus-meta {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+.cmp-focus-clear {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.cmp-focus-clear:hover { color: var(--text); }
+.cmp-focus-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cmp-focus-hint {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  margin: 6px 0 0;
+}
+
+/* --- Toolbar (export + rowcount) -------------------------------------- */
+.cmp-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin: 0 0 12px;
+}
+.cmp-export {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.cmp-export-btn {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  transition: color var(--motion-fast) var(--ease-out),
+              border-color var(--motion-fast) var(--ease-out);
+}
+.cmp-export-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.cmp-export-msg {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  min-width: 4em;
+}
+.cmp-rowcount {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+
+/* --- Generic table wrap ------------------------------------------------ */
+.cmp-table-wrap {
+  overflow-x: auto;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.cmp-table {
+  margin: 0;
+  border-collapse: collapse;
+  font-size: var(--t-small);
+  min-width: 100%;
+}
+.cmp-th, .cmp-td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  text-align: left;
+  white-space: nowrap;
+}
+.cmp-th {
+  background: var(--bg-soft);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  position: sticky;
+  top: 0;
+  font-weight: 600;
+}
+.cmp-th-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  transition: color var(--motion-fast) var(--ease-out);
+}
+.cmp-th-btn:hover { color: var(--accent); }
+.cmp-th.is-sorted .cmp-th-btn { color: var(--accent); }
+.cmp-sort-arrow {
+  font-size: 0.7rem;
+  line-height: 1;
+  width: 0.9em;
+  display: inline-block;
+}
+.cmp-td a {
+  color: var(--text);
+  text-decoration: none;
+}
+.cmp-td a:hover { color: var(--accent); text-decoration: underline; }
+.cmp-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-faint);
+  font-style: italic;
+  white-space: normal;
+}
+
+/* --- Heatmap-specific -------------------------------------------------- */
+.cmp-heatmap .heatmap-wrap {
+  overflow-x: auto;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+}
+.cmp-heatmap .heatmap {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.cmp-heatmap .heatmap th,
+.cmp-heatmap .heatmap td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.cmp-heatmap .heatmap-group {
+  background: var(--bg-soft);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-soft);
+  padding: 6px 10px;
+}
+.cmp-heatmap .heatmap-corner {
+  background: var(--bg-soft);
+  text-align: left;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-right: 1px solid var(--border);
+  position: sticky;
+  left: 0;
+  z-index: 2;
+}
+.cmp-heatmap .heatmap-col {
+  background: var(--bg-soft);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--text-soft);
+  font-weight: 400;
+  padding: 8px 6px;
+  transition: background var(--motion-fast) var(--ease-out),
+              color var(--motion-fast) var(--ease-out);
+}
+.cmp-heatmap .heatmap-col a {
+  color: var(--text-soft);
+  text-decoration: none;
+}
+.cmp-heatmap .heatmap-col a:hover { color: var(--accent); text-decoration: underline; }
+.cmp-heatmap .heatmap-rowhead {
+  background: var(--bg);
+  text-align: left;
+  font-weight: 600;
+  border-right: 1px solid var(--border);
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding-right: 14px;
+  font-size: var(--t-small);
+  transition: background var(--motion-fast) var(--ease-out);
+}
+.cmp-heatmap .heatmap-rowhead a {
+  color: var(--text);
+  text-decoration: none;
+}
+.cmp-heatmap .heatmap-rowhead a:hover { color: var(--accent); text-decoration: underline; }
+.cmp-heatmap .heatmap-cell { padding: 6px 10px; }
+.cmp-heatmap .heatmap .dot {
+  color: var(--accent);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.cmp-heatmap .heatmap .empty-cell {
+  display: inline-block;
+  width: 4px;
+  height: 1px;
+}
+.cmp-heatmap .heatmap .group-sep { border-left: 1px solid var(--border); }
+
+/* Row hover highlight via :has() — degrades gracefully on Safari < 17. */
+.cmp-heatmap .heatmap tbody tr:has(td.heatmap-cell:hover) th.heatmap-rowhead {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.cmp-heatmap .heatmap tbody tr:has(td.heatmap-cell:hover) td.heatmap-cell {
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+/* Column hover highlight is applied via JS adding .is-col-active to all
+   cells (header + body) sharing a data-col value. */
+.cmp-heatmap .heatmap th.heatmap-col.is-col-active,
+.cmp-heatmap .heatmap td.heatmap-cell.is-col-active {
+  background: var(--accent-soft);
+}
+.cmp-heatmap .heatmap th.heatmap-col.is-col-active a {
+  color: var(--accent);
+}
+/* Stats row */
+.cmp-heatmap .heatmap-statsrow th,
+.cmp-heatmap .heatmap-statsrow td {
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+  background: var(--bg-soft);
+}
+.cmp-heatmap .heatmap-statshead {
+  background: var(--bg-soft);
+}
+.cmp-heatmap .heatmap-statscell {
+  padding: 6px 6px;
+}
+
+/* Adoption-stats footer cells */
+.cmp-stats {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 36px;
+}
+.cmp-stats-num {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-soft);
+}
+.cmp-stats-bar {
+  display: block;
+  width: 100%;
+  height: 3px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.cmp-stats-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0.55;
+  transition: width var(--motion-base) var(--ease-out);
+}
+
+/* Heatmap mobile-card fallback (same as before — preserved verbatim) */
+.cmp-heatmap .heatmap-cards { display: block; margin: 0; }
+.cmp-heatmap .heatmap-card {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.cmp-heatmap .heatmap-card:last-child { border-bottom: none; }
+.cmp-heatmap .heatmap-card h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.cmp-heatmap .heatmap-card h3 a { color: var(--text); text-decoration: none; }
+.cmp-heatmap .heatmap-card h3 a:hover { color: var(--accent); text-decoration: underline; }
+.cmp-heatmap .card-org {
+  display: block;
+  color: var(--text-faint);
+  font-size: var(--t-small);
+  font-weight: 400;
+  margin-top: 2px;
+}
+.cmp-heatmap .card-empty {
+  color: var(--text-faint);
+  font-size: var(--t-small);
+  font-style: italic;
+  margin: 0;
+}
+.cmp-heatmap .card-chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cmp-heatmap .chip-link {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  color: var(--text-soft);
+  text-decoration: none;
+  transition: color var(--motion-fast) var(--ease-out),
+              border-color var(--motion-fast) var(--ease-out);
+}
+.cmp-heatmap .chip-link:hover { color: var(--accent); border-color: var(--accent); }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cmp-matrix *, .cmp-matrix *::before, .cmp-matrix *::after {
+    transition: none !important;
+  }
+}

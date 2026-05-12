@@ -13,6 +13,9 @@ problem_solved: "Encode position by rotating Q and K vectors — so that attenti
 predecessors: ["sinusoidal"]
 successors: ["yarn"]
 adopted_by:
+  - model: "llama-1-65b"
+    source_url: "https://arxiv.org/abs/2302.13971"
+    notes: "RoPE base 10000; 2K base context."
   - model: "llama-2-70b"
     source_url: "https://arxiv.org/abs/2307.09288"
     notes: "RoPE base 10000, no scaling (4K context)."

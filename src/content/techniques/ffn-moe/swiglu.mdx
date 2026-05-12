@@ -13,6 +13,9 @@ problem_solved: "Replace the FFN's ReLU/GELU with a gated activation that consis
 predecessors: []
 successors: []
 adopted_by:
+  - model: "llama-1-65b"
+    source_url: "https://arxiv.org/abs/2302.13971"
+    notes: "First open-weights SwiGLU production model."
   - model: "llama-2-70b"
     source_url: "https://arxiv.org/abs/2307.09288"
     notes: "SwiGLU; established the 8/3·d_model hidden-dim convention."

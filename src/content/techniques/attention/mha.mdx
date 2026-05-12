@@ -12,7 +12,10 @@ status: "foundational"
 problem_solved: "Let attention specialize. Instead of one big attention over the whole d_model space, run H independent attention heads in lower-rank subspaces and concatenate — each head free to learn a different relation type."
 predecessors: []
 successors: []
-adopted_by: []
+adopted_by:
+  - model: "llama-1-65b"
+    source_url: "https://arxiv.org/abs/2302.13971"
+    notes: "Original Llama, before GQA was incorporated in Llama 2."
 summary: "The original attention layout: H independent heads, each computing scaled dot-product attention on a d_h-dim subspace, concatenated then projected. Now superseded by GQA, MLA in production decoders, but still the conceptual foundation."
 tags: ["attention", "foundational"]
 last_verified: "2026-05-11"

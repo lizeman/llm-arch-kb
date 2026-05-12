@@ -1,0 +1,49 @@
+---
+name: "Llama 1 65B"
+organization: "Meta"
+release_date: "2023-02-24"
+parameters_total: "65B"
+context_length: 2048
+open_weights: true
+paper_url: "https://arxiv.org/abs/2302.13971"
+model_card_url: "https://huggingface.co/huggyllama/llama-65b"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10000)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "MHA (64 query heads = 64 KV heads)"
+  moe: null
+  other:
+    - "80 layers"
+    - "First open-weights model to combine RMSNorm + RoPE + SwiGLU as a deliberate stack"
+    - "Non-commercial research license (restrictions later relaxed in Llama 2)"
+source_urls:
+  - "https://arxiv.org/abs/2302.13971"
+  - "https://huggingface.co/huggyllama/llama-65b"
+notes: "The original Llama. Established the Pre-Norm RMSNorm + RoPE + SwiGLU triple as the consensus open-weights stack. Llama 2 later added GQA on top."
+---
+
+Llama 1 65B (February 2023) is the original Llama and the model that established the
+Pre-Norm RMSNorm + RoPE + SwiGLU triple as the open-weights consensus stack. Per the Llama 1
+paper's Table 2, each of those choices was justified empirically against the alternatives
+available at the time:
+
+- **RMSNorm** over LayerNorm: cited Zhang & Sennrich 2019; ~7% wall-clock speedup at no
+  measurable quality cost.
+- **RoPE** over learned or sinusoidal position embeddings: cited Su et al. 2021; cleaner
+  long-context behavior and relative-position math via the rotation identity.
+- **SwiGLU** over GELU: cited Shazeer 2020; 0.5–1.3 perplexity points improvement at matched
+  parameter count.
+
+Attention is still MHA — 64 query heads, 64 KV heads, head dim 128. The decision to move to
+GQA came with Llama 2; the uptraining technique that made the switch cheap was from
+Ainslie et al. 2023, published a few months later.
+
+Base context length is 2K. Subsequent extension to 32K and beyond came post-release via
+fine-tuning recipes like PI and YaRN.
+
+For the GQA-era Llama, see [Llama 2 70B](/llm-arch-kb/models/llama-2-70b/) and
+[Llama 3.1 70B](/llm-arch-kb/models/llama-3-1-70b/).

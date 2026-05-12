@@ -1,0 +1,57 @@
+---
+name: "DeepSeek R1"
+organization: "DeepSeek-AI"
+release_date: "2025-01-20"
+parameters_total: "671B"
+parameters_active: "37B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2501.12948"
+model_card_url: "https://huggingface.co/deepseek-ai/DeepSeek-R1"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (decoupled head for MLA)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "MLA"
+  moe: "DeepSeekMoE with aux-loss-free routing"
+  other:
+    - "Same base architecture as DeepSeek V3 (61 layers, 128 attention heads, 256 routed experts + 1 shared)"
+    - "Two-stage post-training: cold-start SFT, then RL with GRPO and rule-based reward"
+    - "Distilled smaller variants (1.5B–70B) released alongside the 671B"
+source_urls:
+  - "https://arxiv.org/abs/2501.12948"
+  - "https://huggingface.co/deepseek-ai/DeepSeek-R1"
+  - "https://github.com/deepseek-ai/DeepSeek-R1"
+notes: "The reasoning variant of V3. Architecturally identical; the contribution is the post-training recipe (GRPO RL on rule-checkable problems). Listed here for completeness — readers looking for the architectural details should see DeepSeek V3."
+---
+
+DeepSeek R1 (January 2025) is the reasoning-trained variant of
+[DeepSeek V3](/llm-arch-kb/models/deepseek-v3/). Architecturally it is the V3 base model
+unchanged: 671B-parameter MoE with 37B active per token, 61 layers,
+[MLA](/llm-arch-kb/attention/mla/) attention with a
+[decoupled RoPE head](/llm-arch-kb/positional/decoupled-rope/),
+[DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) with
+[aux-loss-free routing](/llm-arch-kb/ffn-moe/aux-loss-free/), Pre-Norm RMSNorm, SwiGLU.
+
+What R1 contributes is post-training, not architecture:
+
+- **Cold-start supervised fine-tuning** on a small set of high-quality reasoning traces — long
+  chain-of-thought completions with explicit `<think>` and `<answer>` tags.
+- **Reinforcement learning with GRPO** (Group Relative Policy Optimization, a PPO variant the
+  DeepSeek-Math team introduced in 2024) using rule-based rewards: correctness checked by
+  programmatic verifiers (math answer equality, code unit-test pass), not a learned reward
+  model. The paper's central observation is that long chain-of-thought emerges spontaneously
+  from RL on rule-checkable problems, without explicit reasoning-trace supervision.
+- **Distillation** of R1's reasoning behavior into smaller dense bases (Qwen, Llama
+  derivatives at 1.5B–70B), released as `DeepSeek-R1-Distill-*` checkpoints.
+
+For the architecture details that R1 inherits unchanged from V3 — MLA's KV-cache compression,
+DeepSeekMoE's shared-expert routing, the aux-loss-free balance bias, RoPE+YaRN extension to
+128K — see the [DeepSeek V3](/llm-arch-kb/models/deepseek-v3/) entry.
+
+This page exists for navigability: R1 is the most-cited open reasoning model of early 2025, and
+readers arriving from "what architecture does R1 use?" should land somewhere useful. The
+architecture answer is "exactly V3."

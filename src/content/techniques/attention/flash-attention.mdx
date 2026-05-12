@@ -13,11 +13,14 @@ problem_solved: "Compute exact attention 2–4× faster and with 5–20× less p
 predecessors: []
 successors: []
 adopted_by: []
+figure_component: "FlashTiling"
+figure_caption: "Slide tile sizes to see the highlighted (B_r × B_c) sub-matrix; SRAM traffic shrinks ~10–100× vs the full L × L."
 summary: "Tile attention so QK^T and the softmax stay in SRAM rather than round-tripping through HBM. Exact (not approximate) attention, 2–4× faster, 5–20× less peak memory. The universal kernel under every modern transformer trainer."
 tags: ["attention", "kernel", "performance"]
 last_verified: "2026-05-11"
 ---
 
+import FlashTiling from "~/components/figures/FlashTiling";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -69,6 +72,8 @@ for q_tile in split(Q, block_size):
 ```
 
 The compute is the same. The memory pattern is dramatically better.
+
+<FlashTiling client:visible />
 
 <p class="section-eyebrow">§ 3 · Results</p>
 ## Empirical evidence

@@ -170,78 +170,176 @@ export default function HeadToHeadCompare(props: HeadToHeadProps) {
       </div>
 
       <Show when={selectedProfiles().length > 0}>
-        <div class={`h2h-grid h2h-grid--${selectedProfiles().length}`}>
-          <For each={selectedProfiles()}>
-            {(p) => (
-              <article class="h2h-col" aria-label={`Profile: ${p.name}`}>
-                <header class="h2h-col-header">
-                  <h3>
-                    <a href={p.href}>{p.name}</a>
-                  </h3>
-                  <p class="h2h-col-org">
-                    <span>{p.organization}</span>
-                    <span class="h2h-col-sep">·</span>
-                    <span>{p.yearLabel}</span>
-                  </p>
-                  <dl class="h2h-stats">
-                    <dt>Params</dt>
-                    <dd>
-                      {p.parametersTotal}
-                      <Show when={p.parametersActive}>
-                        <span class="h2h-stat-sub"> · {p.parametersActive} active</span>
-                      </Show>
-                    </dd>
-                    <dt>Context</dt>
-                    <dd>{formatContext(p.contextLength)} tokens</dd>
-                    <dt>Disclosure</dt>
-                    <dd class="h2h-disclosure">{p.disclosure}</dd>
-                  </dl>
-                </header>
+        {(() => {
+          const profiles = selectedProfiles();
+          // Union of categories adopted by at least one selected model,
+          // preserving the canonical category order from the first profile that has each.
+          const categorySet = new Set<string>();
+          const categoryLabels = new Map<string, string>();
+          for (const p of profiles) {
+            for (const g of p.adoptedByCategory) {
+              categorySet.add(g.category);
+              if (!categoryLabels.has(g.category)) categoryLabels.set(g.category, g.categoryLabel);
+            }
+          }
+          // Reorder by the order they appear in any profile's groups (stable).
+          const orderedCats: { category: string; categoryLabel: string }[] = [];
+          for (const p of profiles) {
+            for (const g of p.adoptedByCategory) {
+              if (
+                categorySet.has(g.category) &&
+                !orderedCats.find((c) => c.category === g.category)
+              ) {
+                orderedCats.push({ category: g.category, categoryLabel: g.categoryLabel });
+              }
+            }
+          }
+          const techsFor = (p: ModelProfile, cat: string): AdoptedTechnique[] => {
+            const g = p.adoptedByCategory.find((g) => g.category === cat);
+            return g?.techniques ?? [];
+          };
 
-                <section class="h2h-section">
-                  <p class="section-eyebrow">Architecture</p>
-                  <dl class="h2h-arch">
-                    <For each={props.archSlots}>
-                      {(slot) => (
-                        <>
-                          <dt>{slot.label}</dt>
-                          <dd>{p.architecture[slot.key] ?? "—"}</dd>
-                        </>
+          return (
+            <div class="h2h-compare-wrap" role="region" aria-label="Head-to-head model comparison">
+              <table class="h2h-compare">
+                <colgroup>
+                  <col class="h2h-compare-labelcol" />
+                  <For each={profiles}>{() => <col class="h2h-compare-valcol" />}</For>
+                </colgroup>
+
+                <thead>
+                  <tr class="h2h-compare-namerow">
+                    <th scope="col" />
+                    <For each={profiles}>
+                      {(p) => (
+                        <th scope="col" class="h2h-compare-modelhead">
+                          <a href={p.href}>{p.name}</a>
+                          <span class="h2h-compare-org">{p.organization}</span>
+                        </th>
                       )}
                     </For>
-                  </dl>
-                </section>
-
-                <section class="h2h-section">
-                  <p class="section-eyebrow">Adopted techniques</p>
-                  <Show
-                    when={p.adoptedByCategory.length > 0}
-                    fallback={<p class="h2h-empty-techs">No adoption claims documented yet.</p>}
-                  >
-                    <For each={p.adoptedByCategory}>
-                      {(group) => (
-                        <div class="h2h-tech-group">
-                          <p class="h2h-tech-cat">{group.categoryLabel}</p>
-                          <ul class="h2h-tech-chips">
-                            <For each={group.techniques}>
-                              {(t) => (
-                                <li>
-                                  <a class="h2h-tech-chip" href={t.href} title={t.title}>
-                                    {t.abbreviation}
-                                  </a>
-                                </li>
-                              )}
-                            </For>
-                          </ul>
-                        </div>
+                  </tr>
+                  <tr class="h2h-compare-metarow">
+                    <th scope="col" />
+                    <For each={profiles}>
+                      {(p) => (
+                        <td class="h2h-compare-modelmeta">
+                          <span>{p.yearLabel}</span>
+                          <span class="h2h-compare-sep">·</span>
+                          <span>
+                            {p.parametersTotal}
+                            <Show when={p.parametersActive}>
+                              <span class="h2h-compare-sub"> ({p.parametersActive} active)</span>
+                            </Show>
+                          </span>
+                          <span class="h2h-compare-sep">·</span>
+                          <span>{formatContext(p.contextLength)} ctx</span>
+                          <span class="h2h-compare-sep">·</span>
+                          <span class="h2h-compare-disclosure">{p.disclosure}</span>
+                        </td>
                       )}
                     </For>
-                  </Show>
-                </section>
-              </article>
-            )}
-          </For>
-        </div>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  <tr class="h2h-compare-sectionrow">
+                    <th
+                      scope="colgroup"
+                      colspan={profiles.length + 1}
+                      class="h2h-compare-sectionhead"
+                    >
+                      <span class="section-eyebrow">Architecture</span>
+                    </th>
+                  </tr>
+                  <For each={props.archSlots}>
+                    {(slot) => (
+                      <tr class="h2h-compare-row">
+                        <th scope="row" class="h2h-compare-rowlabel">
+                          {slot.label}
+                        </th>
+                        <For each={profiles}>
+                          {(p) => {
+                            const v = p.architecture[slot.key];
+                            const missing = !v || v === "—";
+                            return (
+                              <td class="h2h-compare-val" classList={{ "is-missing": missing }}>
+                                {missing ? "—" : v}
+                              </td>
+                            );
+                          }}
+                        </For>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+
+                <Show when={orderedCats.length > 0}>
+                  <tbody>
+                    <tr class="h2h-compare-sectionrow">
+                      <th
+                        scope="colgroup"
+                        colspan={profiles.length + 1}
+                        class="h2h-compare-sectionhead"
+                      >
+                        <span class="section-eyebrow">Adopted techniques</span>
+                      </th>
+                    </tr>
+                    <For each={orderedCats}>
+                      {(cat) => (
+                        <tr class="h2h-compare-row">
+                          <th scope="row" class="h2h-compare-rowlabel">
+                            {cat.categoryLabel}
+                          </th>
+                          <For each={profiles}>
+                            {(p) => {
+                              const techs = techsFor(p, cat.category);
+                              const empty = techs.length === 0;
+                              return (
+                                <td
+                                  class="h2h-compare-val h2h-compare-techs"
+                                  classList={{ "is-missing": empty }}
+                                >
+                                  <Show
+                                    when={!empty}
+                                    fallback={<>—</>}
+                                  >
+                                    <ul class="h2h-tech-chips">
+                                      <For each={techs}>
+                                        {(t) => (
+                                          <li>
+                                            <a
+                                              class="h2h-tech-chip"
+                                              href={t.href}
+                                              title={t.title}
+                                            >
+                                              {t.abbreviation}
+                                            </a>
+                                          </li>
+                                        )}
+                                      </For>
+                                    </ul>
+                                  </Show>
+                                </td>
+                              );
+                            }}
+                          </For>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </Show>
+              </table>
+
+              <p class="h2h-compare-footnote">
+                <span aria-hidden="true">—</span> means the choice was not publicly disclosed
+                by the model's developers, per the
+                {" "}<a href="../about/">citation policy</a>. Empty technique rows likewise mean
+                no adoption claim has been documented for that category.
+              </p>
+            </div>
+          );
+        })()}
       </Show>
 
       <section class="h2h-picker">

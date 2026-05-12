@@ -8,6 +8,7 @@ import HeadToHeadCompare, {
 
 const archSlots: ArchSlotSpec[] = [
   { key: "positional", label: "Positional", shortLabel: "Positional" },
+  { key: "normalization_placement", label: "Norm placement", shortLabel: "Norm placement" },
   { key: "attention", label: "Attention", shortLabel: "Attention" },
   { key: "moe", label: "MoE", shortLabel: "MoE" },
 ];
@@ -26,6 +27,7 @@ function makeProfile(overrides: Partial<ModelProfile>): ModelProfile {
     href: "/models/llama-3-1-70b/",
     architecture: {
       positional: "RoPE + YaRN",
+      normalization_placement: "pre",
       attention: "GQA",
       moe: "—",
     },
@@ -42,6 +44,10 @@ function makeProfile(overrides: Partial<ModelProfile>): ModelProfile {
   };
 }
 
+function countModelHeaderCells(container: HTMLElement): number {
+  return container.querySelectorAll(".h2h-compare-modelhead").length;
+}
+
 describe("HeadToHeadCompare", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/compare/");
@@ -52,10 +58,10 @@ describe("HeadToHeadCompare", () => {
       <HeadToHeadCompare profiles={[makeProfile({})]} archSlots={archSlots} defaultFocus={[]} maxFocus={3} />
     ));
     expect(getByText(/Pick up to 3 models/i)).toBeTruthy();
-    expect(container.querySelector(".h2h-grid")).toBeNull();
+    expect(container.querySelector(".h2h-compare")).toBeNull();
   });
 
-  it("pre-selects defaultFocus models on mount", () => {
+  it("pre-selects defaultFocus models on mount as table columns", () => {
     const { container } = render(() => (
       <HeadToHeadCompare
         profiles={[makeProfile({}), makeProfile({ slug: "deepseek-v3", name: "DeepSeek V3" })]}
@@ -64,21 +70,21 @@ describe("HeadToHeadCompare", () => {
         maxFocus={3}
       />
     ));
-    expect(container.querySelectorAll(".h2h-col").length).toBe(2);
+    expect(countModelHeaderCells(container as HTMLElement)).toBe(2);
   });
 
   it("toggles a model in/out via the picker button", () => {
-    const { container, getByText } = render(() => (
+    const { container } = render(() => (
       <HeadToHeadCompare profiles={[makeProfile({})]} archSlots={archSlots} defaultFocus={[]} maxFocus={3} />
     ));
-    expect(container.querySelectorAll(".h2h-col").length).toBe(0);
+    expect(countModelHeaderCells(container as HTMLElement)).toBe(0);
     const picker = container.querySelector(".h2h-picker-item") as HTMLElement;
     fireEvent.click(picker);
-    expect(container.querySelectorAll(".h2h-col").length).toBe(1);
+    expect(countModelHeaderCells(container as HTMLElement)).toBe(1);
     // toggle off via chip remove
     const remove = container.querySelector(".h2h-chip-remove") as HTMLElement;
     fireEvent.click(remove);
-    expect(container.querySelectorAll(".h2h-col").length).toBe(0);
+    expect(countModelHeaderCells(container as HTMLElement)).toBe(0);
   });
 
   it("enforces the maxFocus cap by dropping the oldest selection (FIFO)", () => {
@@ -96,18 +102,17 @@ describe("HeadToHeadCompare", () => {
         maxFocus={3}
       />
     ));
-    expect(container.querySelectorAll(".h2h-col").length).toBe(3);
+    expect(countModelHeaderCells(container as HTMLElement)).toBe(3);
     const allPickers = container.querySelectorAll(".h2h-picker-item");
-    // The 4th item is Model D (the unselected one)
     const dItem = Array.from(allPickers).find((el) =>
       el.textContent?.includes("Model D"),
     ) as HTMLElement;
     fireEvent.click(dItem);
-    const cols = container.querySelectorAll(".h2h-col");
-    expect(cols.length).toBe(3);
-    // Model A should be gone (oldest dropped)
-    expect(Array.from(cols).some((el) => el.textContent?.includes("Model A"))).toBe(false);
-    expect(Array.from(cols).some((el) => el.textContent?.includes("Model D"))).toBe(true);
+    const heads = container.querySelectorAll(".h2h-compare-modelhead");
+    expect(heads.length).toBe(3);
+    const headTexts = Array.from(heads).map((h) => h.textContent ?? "");
+    expect(headTexts.some((t) => t.includes("Model A"))).toBe(false);
+    expect(headTexts.some((t) => t.includes("Model D"))).toBe(true);
   });
 
   it("filters the picker list by search input", () => {
@@ -122,7 +127,6 @@ describe("HeadToHeadCompare", () => {
     const input = container.querySelector(".h2h-search input") as HTMLInputElement;
     input.value = "deepseek";
     fireEvent.input(input);
-    // search is debounced at 120ms; nudge time and re-read
     return new Promise<void>((resolve) => {
       setTimeout(() => {
         expect(container.querySelectorAll(".h2h-picker-item").length).toBe(1);
@@ -131,7 +135,7 @@ describe("HeadToHeadCompare", () => {
     });
   });
 
-  it("renders adopted-techniques grouped by category", () => {
+  it("renders adopted-techniques grouped by category as table rows", () => {
     const profile = makeProfile({
       slug: "deepseek-v3",
       name: "DeepSeek V3",
@@ -155,11 +159,73 @@ describe("HeadToHeadCompare", () => {
     const { container } = render(() => (
       <HeadToHeadCompare profiles={[profile]} archSlots={archSlots} defaultFocus={["deepseek-v3"]} maxFocus={3} />
     ));
-    const catLabels = Array.from(container.querySelectorAll(".h2h-tech-cat")).map(
+    const rowLabels = Array.from(container.querySelectorAll(".h2h-compare-rowlabel")).map(
       (el) => el.textContent?.trim(),
     );
-    expect(catLabels).toContain("Attention");
-    expect(catLabels).toContain("FFN & MoE");
+    expect(rowLabels).toContain("Attention");
+    expect(rowLabels).toContain("FFN & MoE");
     expect(container.querySelector("a[href='/attention/mla/']")).toBeTruthy();
+  });
+
+  it("aligns rows across columns even when values wrap (architecture rows share Y positions)", () => {
+    // This is the bug we're fixing: a long arch value in one column shouldn't push
+    // the next row out of alignment vs. an adjacent column with a short value.
+    const longValue = makeProfile({
+      slug: "long",
+      name: "Long-Values",
+      architecture: {
+        positional: "RoPE with decoupled head + YaRN scaling (this value wraps to multiple lines on narrow widths)",
+        normalization_placement: "sandwich (pre + post on both attention and FFN)",
+        attention: "MLA with decoupled RoPE head",
+        moe: "DeepSeek-MoE with aux-loss-free balancing",
+      },
+    });
+    const shortValue = makeProfile({
+      slug: "short",
+      name: "Short-Values",
+      architecture: {
+        positional: "RoPE",
+        normalization_placement: "pre",
+        attention: "GQA",
+        moe: "—",
+      },
+    });
+    const { container } = render(() => (
+      <HeadToHeadCompare
+        profiles={[longValue, shortValue]}
+        archSlots={archSlots}
+        defaultFocus={["long", "short"]}
+        maxFocus={3}
+      />
+    ));
+    // The alignment invariant: every row in the comparison table has exactly
+    // (1 label + N model columns) cells; rows in the same DOM <tr> are
+    // therefore vertically aligned by the browser layout engine.
+    const rows = container.querySelectorAll("tbody .h2h-compare-row");
+    expect(rows.length).toBeGreaterThanOrEqual(archSlots.length);
+    for (const row of Array.from(rows)) {
+      const cells = row.querySelectorAll("th, td");
+      expect(cells.length).toBe(3); // 1 label + 2 model columns
+    }
+  });
+
+  it("renders '—' for missing architecture slots and surfaces the footnote", () => {
+    const partial = makeProfile({
+      slug: "partial",
+      name: "Partial Disclosure",
+      architecture: {
+        positional: "RoPE",
+        normalization_placement: "—",
+        attention: "—",
+        moe: "—",
+      },
+    });
+    const { container } = render(() => (
+      <HeadToHeadCompare profiles={[partial]} archSlots={archSlots} defaultFocus={["partial"]} maxFocus={3} />
+    ));
+    const dashCells = container.querySelectorAll("td.h2h-compare-val.is-missing");
+    // 3 of the 4 arch slots are '—'
+    expect(dashCells.length).toBeGreaterThanOrEqual(3);
+    expect(container.querySelector(".h2h-compare-footnote")).toBeTruthy();
   });
 });

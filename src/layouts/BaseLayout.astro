@@ -25,17 +25,24 @@ const canonical = new URL(Astro.url.pathname, Astro.site).href;
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="generator" content={Astro.generator} />
+  <meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#1a4f7a" media="(prefers-color-scheme: dark)" />
+  <meta name="color-scheme" content="light" />
 
   <title>{fullTitle}</title>
   <meta name="description" content={description} />
   <link rel="canonical" href={canonical} />
 
   <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="LLM Architecture Knowledge Base" />
   <meta property="og:title" content={fullTitle} />
   <meta property="og:description" content={description} />
   <meta property="og:url" content={canonical} />
+  <meta property="og:locale" content="en_US" />
   {ogImage && <meta property="og:image" content={ogImage} />}
   <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={fullTitle} />
+  <meta name="twitter:description" content={description} />
 
   <link rel="icon" type="image/svg+xml" href={`${import.meta.env.BASE_URL}favicon.svg`} />
   <link rel="alternate" type="application/rss+xml" title="LLM Architecture KB — new entries" href={`${import.meta.env.BASE_URL}rss.xml`} />

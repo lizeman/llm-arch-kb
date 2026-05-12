@@ -1,0 +1,51 @@
+---
+name: "Mistral Large 3 (675B)"
+organization: "Mistral AI"
+release_date: "2025-12-02"
+parameters_total: "675B"
+parameters_active: "41B"
+context_length: 256000
+open_weights: true
+model_card_url: "https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512"
+disclosure_level: "partial"
+architecture:
+  positional: null
+  normalization_placement: null
+  normalization_type: null
+  qk_norm: null
+  activation: null
+  attention: null
+  moe: "Granular MoE (exact expert count and routing not disclosed publicly)"
+  other:
+    - "675B total, 41B active per token (39B language + 2.5B vision encoder)"
+    - "256K context window"
+    - "Native multimodal (text + image)"
+    - "Apache 2.0 license"
+    - "Architecture disclosure beyond MoE/params/context not in the public model card at release"
+source_urls:
+  - "https://huggingface.co/mistralai/Mistral-Large-3-675B-Instruct-2512"
+  - "https://mistral.ai/news/mistral-3"
+notes: "Public disclosure at release is unusually thin. Mistral's announcement and the model card state only that the model is a 'granular Mixture-of-Experts' at 675B total / 41B active, 256K context, Apache 2.0. Architectural slots that are not stated in the public materials — norm type/placement, QK-Norm, activation, attention head config, positional encoding, expert count, routing top-K — are left null rather than guessed (per the citation policy)."
+---
+
+Mistral Large 3 (December 2025) is Mistral AI's largest open-weights release: 675B total
+parameters with 41B active per token, 256K context, native multimodal. The model is shipped
+under Apache 2.0 — the broadest permissive license at this scale outside the
+[DeepSeek V3](/llm-arch-kb/models/deepseek-v3/) line.
+
+The architectural disclosure at release is unusually thin for an open-weights frontier model:
+
+- **Parameter shape:** 675B total / 41B active, with the public breakdown placing 2.5B of
+  the total on a vision encoder and ~673B / ~39B on the language model component.
+- **MoE:** described in the announcement as "granular Mixture-of-Experts." Exact expert
+  count, routing top-K, and presence/absence of a shared expert are not stated.
+- **Context:** 256K tokens.
+
+Per the [citation policy](/llm-arch-kb/about/), this entry leaves the rest of the
+`architecture` fields **null** rather than infer them. As of the entry's `last_verified`
+date, no technical report or paper has been published for Mistral Large 3 beyond the
+announcement post and Hugging Face model card.
+
+For Mistral's earlier disclosed architecture see
+[Mistral 7B](/llm-arch-kb/models/mistral-7b/) and the
+[Mixtral 8x7B](/llm-arch-kb/models/mixtral-8x7b/) entry.

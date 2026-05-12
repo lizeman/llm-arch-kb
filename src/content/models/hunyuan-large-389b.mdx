@@ -1,0 +1,53 @@
+---
+name: "Hunyuan-Large 389B"
+organization: "Tencent"
+release_date: "2024-11-05"
+parameters_total: "389B"
+parameters_active: "52B"
+context_length: 256000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2411.02265"
+model_card_url: "https://huggingface.co/tencent/Tencent-Hunyuan-Large"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base scaled to 1e9 for 256K context)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: null
+  activation: "SwiGLU"
+  attention: "GQA (80 query heads, 8 KV heads)"
+  moe: "16 specialized experts, top-1 routing + 1 always-on shared expert; expert-specific learning rate; recycling routing"
+  other:
+    - "64 layers, hidden dim 6400"
+    - "128K vocabulary"
+    - "7T training tokens"
+    - "Custom Tencent license (research + commercial, with restrictions at very high revenue)"
+source_urls:
+  - "https://arxiv.org/abs/2411.02265"
+  - "https://huggingface.co/tencent/Tencent-Hunyuan-Large"
+  - "https://github.com/Tencent-Hunyuan/Tencent-Hunyuan-Large"
+notes: "Architecture details from the technical report. The MoE design is unusual: 16 specialized experts with top-1 routing plus one always-on shared expert, and experts are trained with a scaled-down learning rate (~0.31× the shared expert's rate). RoPE base is scaled to 10⁹ to support the 256K context. QK-Norm is not mentioned in the report and is left null rather than guessed."
+---
+
+Hunyuan-Large (November 2024) is Tencent's largest open-weights MoE: 389B total parameters,
+52B active per token, 64 layers. The technical report (arXiv:2411.02265) discloses an
+architecture that follows the dominant 2024 stack with two distinctive MoE-side choices:
+
+- **One shared + one specialized expert per token.** The router selects top-1 out of 16
+  specialized experts; the chosen specialist runs alongside an always-on shared expert.
+  This is the [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) shape transposed — fewer,
+  larger experts with top-1 instead of many small experts with top-K.
+- **Expert-specific learning rate.** The specialized experts train with a learning rate
+  scaled to ~0.31× the shared expert's rate (report §3). Tencent argues this stabilizes
+  early MoE training by letting the shared expert lead while the specialists differentiate.
+- **Recycling routing.** Tokens routed to overloaded experts are recycled to the next-best
+  available expert rather than dropped — a load-balancing fallback distinct from the
+  [aux-loss-free](/llm-arch-kb/ffn-moe/aux-loss-free/) approach used by DeepSeek V3.
+
+The non-MoE components are conventional: Pre-Norm [RMSNorm](/llm-arch-kb/normalization/rmsnorm/),
+[SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) FFN inside each expert, [GQA](/llm-arch-kb/attention/gqa/)
+with 80 query heads sharing 8 KV heads, [RoPE](/llm-arch-kb/positional/rope/) with the base
+frequency pushed to 10⁹ for the 256K context window.
+
+QK-Norm presence is not surfaced in the technical report and is left out rather than
+guessed (per the [citation policy](/llm-arch-kb/about/)).

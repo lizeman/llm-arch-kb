@@ -56,7 +56,7 @@ describe("checkEntryStructure", () => {
   });
 
   it("flags body line count below 200", () => {
-    const issues = checkEntryStructure("tiny", SELF_URL);
+    const issues = checkEntryStructure("tiny\n", SELF_URL);
     expect(issues.some((i) => i.message.includes("line count"))).toBe(true);
   });
 });

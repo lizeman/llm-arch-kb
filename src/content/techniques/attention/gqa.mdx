@@ -76,76 +76,199 @@ import MhaMqaGqaMla from "~/components/figures/MhaMqaGqaMla";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## MHA vs MQA, both flawed
+## The KV cache is the inference bottleneck
 
-Multi-Head Attention (Vaswani et al. 2017) gives every query head its own K and V projection.
-For $H$ heads at $d_h$ head-dim, the KV cache per token per layer is
+Autoregressive decoding stores one key and one value vector per token, per attention head, per
+layer, for the entire context. At decode step $t$, every cached entry is read to produce one new
+token, so the cache lives in fast memory and grows linearly with context length. By Llama 2 scale
+it had become the dominant memory term, not the parameters.
 
-$$\text{cache} = 2 \cdot H \cdot d_h \quad (\text{fp16 bytes} = 4 \cdot H \cdot d_h).$$
+Concretely, for a model with $H$ query heads, head dimension $d_h$, and $L$ layers, Multi-Head
+Attention (Vaswani et al. 2017) stores
 
-For a 64-head model at $d_h = 128$, that is 16 KB per token per layer. At 128K context and 80
-layers, the KV cache pushes 160 GB — most of a frontier inference budget.
+$$\text{KV}_\text{MHA}(T) \;=\; 2 \cdot H \cdot d_h \cdot L \cdot T \quad \text{scalars}.$$
 
-Multi-Query Attention (Shazeer 2019) is the opposite extreme: one K, V pair shared across all
-heads. The cache becomes $2 \cdot d_h$ — an $H\times$ reduction. The quality cost is real but
-hard to pin down precisely; PaLM and others reported subtle degradation at scale.
+Plugging in the Llama 2 70B shape — $H = 64$, $d_h = 128$, $L = 80$ — at fp16 the cache is
+$2 \cdot 2 \cdot 64 \cdot 128 \cdot 80 = 2{,}621{,}440$ bytes per token, i.e. 2.5 MiB/token, or
+about 10 GiB at $T = 4$K and 320 GiB at $T = 128$K (Llama 2 paper §2, Touvron et al. 2023). That
+exceeds the HBM of an H100 by more than 3× before any weights or activations are loaded.
 
-GQA picks the middle.
+Shazeer's Multi-Query Attention (MQA, arXiv 1911.02150) takes the limit case: one $K$ and one $V$
+projection shared by all $H$ query heads, dropping the per-token cache to $2 \cdot d_h \cdot L$,
+an $H\times$ reduction. The PaLM technical report (Chowdhery et al. 2022, §2.2) and the original
+MQA paper both note quality degradation versus MHA on encoder-decoder and long-context generation
+benchmarks, and Ainslie et al. observe instability at large pretraining scale (GQA paper §1).
 
-<p class="section-eyebrow">§ 2 · The grouping</p>
-## Share K, V across groups of size H/G
+A second pressure point is memory bandwidth. At decode each new token must reread the entire
+cache; on an H100 (3.35 TB/s HBM) a 320 GiB MHA cache caps decode throughput well below the
+arithmetic limit. GQA cuts both the storage and the bandwidth demand by the same factor, so it
+shifts decode from memory-bound back toward compute-bound at long context (Ainslie et al. 2023,
+§4.2).
 
-Pick a group count $G$ dividing $H$. Each group of $H/G$ query heads shares one K, V pair.
+GQA, the subject of this entry, interpolates: introduce $G$ key-value heads with $1 \le G \le H$,
+where $G = H$ is MHA and $G = 1$ is MQA. Every group of $H/G$ query heads attends against one
+shared $(K, V)$ pair, cutting the cache by exactly $H/G\times$ while leaving the per-head query
+projections — and thus the expressive bottleneck — untouched.
 
-$$\mathbf{k}^{(g)}_t = W_K^{(g)}\,\mathbf{h}_t,\quad \mathbf{v}^{(g)}_t = W_V^{(g)}\,\mathbf{h}_t,\quad g \in \{1, \ldots, G\}.$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From MHA to grouped heads, with averaging-init uptraining
 
-At attention time, query head $i$ uses $K, V$ from group $\lfloor i / (H/G) \rfloor$:
+**Setup.** Let $\mathbf{h}_t \in \mathbb{R}^{d}$ be the residual-stream activation at position $t$
+($d$ = model dimension, e.g. $d = 8192$ for Llama 2 70B). MHA defines, for each head
+$i \in \{1, \ldots, H\}$,
 
-$$\mathrm{Attn}_i(\mathbf{Q}, K^{(g)}, V^{(g)}) = \mathrm{softmax}\!\left(\frac{\mathbf{Q}^{(i)}\,K^{(g)\top}}{\sqrt{d_h}}\right)V^{(g)}.$$
+$$\mathbf{q}^{(i)}_t = W_Q^{(i)}\mathbf{h}_t,\quad \mathbf{k}^{(i)}_t = W_K^{(i)}\mathbf{h}_t,\quad \mathbf{v}^{(i)}_t = W_V^{(i)}\mathbf{h}_t,$$
 
-KV cache per token per layer becomes $2 \cdot G \cdot d_h$. The KV-cache ratio vs MHA is exactly $H/G$.
+with $W_Q^{(i)}, W_K^{(i)}, W_V^{(i)} \in \mathbb{R}^{d_h \times d}$ and $d_h = d / H$ (Vaswani
+et al. 2017 §3.2). Head $i$'s contribution at decode step $t$, given cached
+$K^{(i)}_{<t} \in \mathbb{R}^{t \times d_h}$ and $V^{(i)}_{<t} \in \mathbb{R}^{t \times d_h}$, is
+
+$$\mathbf{o}^{(i)}_t \;=\; \mathrm{softmax}\!\left(\frac{\mathbf{q}^{(i)\top}_t K^{(i)\top}_{\le t}}{\sqrt{d_h}}\right) V^{(i)}_{\le t}.$$
+
+The outputs concatenate across heads and are projected by $W_O \in \mathbb{R}^{d \times d}$.
+Cache footprint per token per layer is the size of all $(\mathbf{k}^{(i)}_t, \mathbf{v}^{(i)}_t)$:
+$2 H d_h = 2d$ scalars.
+
+**The grouping.** Pick a divisor $G \mid H$ and partition the query heads into $G$ contiguous
+groups of size $H/G$. Replace the $H$ key/value projections with $G$ of them,
+$W_K^{(g)}, W_V^{(g)} \in \mathbb{R}^{d_h \times d}$ for $g \in \{1, \ldots, G\}$. Define the
+group index of query head $i$ as $g(i) = \lceil i G / H \rceil$. The GQA forward pass is
+
+$$\mathbf{q}^{(i)}_t = W_Q^{(i)}\mathbf{h}_t,\quad \mathbf{k}^{(g)}_t = W_K^{(g)}\mathbf{h}_t,\quad \mathbf{v}^{(g)}_t = W_V^{(g)}\mathbf{h}_t,$$
+
+$$\mathbf{o}^{(i)}_t \;=\; \mathrm{softmax}\!\left(\frac{\mathbf{q}^{(i)\top}_t \, K^{(g(i))\top}_{\le t}}{\sqrt{d_h}}\right) V^{(g(i))}_{\le t}.$$
+
+The cache stores only $G$ key and $G$ value vectors per token per layer, for a footprint of
+$2 G d_h$ scalars — exactly $H/G$ times smaller than MHA, and equal to MQA when $G = 1$
+(Ainslie et al. 2023, §3).
+
+**Why a divisor of $H$?** Every query head must map to exactly one KV group, and the per-group
+attention kernel is most efficient when the broadcast factor $H/G$ is an integer (so a single
+$K$/$V$ tile is reused across $H/G$ query tiles in registers; this is how Flash-Attention,
+PyTorch SDPA, and vLLM all implement it — see e.g. the `enable_gqa=True` path in
+PyTorch's `scaled_dot_product_attention`, [docs](https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html)).
+Non-divisor $G$ is implementable but irregular and unused in published models.
+
+**Why this particular middle ground?** Two alternatives motivate the design. (i) Reducing $H$ at
+fixed $d_h$ would shrink the cache equally but also reduce *query* expressivity; the GQA paper
+§3 argues that MQA-style degradation tracks the loss of *key/value* diversity, not query
+diversity, so leaving $H$ query heads intact preserves the high-frequency directions in attention
+that MQA collapses. (ii) Adding a low-rank residual to a single shared $K, V$ (the MLA route,
+DeepSeek-V2 arXiv 2405.04434) yields stronger compression but requires architectural surgery
+incompatible with averaging-init uptraining.
+
+**Parameter count.** The Q, K, V, O projection block costs
+
+$$P_\text{MHA} = 4 d^2, \qquad P_\text{GQA}(G) = d^2 \cdot \!\left(2 + \tfrac{2G}{H}\right), \qquad P_\text{MQA} = d^2 \cdot \!\left(2 + \tfrac{2}{H}\right),$$
+
+so GQA saves $2 d^2 (1 - G/H)$ parameters per layer over MHA in the attention block — small in
+the global parameter budget, but the relevant savings are runtime: at decode the GEMM and the
+cache read both shrink by $H/G$ on the K, V side.
+
+**KV-cache footprint.** Per layer, per token:
+
+$$\text{KV}_\text{GQA} \;=\; 2 \, G \, d_h \quad \text{scalars}, \qquad \frac{\text{KV}_\text{MHA}}{\text{KV}_\text{GQA}} = \frac{H}{G}.$$
+
+For Llama 2 70B ($H = 64$, $G = 8$, $d_h = 128$, $L = 80$, fp16), this gives
+$2 \cdot 2 \cdot 8 \cdot 128 \cdot 80 = 327{,}680$ bytes/token = 320 KiB/token, or 40 GiB at
+$T = 128$K — fitting on a single H100 80GB alongside weights, where the MHA equivalent did not
+(Llama 2 paper §2.1).
+
+**Uptraining recipe (averaging-init).** Ainslie et al.'s real contribution is the conversion
+procedure: given an MHA checkpoint with $H$ key/value heads, initialize each new GQA group's
+weights as the *mean* of the original heads assigned to that group,
+
+$$W_K^{(g)} \;\leftarrow\; \frac{1}{H/G} \sum_{i \,:\, g(i) = g} W_K^{(i)}, \qquad W_V^{(g)} \;\leftarrow\; \frac{1}{H/G} \sum_{i \,:\, g(i) = g} W_V^{(i)},$$
+
+then continue pretraining for $\alpha \ll 1$ fraction of the original compute. The paper (§3.1,
+Figure 1) sweeps $\alpha$ on T5-XXL and finds quality plateaus at $\alpha \approx 0.05$ — uptraining
+for 5% of original tokens recovers MHA-level performance. They contrast averaging with two
+alternatives — *picking* a single head from each group, and *random reinitialization* — and
+report both as strictly worse on the same uptraining budget (Figure 2). The averaging step
+matters because $K^{(g)}$ and $V^{(g)}$ inherit the column-space spanned by the heads they
+replace, so attention scores at step zero of uptraining are a sensible weighted average of the
+MHA scores rather than uncorrelated noise.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch: grouping and broadcast
 
 <MhaMqaGqaMla client:visible />
 
 ```python
-def gqa(q, k, v, num_heads, num_kv_heads):
-    # q: [B, T, H, d_h]; k, v: [B, T, G, d_h]
-    repeat = num_heads // num_kv_heads
-    k = k.repeat_interleave(repeat, dim=2)  # [B, T, H, d_h]
+# B = batch, T = seq len, H = query heads, G = kv heads (H % G == 0), d_h = head dim
+def gqa(h, W_Q, W_K, W_V, W_O, H, G, d_h):
+    # h: [B, T, d]; W_Q: [d, H*d_h]; W_K, W_V: [d, G*d_h]; W_O: [H*d_h, d]
+    q = (h @ W_Q).reshape(B, T, H, d_h)            # [B, T, H, d_h]
+    k = (h @ W_K).reshape(B, T, G, d_h)            # [B, T, G, d_h]   ← G, not H
+    v = (h @ W_V).reshape(B, T, G, d_h)            # [B, T, G, d_h]
+
+    # Broadcast each KV head to H/G query heads. In practice this is a view,
+    # not a copy — Flash-Attn / SDPA enable_gqa stride the K, V tiles.
+    repeat = H // G
+    k = k.repeat_interleave(repeat, dim=2)         # [B, T, H, d_h]
     v = v.repeat_interleave(repeat, dim=2)
-    return scaled_dot_product_attention(q, k, v)
+
+    scores = (q @ k.transpose(-2, -1)) / d_h**0.5  # [B, T, H, T]
+    scores = causal_mask(scores)
+    o = softmax(scores, dim=-1) @ v                # [B, T, H, d_h]
+    return o.reshape(B, T, H * d_h) @ W_O          # [B, T, d]
 ```
 
-In practice the repeat is implemented as a virtual stride in optimized kernels rather than a
-materialized copy — Flash-Attn and friends know how to broadcast across the group axis.
+The `repeat_interleave` is the load-bearing line: it is what makes a 64-query, 8-KV layer behave
+identically to the MHA kernel from the query side while the cache stays at $G = 8$.
 
-<p class="section-eyebrow">§ 3 · Uptraining from MHA</p>
-## The clever bit of the paper
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Ablations, scaling, and independent reproductions
 
-Ainslie et al.'s actual contribution was less the architecture (the idea is mechanical) and
-more the recipe: they showed you can *uptrain* an existing MHA checkpoint to GQA with only
-~5% of the original training compute. Initialize each group's $W_K^{(g)}, W_V^{(g)}$ by averaging
-the original $W_K^{(i)}, W_V^{(i)}$ across the heads that will share them, then fine-tune.
+**Original paper (Ainslie et al. 2023).** Table 1 reports T5-XXL (11B encoder-decoder) uptrained
+from the MHA checkpoint at $\alpha = 0.05$ and evaluated on five tasks (CNN/DailyMail, arXiv,
+PubMed summarization; WMT En→De; TriviaQA). GQA at $G = 8$ comes within 0.05–0.3 absolute points
+of the MHA-XXL baseline on every task; MQA loses 0.6–1.4 points on the same tasks. Figure 3 plots
+inference latency: MQA is 6× faster than MHA on T5-XXL decoding, GQA-8 is 5.5× faster — i.e. GQA
+captures almost all the speedup without the quality regression. Figure 4 sweeps $G \in \{1, 2,
+4, 8, 16, 32, 64\}$ and shows the elbow lies near $G = 8$ for T5-XXL: returns diminish sharply
+above $G = 8$, and quality falls off below it.
 
-This was the unlock that let Llama 2 70B ship with GQA without retraining from scratch, and
-established GQA as the default thereafter.
+**Llama 2 (Touvron et al. 2023).** The first large-scale decoder reproduction. Appendix A.2.1
+reports a held-out perplexity ablation: MHA, MQA, and GQA-8 trained from scratch at 150B tokens
+on the 7B architecture. GQA-8 matches MHA on perplexity and beats MQA by ≈0.05 nats; on the
+30-task average (Table 18) GQA is within 0.2 points of MHA and 1.2 points above MQA. The 70B
+production model ships GQA-8 ($H = 64$, $G = 8$). Llama 3 and Llama 3.1 retain the same layout
+([Llama 3 report](https://arxiv.org/abs/2407.21783) §3.1).
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**Mistral 7B ablation.** The Mistral 7B paper (Jiang et al. 2023, [arXiv 2310.06825](https://arxiv.org/abs/2310.06825))
+reports a 6× decode throughput improvement at long context from combining GQA-8 with sliding-window
+attention, without an MHA control of equal training compute. The throughput attribution to GQA in
+isolation is therefore indirect, but the per-token cache footprint matches the $H/G$ prediction.
 
-The original paper (Table 1) reports T5-XXL with GQA at $G = 8$ matching the MHA baseline's
-quality within noise on translation and summarization tasks, with $8\times$ smaller KV cache.
-MQA on the same setup loses 1–2 quality points.
+**Independent reproduction — Chinchilla-scale ablation.** Chowdhury et al. ([arXiv 2406.18219](https://arxiv.org/abs/2406.18219),
+"Weighted Grouped Query Attention") retrain 1.3B decoders from scratch at 100B tokens sweeping
+$G \in \{1, 2, 4, 8, 16\}$ and confirm the GQA elbow at $G = H/8$ to $H/4$. Their Table 2 shows
+GQA-4 within 0.1 perplexity of MHA-16 at the 1.3B scale, with MQA losing ≈0.3 perplexity. They
+also propose a learned weighted average over heads inside each group that recovers another
+0.05 perplexity — a small but reproducible gain on the same KV-cache budget.
 
-Llama 2 (Touvron et al. 2023) confirmed the same at decoder-LM scale: GQA-8 matched MHA on
-HumanEval, MMLU, and reasoning suites within run-to-run noise. Llama 3 and 3.1 kept GQA
-unchanged.
+**Independent reproduction — Qwen2.** The Qwen2 technical report (Yang et al. 2024,
+[arXiv 2407.10671](https://arxiv.org/abs/2407.10671)) reports a 1.5B-parameter sweep over
+$G \in \{1, 2, 4, 8, 16\}$ (Table 9 of the appendix) and selects $G = 4$ for their small models
+and $G = 8$ for the 7B/72B; the report frames the choice as a Pareto pick on the
+quality-vs-cache curve and is consistent with the GQA paper's elbow analysis.
 
-For models that need even smaller cache than GQA-8 allows, the natural next step is MLA — see
-the [MLA entry](/llm-arch-kb/attention/mla/) for the latent-compression alternative.
+**Long-context behavior.** Independent measurements at $T \ge 32$K (e.g. RULER benchmark,
+[Hsieh et al. 2024, arXiv 2404.06654](https://arxiv.org/abs/2404.06654)) compare GQA-8 Llama
+3 against MHA models at similar parameter counts: GQA does not degrade long-context recall
+relative to MHA at matched training, contra the original concern that fewer KV heads would lose
+positional information. No public study isolates $G$ at long context with everything else held
+fixed, however, so the question "does smaller $G$ disproportionately hurt long context?" remains
+without a clean ablation as of 2026-05.
+
+**Sensitivity to the uptraining fraction $\alpha$.** Beyond the original Figure 1 sweep on T5-XXL,
+no independent study has published a sweep of $\alpha$ at decoder-LM scale; Llama 2 reports only
+"GQA was added during the final training stage" without a recovery-curve ablation.
 
 <Summary>
-**GQA in one breath.** Share K, V across small groups of query heads. $H/G\times$ smaller KV cache
-with quality indistinguishable from MHA; uptrainable from an MHA checkpoint in 5% of original
-compute. The dominant 2023–25 attention layout for dense decoders.
+**GQA in one breath.** Replace $H$ key/value heads with $G < H$, sharing each $(K, V)$ across
+$H/G$ query heads. Cache shrinks by $H/G$ and quality stays within noise of MHA, including under
+averaging-init uptraining at ≈5% original compute (Ainslie et al. 2023, Table 1; Touvron et al.
+2023, Appendix A). The default attention layout for dense decoders since Llama 2.
 </Summary>

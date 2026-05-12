@@ -46,72 +46,244 @@ import MhaMqaGqaMla from "~/components/figures/MhaMqaGqaMla";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Why KV cache is the bottleneck
+## KV cache is the autoregressive tax
 
-Attention's KV cache is the dominant inference-time memory cost in long-context generation.
-At each new token, every prior key and value vector for every layer must be in memory. For a
-typical 64-head model at 128 head-dim that is 16 KB per token per layer in fp16, or about 1 GB
-at 64K context for a 30-layer model — comparable to the parameters themselves.
+In a decoder Transformer of $L$ layers with $H$ heads of dimension $d_h$, each generated token
+appends one key and one value vector per head per layer to a cache that the next step has to read.
+For DeepSeek-67B's geometry — $L = 95$, $H = 64$, $d_h = 128$, fp16 — the cache cost is
+$2 \cdot L \cdot H \cdot d_h \cdot 2\text{ B} \approx 3.1\text{ MB per token}$. A 32K context
+holds about 100 GB of cache before any model parameters are loaded, and the cache, not the FFN,
+dominates inference-time memory bandwidth at long context. DeepSeek-V2 quantifies the same problem
+on its 236B-parameter geometry: 1.6 MB of cache per token at $L = 60$, $H = 128$, $d_h = 128$
+([DeepSeek-V2, Table 1](https://arxiv.org/abs/2405.04434)).
 
-Group-Query Attention (GQA) reduces this by letting groups of query heads share a single K, V
-pair. Multi-Query Attention (MQA) is the extreme: one K, V for all heads. Both trade KV memory
-for some quality. MLA changes the shape of the tradeoff.
+The three predecessors all chase this number, with diminishing returns.
 
-<p class="section-eyebrow">§ 2 · The compression</p>
-## Down-project to a latent
+- **MHA** ([Vaswani et al., 2017](https://arxiv.org/abs/1706.03762)) gives every query head its own
+  K and V; the cache scales with $H \cdot d_h$. Quality is the reference, memory is the worst.
+- **MQA** ([Shazeer, 2019](https://arxiv.org/abs/1911.02150)) keeps a single shared K, V across all
+  heads. Cache shrinks by $H\times$, but quality drops measurably on multi-task evals: GQA's authors
+  report MQA losing 0.7 points of average score vs. MHA at the 11B scale
+  ([Ainslie et al., 2023, Table 2](https://arxiv.org/abs/2305.13245)).
+- **GQA** ([Ainslie et al., 2023](https://arxiv.org/abs/2305.13245)) interpolates: $G$ groups of
+  query heads share a K, V pair. At $G = 8$ on Llama-2-70B the cache is $8\times$ smaller than MHA
+  while quality is within noise.
 
-MLA replaces per-head K, V projections with a down-projection to a small latent vector
-$\mathbf{c}^{KV}_t \in \mathbb{R}^{d_c}$ per token:
+The shared move in MQA and GQA is to throw away K, V diversity. MLA keeps the diversity but stores
+a compressed representation: at each token, cache one low-rank latent and reconstruct every head's K
+and V on the fly. The reconstruction matrices are folded into adjacent projections at inference, so
+the per-token memory cost is the latent — not the per-head vectors.
 
-$$\mathbf{c}^{KV}_t = W_{DKV}\,\mathbf{h}_t,\quad d_c \ll H \cdot d_h.$$
+Two complications keep this from being a one-line description. First, the natural place to apply
+RoPE — to each head's K — is incompatible with the latent representation, because rotating after
+up-projection forces the up-projection to be re-applied per cached token. Second, the same trick
+that lets MLA evade that cost (absorbing the K up-projection into the query at inference) only
+works when the query side is also restructured to keep position out of the content channel.
+Both points are derived below.
 
-The latent is what gets cached. At attention time, we up-project to per-head K and V:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From MHA to a cached latent
 
-$$\mathbf{k}^{(i)}_t = W^{(i)}_{UK}\,\mathbf{c}^{KV}_t,\quad \mathbf{v}^{(i)}_t = W^{(i)}_{UV}\,\mathbf{c}^{KV}_t.$$
+**MHA baseline.** Let $\mathbf{h}_t \in \mathbb{R}^{d}$ be the residual-stream vector at position $t$.
+A standard MHA layer with $H$ heads of dimension $d_h$ computes, for head $i \in \{1, \dots, H\}$:
 
-The compression ratio is the cache savings. On DeepSeek-V2, $H d_h = 16384$ while $d_c = 512$ — a
-32× ratio at the projection level (a smaller ratio at the cache level once decoupled RoPE is added).
+$$
+\mathbf{q}^{(i)}_t = W^{(i)}_Q \mathbf{h}_t, \quad
+\mathbf{k}^{(i)}_t = W^{(i)}_K \mathbf{h}_t, \quad
+\mathbf{v}^{(i)}_t = W^{(i)}_V \mathbf{h}_t,
+$$
+
+with $W^{(i)}_Q, W^{(i)}_K, W^{(i)}_V \in \mathbb{R}^{d_h \times d}$. The per-token cache footprint
+is $2 \cdot H \cdot d_h$ scalars per layer — the two vectors $\mathbf{k}^{(i)}_t$ and
+$\mathbf{v}^{(i)}_t$ stacked across heads. For $H = 128$, $d_h = 128$, $L = 60$ (DeepSeek-V2)
+this is $1{,}966{,}080$ scalars or about 3.84 MB at fp16 per token.
+
+**Low-rank latent.** MLA replaces the per-head $W^{(i)}_K, W^{(i)}_V$ with a shared down-projection
+to a single latent $\mathbf{c}^{KV}_t$ of dimension $d_c \ll H \cdot d_h$, and per-head
+up-projections that reconstruct K and V at attention time
+([DeepSeek-V2, eq. 9–11](https://arxiv.org/abs/2405.04434)):
+
+$$
+\mathbf{c}^{KV}_t = W_{DKV} \mathbf{h}_t \in \mathbb{R}^{d_c}, \qquad
+\mathbf{k}^{C,(i)}_t = W^{(i)}_{UK} \mathbf{c}^{KV}_t, \qquad
+\mathbf{v}^{(i)}_t = W^{(i)}_{UV} \mathbf{c}^{KV}_t,
+$$
+
+with $W_{DKV} \in \mathbb{R}^{d_c \times d}$ and $W^{(i)}_{UK}, W^{(i)}_{UV} \in \mathbb{R}^{d_h \times d_c}$.
+The superscript $C$ marks the "content" part of the key, distinguished below from a position-aware
+part. Only $\mathbf{c}^{KV}_t$ enters the cache: $d_c$ scalars per token per layer instead of
+$2 H d_h$. DeepSeek-V2 picks $d_c = 512$, so the latent is $\tfrac{1}{64}$ the size of the stacked
+per-head K and V.
+
+**Why this is not just GQA with $G = 1$.** MQA also caches one K and one V per layer, of dimension
+$d_h$ each — $2 d_h = 256$ scalars at DeepSeek-V2's $d_h = 128$. The MLA latent is 512, twice as
+large in raw scalars, but expresses a $d_c$-dimensional subspace from which every head's K and V
+are independently reconstructed by its own $W^{(i)}_{UK}, W^{(i)}_{UV}$. MQA collapses head diversity
+at the cache level; MLA collapses only the rank, leaving each head free to read the latent through
+its own linear map. The empirical consequence is in § 4.
+
+**Query-side compression.** DeepSeek-V2 also down-projects queries to $\mathbf{c}^{Q}_t = W_{DQ} \mathbf{h}_t \in \mathbb{R}^{d_c'}$
+with $d_c' = 1536$, then up-projects per head: $\mathbf{q}^{C,(i)}_t = W^{(i)}_{UQ} \mathbf{c}^{Q}_t$
+([DeepSeek-V2, eq. 6–8](https://arxiv.org/abs/2405.04434)). The query compression saves training-time
+activation memory; it is not cached, since queries are recomputed at every step. The choice
+$d_c' = 3 d_c$ is reported without a sensitivity study.
+
+**The RoPE obstruction.** Rotary position embeddings ([Su et al., 2021](https://arxiv.org/abs/2104.09864))
+multiply $\mathbf{q}^{(i)}_t$ and $\mathbf{k}^{(i)}_t$ by a position-dependent rotation
+$R_t \in \mathbb{R}^{d_h \times d_h}$ before the inner product. With latent compression, the natural
+attention score for head $i$ between positions $t$ (query) and $s$ (key) is
+
+$$
+\mathbf{q}^{C,(i)}_t{}^{\top} W^{(i)}_{UK}{}^{\top} \, \mathbf{c}^{KV}_s.
+$$
+
+The trick that makes MLA cheap at inference is to absorb $W^{(i)}_{UK}{}^{\top}$ into the query-side
+matrix $W^{(i)}_{UQ}$ once, offline: define $\tilde{W}^{(i)}_Q = W^{(i)}_{UK} W^{(i)}_{UQ}$ and read
+the cached $\mathbf{c}^{KV}_s$ directly. But if RoPE rotates the per-head K *after* the up-projection,
+the score becomes $(R_t \mathbf{q}^{C,(i)}_t)^{\top} R_s W^{(i)}_{UK} \mathbf{c}^{KV}_s$ — the
+$R_s$ depends on $s$, so the up-projection cannot be precomposed: every cached token would need its
+$W^{(i)}_{UK}$ reapplied on the fly, defeating the purpose. Rotating *before* the down-projection
+mixes positions into the latent in a way that cannot be unrotated per head.
+
+**Decoupled RoPE head.** MLA's resolution is to split each key into a content part (no RoPE,
+reconstructed from the latent) and a small position-aware part (RoPE applied, cached separately)
+([DeepSeek-V2, eq. 12–13](https://arxiv.org/abs/2405.04434)):
+
+$$
+\mathbf{k}^{(i)}_t = \big[\, \underbrace{W^{(i)}_{UK} \mathbf{c}^{KV}_t}_{\text{content, } d_h}; \;
+\underbrace{R_t \, W_{KR} \mathbf{h}_t}_{\text{shared RoPE, } d_R} \,\big],
+$$
+
+where $W_{KR} \in \mathbb{R}^{d_R \times d}$ produces a single $d_R$-dimensional rotary key shared
+across all heads, with $d_R = 64$ in DeepSeek-V2. The query is split symmetrically:
+$\mathbf{q}^{(i)}_t = [W^{(i)}_{UQ} \mathbf{c}^{Q}_t ;\, R_t W^{(i)}_{QR} \mathbf{c}^{Q}_t]$. The
+content channel carries the absorbable up-projection; the rotary channel carries position with a
+small extra cost.
+
+**Per-token cache after decoupling.** The cache stores $\mathbf{c}^{KV}_t$ and the single shared
+$\mathbf{k}^{R}_t \in \mathbb{R}^{d_R}$, i.e., $d_c + d_R = 512 + 64 = 576$ scalars per layer per
+token. Across 60 layers that is $34{,}560$ scalars or ~67.5 KB per token at fp16, versus 3.84 MB
+for MHA on the same geometry — a $\sim 57\times$ reduction at the layer-cache level
+([DeepSeek-V2, Table 1](https://arxiv.org/abs/2405.04434) reports the equivalent figure as 4.5%
+of MHA cache after grouping by representation precision).
+
+**Parameter count.** Setting aside biases, an MLA layer's KV-side weights total
+
+$$
+|W_{DKV}| + \sum_{i=1}^{H} \big( |W^{(i)}_{UK}| + |W^{(i)}_{UV}| \big) + |W_{KR}|
+= d \cdot d_c + 2 H \cdot d_h \cdot d_c + d \cdot d_R.
+$$
+
+For DeepSeek-V2 ($d = 5120$, $H = 128$, $d_h = 128$, $d_c = 512$, $d_R = 64$) this is
+$5120 \cdot 512 + 2 \cdot 128 \cdot 128 \cdot 512 + 5120 \cdot 64 \approx 19.4\text{M}$ parameters
+per layer for the K/V path. Standard MHA at the same geometry uses
+$2 \cdot d \cdot H \cdot d_h = 2 \cdot 5120 \cdot 128 \cdot 128 \approx 167.8\text{M}$, so MLA's
+KV-side weight count is ~12% of MHA's. The query-side compression adds another
+$d \cdot d_c' + H \cdot d_h \cdot d_c' \approx 33.6\text{M}$ parameters per layer.
+
+**Computational complexity.** Per layer, MLA's attention compute for sequence length $T$ is
+$\mathcal{O}(T^2 H d_h)$ for the score and value-application — identical to MHA in the asymptotic
+sense — plus $\mathcal{O}(T \cdot d \cdot d_c)$ for the latent down-projection and
+$\mathcal{O}(T \cdot H \cdot d_h \cdot d_c)$ for the per-head up-projections. The absorption trick
+hides the up-projection behind the query: at inference, the cached $\mathbf{c}^{KV}_s$ is read
+directly as a $d_c$-vector and the merged $\tilde{W}^{(i)}_Q$ produces head-$i$ queries that score
+against it without ever materializing $\mathbf{k}^{C,(i)}_s$. The flop count is unchanged; the
+memory traffic is what shrinks.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
+
+```python
+# Shapes: B batch, T tokens, d model dim, H heads, d_h head dim,
+#         d_c KV latent dim, d_c_q Q latent dim, d_R RoPE head dim.
+
+# --- projections (per layer) ---
+c_kv = x @ W_DKV                          # [B, T, d_c]            <- cached
+k_rope = rope(x @ W_KR, pos)              # [B, T, d_R]            <- cached
+c_q = x @ W_DQ                            # [B, T, d_c_q]          (not cached)
+
+# Up-projections used at attention time. At inference these get folded:
+# tilde_W_Q[i] = W_UK[i] @ W_UQ[i], so queries can score against c_kv directly.
+k_content = c_kv @ W_UK                   # [B, T, H, d_h]         (logical only)
+v         = c_kv @ W_UV                   # [B, T, H, d_h]
+
+q_content = c_q  @ W_UQ                   # [B, T, H, d_h]
+q_rope    = rope(c_q @ W_QR, pos)         # [B, T, H, d_R]
+
+# Stack the content + rope channels into a (d_h + d_R)-wide key/query.
+k = concat([k_content, broadcast(k_rope, H)], dim=-1)   # [B, T, H, d_h + d_R]
+q = concat([q_content, q_rope], dim=-1)                 # [B, T, H, d_h + d_R]
+
+# Standard scaled dot-product over the concatenated dims.
+attn = softmax(q @ k.transpose(-1, -2) / sqrt(d_h + d_R))   # [B, H, T, T]
+out  = (attn @ v) @ W_O                                     # [B, T, d]
+```
 
 <MhaMqaGqaMla client:visible />
 
-```python
-# Down-project K,V to a single latent vector
-c_kv = x @ W_DKV                       # [B, T, d_c]
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Ablations and scaling
 
-# At attention time, up-project (typically absorbed into W_Q at inference)
-k = c_kv @ W_UK                         # [B, T, H, d_h]
-v = c_kv @ W_UV
+**Quality vs. MHA, MQA, GQA at fixed scale.** DeepSeek-V2's Table 9 holds the model at 7B
+activated parameters and varies only the attention variant. MLA reports 50.7 average across the
+listed benchmarks vs. 50.0 for MHA, with MLA winning on BBH (+1.5), MMLU (+0.4), and C-Eval (+1.5)
+while losing 0.3 on the GSM8K subset; MQA at 47.5 average and GQA at 48.6 both trail MHA on this
+setup ([DeepSeek-V2, Table 9](https://arxiv.org/abs/2405.04434)). The cache reduction at the same
+table is from 110.6 KB/token (MHA) to 33.75 KB/token (MLA), or 4.5% of the MHA budget after
+DeepSeek's representation-precision accounting — a 3.3× reduction at the comparable-quality point.
 
-# Decoupled RoPE head carries position (see §3)
-k_rope = rope(x @ W_KR)                 # [B, T, d_R]
-k = concat([k, k_rope], dim=-1)
-```
+**Throughput.** DeepSeek-V2 reports a 5.76× maximum generation throughput improvement over
+DeepSeek-67B (which used GQA at $G = 8$) on the same H800 cluster
+([DeepSeek-V2, §1 and Figure 1](https://arxiv.org/abs/2405.04434)). The throughput gain conflates
+MLA with the DeepSeekMoE FFN; the paper does not isolate the MLA-only fraction.
 
-<p class="section-eyebrow">§ 3 · Decoupled RoPE</p>
-## Why RoPE doesn't fit in the latent
+**Carry-over to V3 and V3.1.** DeepSeek-V3 keeps $d_c = 512$, $d_R = 64$, $d_c' = 1536$, $H = 128$,
+$d_h = 128$ across 61 layers with $d = 7168$
+([DeepSeek-V3 Technical Report, §2.1.1](https://arxiv.org/abs/2412.19437)). No re-ablation against
+MHA at V3 scale is published; the V3 report cites the V2 ablations as the basis for keeping MLA.
+DeepSeek-V3.1's [HF model card](https://huggingface.co/deepseek-ai/DeepSeek-V3.1) reports the same
+attention configuration carried over.
 
-RoPE rotates per-head K vectors before attention. If we apply RoPE *after* the up-projection,
-the rotation matrix has to be applied at every attention step — which kills the inference
-trick of absorbing $W_{UK}$ into $W_Q$.
+**Scaling to V3.2 + sparse attention.** DeepSeek-V3.2 ([arXiv 2509.04559](https://arxiv.org/abs/2509.04559))
+keeps MLA intact and adds a DeepSeek Sparse Attention (DSA) module that uses a Lightning Indexer to
+select a top-K subset of the cached latents (k=2048) for each query. The V3.2 report's Table 2
+shows DSA on top of MLA matching V3.1's quality on most benchmarks while cutting prefill cost
+materially at long context — the MLA cache is what makes the sparse indexer cheap to score, since
+each candidate is a single $d_c + d_R$ vector rather than $H$ per-head K vectors. This is the
+clearest scaling evidence: the same MLA shape extends from 236B to 671B parameters and composes
+with a sparse selector layered above it.
 
-If we apply RoPE *before* compression, the rotation entangles the down-projection with position
-in a way that can't be inverted at inference. MLA solves this by adding a small decoupled RoPE
-head: a single position-aware K head of dimension $d_R$ (typically 64) concatenated with the
-reconstructed per-head K.
+**Reproductions and independent reports.** Kimi-K2 ([Moonshot AI repo](https://github.com/MoonshotAI/Kimi-K2))
+adopts the MLA pattern with the decoupled RoPE head; the public model card describes the same
+$d_c = 512, d_R = 64$ shape. Kimi-Linear-48B
+([arXiv 2510.26692](https://arxiv.org/abs/2510.26692), Table 1) uses MLA on 7 of 27 layers in a
+hybrid stack with KDA linear attention on the rest, reporting that those 7 MLA layers contribute
+the bulk of long-context recall accuracy on RULER. No independent academic reproduction at the
+DeepSeek-V2 scale is public as of 2026-05-12; the available evidence is the introducing labs and
+their successors.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**Training-time vs. inference-time cost.** The empirical reports emphasize per-token cache and
+generation throughput, both of which are inference-time quantities. The training-time picture is
+different: MLA's per-step compute matches MHA asymptotically (still $\mathcal{O}(T^2 H d_h)$) and
+adds a low-rank projection that costs a fraction of a percent of total FLOPs at $H d_h \gg d_c$.
+The DeepSeek-V2 report does not provide a training-time ablation isolating MLA's wall-clock cost
+from the DeepSeekMoE FFN that runs alongside it; the V3 report similarly treats the two as a single
+joint design choice. Practitioners reproducing MLA from the equations should expect training-step
+time comparable to MHA on the same geometry; the wins are exclusively on the autoregressive side.
 
-On DeepSeek-V2's reported ablations (Table 9), MLA outperforms MHA on BBH and MMLU while
-cutting KV cache 5.5–6.5×; GQA on their setup underperforms MHA. DeepSeek-V3 keeps the same MLA
-configuration across 61 layers.
-
-The two costs are: (a) an extra rotary head adds slight overhead per layer; (b) implementing MLA
-efficiently in a kernel is harder than GQA, since you have to fuse the up-projection with the
-attention compute to avoid materializing the per-head K, V.
+**What is not in the public record.** The sensitivity of quality to $d_c$ (would $d_c = 256$ work?
+$d_c = 1024$?) is not published. The sensitivity to $d_R$ — and whether the decoupled head can be
+removed entirely with a NoPE-style positional scheme — is also not studied in the DeepSeek reports.
+At kernel level, the inference fusion of $W^{(i)}_{UK}$ into $\tilde{W}^{(i)}_Q$ that makes MLA
+cache-efficient is described in
+[DeepSeek-V2 §2.1.2](https://arxiv.org/abs/2405.04434) as a recipe but without throughput numbers
+isolated from the rest of the inference stack. The choice of $d_c' = 3 d_c$ for the query latent is
+likewise unmotivated in print. "I don't know" is the honest answer to all three.
 
 <Summary>
-**MLA in one breath.** Compress K and V to a per-token latent; reconstruct heads at attention time.
-5–7× smaller cache than MHA, on-par or better quality. Costs: an extra rotary head, harder to
-implement than GQA. Seen in: DeepSeek V2 / V3.
+**MLA in one breath.** Cache a per-token low-rank latent $\mathbf{c}^{KV} \in \mathbb{R}^{d_c}$
+plus a shared $d_R$-wide RoPE key; reconstruct every head's K and V at attention time, and absorb
+the K up-projection into the query matrix at inference. ~57× smaller per-layer cache than MHA on
+DeepSeek-V2's geometry, with quality matching or beating MHA on the V2 7B ablation. Seen in:
+DeepSeek V2 / V3 / V3.1 / V3.2, Kimi-K2, Kimi-Linear.
 </Summary>

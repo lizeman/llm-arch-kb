@@ -72,73 +72,202 @@ import LayerNormVsRMS from "~/components/figures/LayerNormVsRMS";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## What LayerNorm actually does
+## What LayerNorm actually costs
 
-For an input vector $\mathbf{x} \in \mathbb{R}^d$ at a single token position, LayerNorm computes:
+For each token in a forward pass through one Pre-Norm transformer block, [LayerNorm](https://arxiv.org/abs/1607.06450)
+is invoked twice: once before the attention sub-layer and once before the FFN. For a 70B-class
+model with 80 layers and a hidden dimension of $d = 8192$, that is 160 LayerNorm calls per token,
+each performing two full reductions across the feature axis (one for the mean, one for the
+centered variance), a subtraction, a division, and an affine transform with two learnable vectors
+$\boldsymbol{\gamma}, \boldsymbol{\beta} \in \mathbb{R}^d$.
+
+In raw terms per call: two reductions of $d$ summands, two $d$-vector parameter reads (16 KB
+each in fp16, 32 KB in fp32), and an output write. The reductions are the bottleneck — on a
+GPU, the SM stalls until the partial sums are all-reduced across the warp, and that latency
+sits on the critical path of every token of every layer.
+
+The parameter line is also non-trivial. LayerNorm contributes $2dL$ parameters across $L$
+layers per block (one $\boldsymbol{\gamma}$ and one $\boldsymbol{\beta}$ per call, times two
+calls per block). For Llama-2 70B ($d = 8192$, $L = 80$), that is about 2.6 M parameters spread
+across hundreds of tiny tensors — small as a fraction of total weights, but each is a separate
+kernel launch under naive execution.
+
+The question Zhang and Sennrich asked in 2019 is sharper than "is LayerNorm slow?" It is: of
+the two statistics LayerNorm estimates — the mean $\mu$ (re-centering) and the standard
+deviation $\sigma$ (re-scaling) — which one is actually load-bearing for training stability?
+Their answer, defended both analytically and empirically in [the paper](https://arxiv.org/abs/1910.07467),
+is that the re-centering term is dispensable. RMSNorm drops the mean and the bias, keeps the
+RMS-based re-scaling and the gain, and recovers comparable quality at strictly less compute.
+
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From LayerNorm to RMSNorm
+
+Start from LayerNorm. For a vector $\mathbf{x} \in \mathbb{R}^d$ of summed inputs at one token
+position (each $x_i$ is a single neuron's pre-activation in the layer being normalized),
+LayerNorm computes
 
 $$
-\mathrm{LN}(\mathbf{x}) = \frac{\mathbf{x} - \mu}{\sigma}\,\boldsymbol{\gamma} + \boldsymbol{\beta},
-\quad \mu = \tfrac{1}{d}\sum_i x_i,\quad \sigma = \sqrt{\tfrac{1}{d}\sum_i (x_i - \mu)^2 + \varepsilon}.
+\mathrm{LN}(\mathbf{x})_i \;=\; \frac{x_i - \mu}{\sigma}\,\gamma_i \;+\; \beta_i,
+\qquad
+\mu \;=\; \frac{1}{d}\sum_{j=1}^{d} x_j,
+\qquad
+\sigma \;=\; \sqrt{\frac{1}{d}\sum_{j=1}^{d}(x_j - \mu)^2 \;+\; \varepsilon}.
 $$
 
-Two statistics are estimated per token: the mean $\mu$ (re-centering) and the standard deviation
-$\sigma$ (re-scaling). The learnable gain $\boldsymbol{\gamma}$ and bias $\boldsymbol{\beta}$ then
-re-introduce per-feature degrees of freedom.
+Symbols: $d$ is the hidden width (e.g. 4096, 8192); $x_i \in \mathbb{R}$ is one neuron's
+pre-activation; $\mu \in \mathbb{R}$ is the sample mean of $\mathbf{x}$; $\sigma \in \mathbb{R}$
+is the sample standard deviation (with $\varepsilon \sim 10^{-5}$ to guard the square root);
+$\boldsymbol{\gamma}, \boldsymbol{\beta} \in \mathbb{R}^d$ are learned per-feature gain and bias.
+The full operator therefore needs $2d$ parameters and two reductions ($\sum x_j$ and
+$\sum(x_j-\mu)^2$) over the feature axis.
 
-The hypothesis Zhang and Sennrich tested in 2019: the re-centering step does very little. Most
-of LayerNorm's stabilizing effect comes from the re-scaling.
+Section 3 of Zhang and Sennrich classifies what LayerNorm's normalization actually buys, by
+asking which transformations of the layer input $\mathbf{x}$ or of the upstream weight matrix
+leave the output unchanged. The four cases are: re-centering of weights, re-scaling of weights,
+re-centering of inputs, re-scaling of inputs. LayerNorm is invariant to all four; the question is
+whether the input re-centering invariance — the one that requires computing $\mu$ — actually
+matters.
 
-<p class="section-eyebrow">§ 2 · The simplification</p>
-## Just normalize by RMS
-
-RMSNorm drops $\mu$ and $\boldsymbol{\beta}$, normalizing instead by the root mean square:
+The paper's argument for "no" runs through the gradient. Writing $\mathbf{a} = (\mathbf{x}-\mu\mathbf{1})/\sigma$
+for the normalized activation, the Jacobian of $\mathrm{LN}$ with respect to $\mathbf{x}$ has the
+structure
 
 $$
-\mathrm{RMSNorm}(\mathbf{x}) = \frac{\mathbf{x}}{\mathrm{RMS}(\mathbf{x})}\,\boldsymbol{\gamma},
-\quad \mathrm{RMS}(\mathbf{x}) = \sqrt{\tfrac{1}{d}\sum_i x_i^{\,2} + \varepsilon}.
+\frac{\partial \mathrm{LN}(\mathbf{x})_i}{\partial x_j} \;=\; \frac{\gamma_i}{\sigma}\,\Big(\,\delta_{ij}
+\;-\; \tfrac{1}{d} \;-\; \tfrac{1}{d}\,a_i\,a_j\,\Big),
 $$
 
-The activation is rescaled to unit RMS, then a per-feature gain $\boldsymbol{\gamma}$ is applied.
-No mean subtraction, no additive bias.
+a sum of three terms: an identity term, a mean-removal term $-1/d$ from differentiating through
+$\mu$, and a variance-removal term $-a_i a_j / d$ from differentiating through $\sigma$. The
+re-scaling backward path is the $a_i a_j / d$ term; the re-centering backward path is the
+constant $1/d$ term. Zhang and Sennrich's argument is that the constant subtraction-of-the-mean
+contribution is the strictly weaker of the two — the variance correction already projects the
+gradient onto the tangent space of the sphere of constant norm, and the mean correction is then a
+rank-1 correction whose practical effect on training dynamics is small. (The argument is heuristic
+in the paper; the experiments in § 4 are what carry the claim.)
+
+Removing it gives RMSNorm:
+
+$$
+\mathrm{RMSNorm}(\mathbf{x})_i \;=\; \frac{x_i}{\mathrm{RMS}(\mathbf{x})}\,\gamma_i,
+\qquad
+\mathrm{RMS}(\mathbf{x}) \;=\; \sqrt{\frac{1}{d}\sum_{j=1}^{d} x_j^{2} \;+\; \varepsilon}.
+$$
+
+Three things have happened:
+
+1. The mean $\mu$ is gone. The first reduction $\sum x_j$ disappears; only the second-moment
+   reduction $\sum x_j^2$ remains.
+2. The subtraction $x_i - \mu$ is gone. There is one fewer pointwise op per element.
+3. The additive bias $\boldsymbol{\beta}$ is gone. Per-call parameter count is $d$, not $2d$.
+
+What is preserved is the invariance the paper argues is the load-bearing one: re-scaling of the
+input. For any scalar $\alpha > 0$, $\mathrm{RMSNorm}(\alpha \mathbf{x}) = \mathrm{RMSNorm}(\mathbf{x})$
+(up to the $\varepsilon$ guard). This follows directly from
+$\mathrm{RMS}(\alpha \mathbf{x}) = \alpha\,\mathrm{RMS}(\mathbf{x})$. Re-centering invariance is
+deliberately given up.
+
+Geometrically, $\mathrm{RMSNorm}(\mathbf{x}) = \sqrt{d}\,\boldsymbol{\gamma} \odot \mathbf{x}/\|\mathbf{x}\|_2$
+(with $\varepsilon = 0$): the normalization is a projection of the activation onto the sphere of
+radius $\sqrt{d}$, followed by a per-coordinate gain. LayerNorm first translates $\mathbf{x}$ so
+its centroid is at the origin and then performs the same projection. RMSNorm skips the translation
+and trusts that downstream weights can absorb the offset.
+
+Numerical stability. The placement of $\varepsilon$ matters in low precision. Computing the sum
+$\sum x_j^2$ in fp16 overflows once any $|x_i| \gtrsim 240$, so production kernels
+([reference implementation](https://github.com/bzhangGo/rmsnorm/blob/master/rmsnorm_torch.py))
+accumulate the square in fp32 even when $\mathbf{x}$ is stored in fp16/bf16. The $\varepsilon$
+guard then sits inside the square root, so the worst-case division is $x_i / \sqrt{\varepsilon}$;
+typical values $\varepsilon \in \{10^{-5}, 10^{-6}\}$ keep that bounded for reasonable inputs.
+Llama-class configs commonly use $10^{-5}$ or $10^{-6}$ — see, for example, the
+[Llama 3 release notes](https://github.com/meta-llama/llama3) (`rms_norm_eps`).
+
+Per-call accounting versus LayerNorm, holding $d$ fixed:
+
+| Quantity | LayerNorm | RMSNorm | Δ |
+|---|---|---|---|
+| Reductions over the feature axis | 2 | 1 | −1 |
+| Pointwise subtractions | 1 | 0 | −1 |
+| Learnable parameters | $2d$ | $d$ | $-d$ |
+| Bytes of param state, fp16 | $4d$ | $2d$ | $-2d$ |
+
+For a Llama-2 70B-scale model ($d = 8192$, $L = 80$, two norms per block, plus a final norm), the
+parameter-count delta is $(2\!\cdot\!80 + 1)\cdot d = 1{,}318{,}912$ scalars removed — under 0.002%
+of total weights, but a meaningful constant-factor saving in the small-tensor traffic that
+dominates kernel-launch overhead on the norm path.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## A sketch of the forward pass
 
 ```python
-def rms_norm(x, g, eps=1e-6):
-    # x: [..., d]  g: [d] learnable gain
-    rms = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
-    return x * rms * g
+def rms_norm(x, gamma, eps=1e-6):
+    # x: [..., d]  the activation being normalized
+    # gamma: [d]   learnable per-feature gain
+    # No mean, no bias. One reduction along the last axis.
+    sq_mean = x.pow(2).mean(dim=-1, keepdim=True)   # [..., 1]
+    inv_rms = (sq_mean + eps).rsqrt()               # [..., 1]
+    return x * inv_rms * gamma                      # [..., d]
+
+# Compare: LayerNorm needs both reductions and an extra parameter.
+def layer_norm(x, gamma, beta, eps=1e-6):
+    mu  = x.mean(dim=-1, keepdim=True)              # [..., 1]   first reduction
+    var = (x - mu).pow(2).mean(dim=-1, keepdim=True) # [..., 1]  second reduction
+    return (x - mu) * (var + eps).rsqrt() * gamma + beta
 ```
+
+The sketch is not a kernel: a production version fuses the reduction, the rescaling, and the gain
+into a single pass, and accumulates `sq_mean` in fp32 when `x` is in bf16/fp16.
 
 <LayerNormVsRMS client:visible />
 
-<p class="section-eyebrow">§ 3 · Why it works</p>
-## Re-scaling is what matters
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the experiments show
 
-The original paper's analysis: the gradient of LayerNorm with respect to $\mathbf{x}$ decomposes
-into a re-scaling term and a re-centering term. Empirically the re-centering term contributes
-little to gradient flow at the scales relevant to large transformers. Dropping it does not
-destabilize training.
+The introducing paper benchmarks RMSNorm versus LayerNorm across six tasks: Transformer-based
+WMT14 En→De translation, RNNSearch En→De, character- and word-level language modeling on
+enwik8/Wikitext-103, image-caption retrieval on Order-Embeddings, BiDAF question answering on
+SQuAD, and CIFAR-10 image classification. The headline claim from the abstract — comparable
+quality, 7–64% wall-clock speedup — is decomposed across these workloads in the paper's tables.
+The high end of that range (~64%) comes from the small RNNSearch model where the LayerNorm cost
+is a larger fraction of step time; the low end (~7–10%) comes from the Transformer where
+attention dominates. Quality numbers (BLEU, BPC, accuracy) are within noise across all six.
 
-Concretely: removing the mean estimation eliminates one reduction along the feature dimension
-per call, plus the subtraction, plus the bias parameters. On GPUs, the reduction itself is the
-bottleneck — fewer reductions means lower memory traffic.
+A partial variant pRMSNorm, in which only the first $p\,\%$ of features are used to estimate the
+RMS, is also tested. At $p = 6.25\%$, quality is preserved on the same suite — evidence that the
+useful signal in the normalization statistic is not a fine-grained property of the activation
+distribution. Production stacks have not picked up pRMSNorm, presumably because the speedup
+beyond standard fused RMSNorm is small and the partial-feature pattern is unfriendly to a fused
+single-pass kernel.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+Three observations from the 2023–2026 production record carry the claim into modern scale:
 
-The original paper reports RMSNorm reducing per-step running time by 7–64% across translation
-and language-modeling benchmarks vs LayerNorm, with no statistically significant quality
-difference on the tested tasks.
+- The [Llama 1 paper](https://arxiv.org/abs/2302.13971) reports adopting Pre-Norm + RMSNorm
+  citing Zhang and Sennrich; § 2.2 lists this as one of three deliberate departures from the
+  GPT-3 recipe, framed under "improve training stability." Llama 1 was the first
+  open-weights frontier-scale dense model to commit to the combination, and every subsequent
+  Llama generation has kept it (see Llama 2 § 2.2, Llama 3 § 3.1).
+- The [OLMo 2 tech report](https://arxiv.org/abs/2501.00656) — an open project specifically
+  designed to ablate architectural choices — keeps RMSNorm and pushes further by reordering it
+  (normalize the outputs of attention and FFN rather than the inputs). Figure 7 of that report
+  shows that reordered normalization, on its own, does not stabilize the gradient L2 norm; only
+  the combination of reordered norm + QK-norm does. RMSNorm itself is treated as settled and is
+  not re-ablated against LayerNorm.
+- I am not aware of a public study at modern scale ($\geq$ 7B parameters,
+  $\geq$ 1T training tokens) that finds a quality regression from switching LayerNorm → RMSNorm
+  with all else held equal. The closest negative result I have found is the
+  [Peri-LN analysis](https://arxiv.org/html/2502.02732v3) of where to *place* the norm; the
+  norm operator itself is RMSNorm throughout.
 
-In modern transformer training, the reported speedup is smaller in absolute terms because
-attention dominates wall-clock time. But RMSNorm is invoked twice per block (Pre-Norm) or more
-(sandwich placements), so the cumulative savings are non-trivial — and there is no quality
-reason to prefer LayerNorm.
-
-Every open frontier dense LLM family from Llama 1 onward uses RMSNorm. It is the consensus
-choice and a load-bearing piece of the 2024–26 stack.
+A useful counterpoint to the "always use RMSNorm" framing: nothing in the derivation rules out
+LayerNorm working too. Zhang and Sennrich's claim is that the mean subtraction is unnecessary,
+not that it is harmful. At inference, the difference is a single reduction per call; at training,
+it is one extra term in the backward pass. The case for RMSNorm is the cumulative constant
+factor across hundreds of layer-norm calls per token across a trillion-token run, not a
+fundamental capability gap.
 
 <Summary>
-**RMSNorm in one breath.** Same stabilization as LayerNorm, minus the mean subtraction and the
-bias. Slightly faster, identical or better quality, no compelling reason ever to choose otherwise.
-The default for every open frontier LLM.
+**RMSNorm in one breath.** Drop LayerNorm's mean and bias; keep its RMS-based re-scaling and gain.
+One reduction instead of two, $d$ fewer parameters per call, quality within noise on every public
+benchmark since 2019. The default normalization for every open frontier dense LLM from Llama 1 to
+the present.
 </Summary>

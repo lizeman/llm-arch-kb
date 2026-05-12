@@ -1,0 +1,74 @@
+---
+title: "ReLU-Gated Linear Unit"
+abbreviation: "ReGLU"
+category: "ffn-moe"
+year: 2020
+month: 2
+introduced_by: "Noam Shazeer"
+paper_title: "GLU Variants Improve Transformer"
+arxiv_id: "2002.05202"
+paper_url: "https://arxiv.org/abs/2002.05202"
+status: "foundational"
+problem_solved: "Same gated bilinear FFN as SwiGLU and GeGLU, with ReLU as the gate. The third evaluated variant in the original GLU-variants paper; rarely adopted in production but useful as a baseline."
+predecessors: ["gelu"]
+successors: ["swiglu", "geglu"]
+adopted_by: []
+summary: "Bilinear gated FFN with a ReLU-activated gating path. Matches SwiGLU and GeGLU on quality within noise per Shazeer's original ablations; the rarely-shipped third GLU variant."
+tags: ["ffn", "activation", "foundational"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The third variant
+
+Shazeer's 2020 GLU-variants paper evaluated multiple choices for the gate activation:
+
+- **GLU**: original Dauphin et al. 2017, $\phi = \sigma$ (sigmoid).
+- **ReGLU**: $\phi = \mathrm{ReLU}$.
+- **GeGLU**: $\phi = \mathrm{GELU}$.
+- **SwiGLU**: $\phi = \mathrm{Swish}$.
+
+All four follow the bilinear form $\mathrm{FFN}(\mathbf{x}) = W_2((W\mathbf{x}) \odot \phi(V\mathbf{x}))$.
+The differences are in the gate's smoothness, saturation behavior, and ability to produce hard
+zeros.
+
+ReGLU is the variant whose gate produces *hard zeros*: any negative gating input drops the
+corresponding output to zero, just like a vanilla ReLU. SwiGLU and GeGLU are smooth (no zeros);
+GLU's sigmoid never produces zero but approaches it asymptotically.
+
+<p class="section-eyebrow">§ 2 · The activation</p>
+## ReLU gate, bilinear form
+
+$$\mathrm{ReGLU}(\mathbf{x}) = \bigl(W\mathbf{x}\bigr) \odot \mathrm{ReLU}\bigl(V\mathbf{x}\bigr).$$
+
+```python
+def reglu_ffn(x, W, V, W2):
+    return F.relu(x @ V.T) * (x @ W.T) @ W2.T
+```
+
+Same three-projection structure as SwiGLU/GeGLU; the [8/3 · d_model](/llm-arch-kb/ffn-moe/swiglu/)
+parameter-matching rule applies identically.
+
+<p class="section-eyebrow">§ 3 · Why nobody ships it</p>
+## The hard-zero drawback
+
+In Shazeer (2020) Table 1, ReGLU lands between SwiGLU and GLU on perplexity — slightly worse
+than SwiGLU and GeGLU but better than vanilla GLU. The reason it's rarely chosen in production
+despite this near-parity is the hard-zero gating: a dead gating unit zeroes out half of the
+FFN's effective capacity for that input, with no smooth gradient path back to "alive".
+
+Swish and GELU avoid this failure mode by producing small-but-nonzero outputs for negative
+inputs. The cost is slightly more compute per gate; the benefit is no dead units.
+
+For the v1 ship's open-weights models (Llama, OLMo, DeepSeek, Gemma), all four producers chose
+SwiGLU or GeGLU. ReGLU shows up occasionally in research baselines but not in production
+frontier decoders.
+
+<Summary>
+**ReGLU in one breath.** GLU-variant with ReLU as the gate. Functional but lossy: hard zeros
+from negative gating inputs kill some FFN capacity. Shazeer 2020 reports it within noise of
+SwiGLU and GeGLU on perplexity, but the dead-unit failure mode makes it the rarely-shipped
+third option.
+</Summary>

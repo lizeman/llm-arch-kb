@@ -27,8 +27,8 @@ import Summary from "~/components/Summary.astro";
 <p class="section-eyebrow">§ 1 · Premise</p>
 ## The cost MHA pays at inference
 
-At training time, MHA's per-head K and V projections are essentially free — they parallelize
-across the batch and sequence dimensions. At inference time, with batch size 1 and autoregressive
+At training time, MHA's per-head K and V projections parallelize across the batch and sequence
+dimensions and cost very little. At inference time, with batch size 1 and autoregressive
 generation, the KV cache becomes the dominant memory cost. Each token's prior K and V vectors
 must stay resident; each head needs its own copy.
 

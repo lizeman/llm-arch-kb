@@ -90,9 +90,9 @@ The successor lineage tightened this constraint:
 - **MLA** (DeepSeek 2024): compress K, V to a per-token latent. 5-7× smaller cache than MHA
   and on-par quality. See the [MLA entry](/llm-arch-kb/attention/mla/).
 
-For dense decoders shipping in 2024–26, plain MHA is essentially never used — every entry on
-this site's adoption list runs GQA or MLA instead. That is why this entry's `adopted_by` list
-is empty: MHA's role is historical.
+For dense decoders shipping in 2024–26, plain MHA is rare — Llama 2 and later, every Qwen, every
+DeepSeek, every Gemma 2+ runs GQA or MLA instead. The adopters listed in this entry's
+frontmatter are all pre-GQA artifacts: Llama 1, OLMo 1, Gemma 1.
 
 <p class="section-eyebrow">§ 4 · What MHA still tells us</p>
 ## The conceptual frame

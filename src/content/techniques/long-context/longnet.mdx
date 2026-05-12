@@ -18,6 +18,7 @@ tags: ["long-context", "dilated", "sparse"]
 last_verified: "2026-05-11"
 ---
 
+import LongnetDilated from "~/components/figures/LongnetDilated";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -59,6 +60,8 @@ def dilated_attention(q, k, v, dilation_rate, window_size):
 Total compute per layer: $O(N \cdot w \cdot \log N)$. With $w \approx 1024$ and the head count
 scaling logarithmically in target context length, this scales sub-linearly past softmax's
 $O(N^2)$.
+
+<LongnetDilated client:visible />
 
 <p class="section-eyebrow">§ 3 · Full reachability via composition</p>
 ## Why log N heads is enough

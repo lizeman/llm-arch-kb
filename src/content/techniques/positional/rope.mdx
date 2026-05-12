@@ -11,7 +11,7 @@ paper_url: "https://arxiv.org/abs/2104.09864"
 status: "production-adopted"
 problem_solved: "Encode position by rotating Q and K vectors — so that attention's inner product depends only on the relative offset between tokens, with no separate position-embedding lookup."
 predecessors: ["sinusoidal"]
-successors: ["yarn"]
+successors: ["yarn", "decoupled-rope"]
 adopted_by:
   - model: "llama-1-65b"
     source_url: "https://arxiv.org/abs/2302.13971"

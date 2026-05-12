@@ -34,6 +34,7 @@ public/pagefind/
 # ralph loop state
 .claude/.ralph-loop.local.md
 .claude/.ralph-loop.state.json
+.claude/ralph-loop.local.md
 
 # claude code per-project
 .claude/settings.local.json

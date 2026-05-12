@@ -16,6 +16,12 @@ adopted_by:
   - model: "deepseek-v3"
     source_url: "https://arxiv.org/abs/2412.19437"
     notes: "Used across all MoE layers; replaces the standard balance loss."
+  - model: "deepseek-v3-1"
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.1"
+    notes: "Same aux-loss-free routing inherited from V3 across the MoE layers."
+  - model: "deepseek-v3-2"
+    source_url: "https://arxiv.org/abs/2509.04559"
+    notes: "Aux-loss-free routing carried over from V3 / V3.1; only attention layers change in V3.2."
 summary: "Maintain a per-expert bias term that shifts the gate's top-K decision toward under-used experts. The bias enters at selection time only — the final expert outputs are weighted by the original (unbiased) gate values. Load balance without quality cost."
 tags: ["moe", "load-balance", "deepseek"]
 figure_component: "AuxLossFreeBias"

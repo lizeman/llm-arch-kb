@@ -1,0 +1,74 @@
+---
+name: "Kimi Linear 48B-A3B"
+organization: "Moonshot AI"
+release_date: "2025-10-30"
+parameters_total: "48B"
+parameters_active: "3B"
+context_length: 1048576
+open_weights: true
+paper_url: "https://arxiv.org/abs/2510.26692"
+model_card_url: "https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10K) on a 64-dim decoupled head only; MLA body uses NoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "Hybrid: 20 Kimi Delta Attention (KDA) linear layers + 7 MLA full-attention layers across 27 layers (3:1 KDA:MLA pattern)"
+  moe: "Sparse MoE — 256 routed experts + 1 shared, top-8 routing, sigmoid gate with grouped top-K"
+  other:
+    - "27 layers, hidden 2304, FFN intermediate 9216; MoE intermediate 1024 per expert"
+    - "MLA shape: kv_lora_rank 512, qk_nope_head_dim 128, qk_rope_head_dim 64, v_head_dim 128 (32 heads)"
+    - "Full-attention (MLA) layers are 4, 8, 12, 16, 20, 24, 27; remaining 20 layers run KDA"
+    - "First layer is dense; layers 2–27 are MoE"
+    - "Trained on 5.7T tokens; MIT license"
+    - "Up to 75% KV-cache reduction and ~6× decoding throughput at 1M context (paper Table 4 / §5.3)"
+source_urls:
+  - "https://arxiv.org/abs/2510.26692"
+  - "https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct"
+  - "https://github.com/MoonshotAI/Kimi-Linear"
+notes: "First open-weights production model to use a hybrid linear-attention + MLA stack at meaningful scale. KDA extends Gated DeltaNet with channel-wise (per-feature) gating in place of the head-level scalar gate used by Qwen3-Next, and is interleaved 3:1 with MLA full-attention layers. KV cache shrinks proportionally to the share of KDA layers."
+---
+
+Kimi Linear (October 2025) is Moonshot AI's hybrid linear-attention model and the first
+open-weights production release to combine **Kimi Delta Attention (KDA)** — a linear-attention
+variant — with [Multi-Head Latent Attention](/llm-arch-kb/attention/mla/) at meaningful scale.
+The architectural bet is the same one MiniMax made with
+[Lightning Attention](/llm-arch-kb/attention/lightning-attention/): a few full-attention
+layers preserve quality, while a majority of cheap linear-attention layers cut the KV cache and
+the inference cost at long context.
+
+**The hybrid stack.** 27 transformer layers split 20 / 7 between KDA and MLA. Layers 4, 8, 12,
+16, 20, 24, and 27 run full MLA; everything else is KDA. The pattern is approximately three
+KDA layers for every one MLA layer — the same ratio
+[Qwen3-Next](/llm-arch-kb/models/qwen3-next-80b-a3b/) uses for its Gated DeltaNet stack, and
+similar in spirit to MiniMax's 7:1 Lightning : softmax mix but tighter on the full-attention
+budget.
+
+**What KDA changes vs Gated DeltaNet.** Qwen3-Next's Gated DeltaNet applies a single scalar
+gate per attention head to control the memory decay rate. KDA replaces that scalar with a
+**channel-wise gate** — one gating value per feature dimension. The paper argues this gives
+the recurrent state finer control over what to forget per channel, which matters more at long
+context where any single decay rate must compromise across token types.
+
+**MLA with NoPE.** The seven full-attention layers run MLA in a configuration close to
+[DeepSeek V3](/llm-arch-kb/models/deepseek-v3/)'s — kv_lora_rank 512, decoupled head dim 64,
+non-position head dim 128 — but with one twist: the MLA body uses
+[NoPE](/llm-arch-kb/positional/nope/) (no positional encoding on the latent path), and RoPE is
+applied only to the small 64-dim head. The causal mask provides positional asymmetry on the
+non-rotated path; the decoupled rotated head carries the actual position signal. See
+[decoupled RoPE](/llm-arch-kb/positional/decoupled-rope/).
+
+**MoE shape.** [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) lineage — 256 routed experts
+plus one shared expert, top-8 routing per token. Routing uses a **sigmoid** gate (not the more
+common softmax) with grouped top-K selection. The first layer is dense; layers 2–27 are MoE.
+
+**Why this matters.** The paper's headline numbers come from the hybrid stack's asymptotic
+cost: at 128K context the model is ~4× faster than a full-MLA baseline on RULER while matching
+quality, and at 1M context decoding TPOT is ~6× faster than the full-attention reference. The
+KV cache shrinks by up to 75% — proportional to the share of KDA layers (which carry a
+fixed-size recurrent state rather than a growing KV cache).
+
+For the rest of Moonshot's lineup see [Kimi K2](/llm-arch-kb/models/kimi-k2/) (1T total / 32B
+active, full-MLA, no linear-attention layers).

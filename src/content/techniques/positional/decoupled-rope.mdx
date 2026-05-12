@@ -19,6 +19,9 @@ adopted_by:
   - model: "deepseek-v3"
     source_url: "https://arxiv.org/abs/2412.19437"
     notes: "Same decoupled-RoPE head shape carried over from V2."
+  - model: "kimi-linear-48b-a3b"
+    source_url: "https://arxiv.org/abs/2510.26692"
+    notes: "Decoupled RoPE on a 64-dim head in MLA layers; MLA body uses NoPE (mla_use_nope: true)."
 summary: "Split the K projection into a small position-aware head that carries RoPE and a larger position-free body that absorbs into the latent KV cache. The trick that lets MLA compress K, V without losing position."
 tags: ["positional", "rope", "kv-cache", "deepseek"]
 last_verified: "2026-05-11"

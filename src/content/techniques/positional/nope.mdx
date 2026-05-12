@@ -16,6 +16,9 @@ adopted_by:
   - model: "llama-4-scout"
     source_url: "https://ai.meta.com/blog/llama-4-multimodal-intelligence/"
     notes: "iRoPE — a fraction of layers omit RoPE entirely (NoPE-style) for length generalization; the rest carry standard RoPE."
+  - model: "kimi-linear-48b-a3b"
+    source_url: "https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct"
+    notes: "MLA body uses NoPE; RoPE applied only to a small 64-dim decoupled head per query (mla_use_nope: true in the released config)."
 summary: "Drop the positional encoding entirely. The causal mask asymmetrically restricts each query to its left context; the model learns to extract token position from that asymmetry alone. Works surprisingly well; reveals what positional encodings are actually adding."
 tags: ["positional", "research"]
 last_verified: "2026-05-11"

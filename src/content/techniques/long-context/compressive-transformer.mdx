@@ -13,11 +13,14 @@ problem_solved: "Avoid evicting old activations from a sliding-window cache — 
 predecessors: []
 successors: ["activation-beacon"]
 adopted_by: []
+figure_component: "CompressiveTiers"
+figure_caption: "Three tiers: compressed long-term memory, short-term cache, current window. Drag c to see the compression-vs-reach trade."
 summary: "Two-tier memory: a short-term FIFO cache plus a long-term compressed memory built by applying a learned compression function (mean pooling, conv, or attention) to evicted segments. The original long-context recipe that traded resolution for length."
 tags: ["long-context", "memory", "foundational"]
 last_verified: "2026-05-11"
 ---
 
+import CompressiveTiers from "~/components/figures/CompressiveTiers";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -60,6 +63,8 @@ def compressive_layer(x, attn, short_mem, long_mem, f_compress, c=4):
     keys = concat([x, short_mem, long_mem])
     return attn(x, keys, keys)
 ```
+
+<CompressiveTiers client:visible />
 
 <p class="section-eyebrow">§ 3 · The compression function</p>
 ## What works as f_c

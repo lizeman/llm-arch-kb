@@ -13,11 +13,14 @@ problem_solved: "Combine three structured sparse-attention patterns (random, win
 predecessors: ["sparse-transformer"]
 successors: []
 adopted_by: []
+figure_component: "BigBirdSparse"
+figure_caption: "Adjust window/random/global sliders to see how the three patterns combine to give every query an O(W+R+G) key set."
 summary: "Each query attends to three sets of keys: a random sample, a local window, and a fixed global set. O(N) attention; provably universal-approximator and Turing-complete. The 2020 successor to Sparse Transformer that put sparse attention on a theoretical footing."
 tags: ["attention", "sparse", "long-context"]
 last_verified: "2026-05-11"
 ---
 
+import BigBirdSparse from "~/components/figures/BigBirdSparse";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -60,6 +63,8 @@ def bigbird_attention(q, k, v, window_size, global_idx, num_random):
     full_mask = window_mask | global_mask | random_mask
     return masked_attention(q, k, v, full_mask)
 ```
+
+<BigBirdSparse client:visible />
 
 <p class="section-eyebrow">§ 3 · The theory</p>
 ## What the proof shows

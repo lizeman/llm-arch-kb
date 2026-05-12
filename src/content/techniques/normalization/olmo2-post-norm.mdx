@@ -16,6 +16,9 @@ adopted_by:
   - model: "olmo-2-13b"
     source_url: "https://arxiv.org/abs/2501.00656"
     notes: "OLMo 2's distinctive normalization layout: RMSNorm after each sublayer's output, inside the residual branch. Combined with QK-Norm and Z-loss."
+  - model: "olmo-3-32b"
+    source_url: "https://arxiv.org/abs/2512.13961"
+    notes: "Same reordered Post-Norm layout carried forward to AI2's 32B dense flagship."
 summary: "Move both RMSNorms to sit after each sublayer output, inside the residual branch — recovering Post-Norm's bounded residual stream while keeping Pre-Norm's gradient flow. Trained stably at 13B by combining with QK-Norm and an output-side Z-loss."
 tags: ["normalization", "stability", "olmo"]
 last_verified: "2026-05-11"

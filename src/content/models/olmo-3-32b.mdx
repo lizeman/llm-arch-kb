@@ -1,0 +1,69 @@
+---
+name: "OLMo 3 32B"
+organization: "Allen Institute for AI (AI2)"
+release_date: "2025-11-20"
+parameters_total: "32B"
+context_length: 65536
+open_weights: true
+paper_url: "https://arxiv.org/abs/2512.13961"
+model_card_url: "https://huggingface.co/allenai/Olmo-3-1125-32B"
+disclosure_level: "open"
+parent_model: "olmo-2-13b"
+architecture:
+  positional: "RoPE (base 500K) + YaRN scaling (factor 8, 8K → 64K)"
+  normalization_placement: "Reordered Post-Norm (inherited from OLMo 2)"
+  normalization_type: "RMSNorm"
+  qk_norm: true
+  activation: "SwiGLU"
+  attention: "GQA (40 query heads, 8 KV heads, head dim 128) with interleaved sliding-window (3 sliding : 1 full, window 4096)"
+  moe: null
+  other:
+    - "64 transformer layers, hidden 5120, FFN intermediate 27648"
+    - "Pretrained at 8192-token context, extended to 65536 via YaRN"
+    - "Trained on Dolma 3 (~9.3T-token corpus); staged pretraining: Dolma 3 Mix → Dolmino mid-training → Longmino long-context"
+    - "Fully open: weights, training data, training code, intermediate checkpoints (Apache 2.0)"
+    - "Family also includes 7B variant (MHA, not GQA) and post-trained variants: Instruct, Think, RL-Zero"
+source_urls:
+  - "https://arxiv.org/abs/2512.13961"
+  - "https://huggingface.co/allenai/Olmo-3-1125-32B"
+  - "https://allenai.org/blog/olmo3"
+notes: "AI2's flagship dense model and the largest fully-open release in the OLMo line. Architecturally extends OLMo 2's reordered Post-Norm + QK-Norm recipe with two new choices: GQA at 32B scale and a 3:1 interleaved sliding-window / full-attention pattern. Pretrained at 8K and extended to 64K context via YaRN."
+---
+
+OLMo 3 32B (November 2025) is the Allen Institute for AI's flagship dense decoder and the
+largest fully-open model in the OLMo line. The release continues AI2's stated priority of
+reproducibility over architectural novelty: weights, training data (Dolma 3), training code,
+and intermediate checkpoints are all public under Apache 2.0.
+
+The architectural recipe extends [OLMo 2](/llm-arch-kb/models/olmo-2-13b/)'s training-stability
+choices and adds two new ones for scale and context:
+
+1. **Reordered Post-Norm + QK-Norm.** Inherited unchanged from OLMo 2 — RMSNorms placed after
+   the attention output and after the FFN output (inside the residual branch), with an
+   additional RMSNorm on Q and K before the attention dot product. The team explicitly cites
+   long-horizon training stability at the 32B scale as the reason to keep this layout rather
+   than reverting to the Llama-style Pre-Norm of OLMo 1.
+
+2. **GQA at the 32B variant.** 40 query heads, 8 KV heads (5:1 ratio), head dim 128. The
+   companion 7B model keeps standard MHA, so the GQA choice is specifically for the larger
+   model's inference economics. See
+   [GQA](/llm-arch-kb/attention/gqa/).
+
+3. **Interleaved sliding-window / full attention.** Layer pattern is three sliding-window
+   layers (window 4096) followed by one full-attention layer, repeated 16 times across the
+   64-layer stack. 75% of layers see only the 4K local window; the remaining 25% see the full
+   sequence. This is the same recipe used in Gemma 3 (though with a different ratio) and a
+   notable departure from OLMo 2's all-full-attention 13B. See
+   [Sliding-Window Attention](/llm-arch-kb/attention/sliding-window/).
+
+4. **RoPE + YaRN for long context.** Pretrained at 8192-token context with RoPE base 500K, then
+   extended to 65536 tokens via [YaRN](/llm-arch-kb/positional/yarn/) scaling (factor 8) during
+   a dedicated long-context phase ("Longmino"). The base→extended split is what makes a clean
+   ablation possible — the pretraining run is unmodified, and the long-context extension is a
+   separate, reproducible stage.
+
+The release is also the first fully-open thinking model at this scale: alongside the base and
+instruct variants, AI2 publishes OLMo 3 Think 32B and OLMo 3 RL-Zero, with the full
+post-training pipeline (data, code, checkpoints) included.
+
+For AI2's earlier dense flagship, see [OLMo 2 13B](/llm-arch-kb/models/olmo-2-13b/).

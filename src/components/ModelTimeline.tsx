@@ -1,5 +1,5 @@
 /** @jsxImportSource solid-js */
-import { createSignal, createMemo, onMount, For, Show } from "solid-js";
+import { createSignal, createMemo, For, Show } from "solid-js";
 import {
   starPath,
   formatParams,
@@ -25,11 +25,6 @@ const INNER_H = VB_H - PAD_TOP - PAD_BOTTOM;
 export default function ModelTimeline(props: ModelTimelineProps) {
   const [hovered, setHovered] = createSignal<string | null>(null);
   const [filter, setFilter] = createSignal<string | null>(null);
-  const [mounted, setMounted] = createSignal(false);
-
-  onMount(() => {
-    requestAnimationFrame(() => setMounted(true));
-  });
 
   const scales = createMemo(() => {
     const pts = props.points;
@@ -91,7 +86,7 @@ export default function ModelTimeline(props: ModelTimelineProps) {
 
   return (
     <figure
-      class={`timeline ${mounted() ? "is-mounted" : ""}`}
+      class="timeline"
       aria-label="Open-weight models in the knowledge base, plotted by release date and parameter count"
     >
       <div class="timeline-legend" role="list">

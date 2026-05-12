@@ -141,22 +141,23 @@
 
 .tl-point {
   cursor: pointer;
-  opacity: 0;
-  transform: translate(0, 8px);
+  animation: tl-fade-in 360ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation-delay: calc(var(--idx) * 22ms);
 }
 
-.timeline.is-mounted .tl-point {
-  opacity: 1;
-  transform: translate(0, 0);
-  transition:
-    opacity 360ms ease,
-    transform 360ms cubic-bezier(0.22, 0.61, 0.36, 1);
-  transition-delay: calc(var(--idx) * 22ms);
-}
-
-.timeline.is-mounted .tl-point.is-dim {
+.tl-point.is-dim {
   opacity: 0.14;
   transition: opacity 200ms ease;
+}
+
+@keyframes tl-fade-in {
+  from { opacity: 0; transform: translate(0, 8px); }
+  to   { opacity: 1; transform: translate(0, 0); }
+}
+
+@keyframes tl-fade-in-mobile {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 .tl-hit { cursor: pointer; }
@@ -217,13 +218,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .tl-point {
-    opacity: 1;
-    transform: none;
-    transition: none !important;
+    animation: none !important;
   }
-  .timeline.is-mounted .tl-point {
-    transition: opacity 120ms ease !important;
-    transition-delay: 0 !important;
+  .tl-point.is-dim {
+    transition: none !important;
   }
 }
 
@@ -235,4 +233,9 @@
   .tl-axis-label { font-size: 12px; }
   .tl-tt-title { font-size: 14px; }
   .tl-tt-meta { font-size: 11px; }
+  .tl-point {
+    animation-name: tl-fade-in-mobile;
+    animation-duration: 260ms;
+    animation-delay: calc(var(--idx) * 12ms);
+  }
 }

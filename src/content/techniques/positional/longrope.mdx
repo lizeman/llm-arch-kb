@@ -18,6 +18,7 @@ tags: ["positional", "long-context"]
 last_verified: "2026-05-11"
 ---
 
+import LongRopeSearch from "~/components/figures/LongRopeSearch";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -65,6 +66,8 @@ def long_rope_search(model, val_data, target_len, init_lambdas, generations=40):
 ```
 
 The output is a per-dimension schedule that is then frozen during fine-tuning.
+
+<LongRopeSearch client:visible />
 
 <p class="section-eyebrow">§ 3 · What the search finds</p>
 ## Non-monotone factors

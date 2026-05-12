@@ -1,0 +1,57 @@
+---
+name: "Llama 4 Scout"
+organization: "Meta"
+release_date: "2025-04-05"
+parameters_total: "109B"
+parameters_active: "17B"
+context_length: 10485760
+open_weights: true
+model_card_url: "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+disclosure_level: "documented"
+architecture:
+  positional: "iRoPE — interleaved RoPE / no-position layers"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA"
+  moe: "MoE with 16 routed experts + 1 shared expert; top-1 routing"
+  other:
+    - "First Llama with native Mixture of Experts"
+    - "iRoPE: a fraction of layers omit RoPE entirely (NoPE-style) for length generalization"
+    - "10M-token context window in the Scout configuration"
+    - "Native multimodal (text + image)"
+source_urls:
+  - "https://ai.meta.com/blog/llama-4-multimodal-intelligence/"
+  - "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct"
+notes: "Architecture details drawn from Meta's announcement post and the official model card. Some specifics (exact layer counts, FFN width, expert dim) are not in the public materials and are left out rather than guessed."
+---
+
+Llama 4 Scout (April 2025) is the first Llama generation to ship native Mixture of Experts and
+the first to abandon a single, uniform attention pattern across all layers. The two
+architectural pivots:
+
+- **MoE with shared expert.** 16 routed experts plus one always-on shared expert; top-1
+  routing. The 109B total parameter count includes all experts; only ~17B are active per
+  token. The shared-expert pattern is conceptually adjacent to
+  [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/), though the precise routing recipe is not
+  detailed publicly.
+- **iRoPE — interleaved RoPE / no-RoPE layers.** Some layers carry RoPE position information,
+  others omit positional encoding entirely (a [NoPE](/llm-arch-kb/positional/nope/)-style
+  layer). The motivation given in Meta's announcement is length generalization: the no-RoPE
+  layers don't have a baked-in distance preference, which helps the model stay coherent at
+  the 10M-token context window the Scout configuration targets.
+
+The other components remain in the established Llama lineage: Pre-Norm RMSNorm, SwiGLU FFN,
+GQA. Multimodality is native (image tokens enter the same transformer, not via a separate
+encoder + projector).
+
+Llama 4 was released without an arXiv tech report; the public information comes from Meta's
+announcement post and the Hugging Face model card. Specifics that aren't in those sources —
+exact head/layer/expert counts, FFN expansion ratio, RoPE base values, the precise iRoPE
+interleaving pattern — are left out rather than guessed (per the
+[citation policy](/llm-arch-kb/about/)).
+
+For prior Llama generations see [Llama 1 65B](/llm-arch-kb/models/llama-1-65b/),
+[Llama 2 70B](/llm-arch-kb/models/llama-2-70b/), and
+[Llama 3.1 70B](/llm-arch-kb/models/llama-3-1-70b/).

@@ -19,11 +19,14 @@ adopted_by:
   - model: "olmo-2-13b"
     source_url: "https://arxiv.org/abs/2501.00656"
     notes: "QK-Norm combined with reordered Post-Norm placement for 13B training stability."
+figure_component: "QkNormLogits"
+figure_caption: "Inject an outlier into one query coordinate. The raw softmax collapses to one key; QK-Norm holds the distribution."
 summary: "Normalize Q and K before the attention dot product so the logit magnitude stays bounded — a near-free fix for the outlier blow-ups that wreck attention at long context."
 tags: ["normalization", "attention-stability"]
 last_verified: "2026-05-11"
 ---
 
+import QkNormLogits from "~/components/figures/QkNormLogits";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -67,6 +70,8 @@ def qk_norm_attn(q, k, v, q_norm, k_norm, scale, mask=None):
 
 The per-head norm parameters are tiny (a single gain vector of size $d_h$ per head) and add
 negligible compute.
+
+<QkNormLogits client:visible />
 
 <p class="section-eyebrow">§ 3 · Why it matters at scale</p>
 ## Empirical evidence

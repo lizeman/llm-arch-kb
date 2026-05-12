@@ -1,0 +1,109 @@
+---
+title: "Dynamic Hyper-Connections"
+abbreviation: "DHC / mHC"
+category: "residual"
+year: 2024
+month: 9
+introduced_by: "Defa Zhu et al. (ByteDance Doubao)"
+paper_title: "Hyper-Connections"
+arxiv_id: "2409.19606"
+paper_url: "https://arxiv.org/abs/2409.19606"
+status: "research"
+problem_solved: "Make Hyper-Connections' read/write coefficients per-token rather than per-layer — letting the network route different tokens through different residual streams within the same layer."
+predecessors: ["hyper-connections"]
+successors: []
+adopted_by: []
+summary: "The per-token variant of Hyper-Connections: A_l and B_l are computed as small projections of the current input rather than learned constants. Each token gets its own routing pattern across the n streams, at the cost of one extra projection per layer."
+tags: ["residual", "research", "bytedance", "dynamic"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## What static HC leaves on the table
+
+[Hyper-Connections](/llm-arch-kb/residual/hyper-connections/) generalizes the residual to $n$
+parallel streams with learned per-layer read coefficients $\mathbf{A}_\ell$ and write
+coefficients $\mathbf{B}_\ell$. In the static version (SHC), those coefficients are constants:
+every token at layer $\ell$ uses the same routing.
+
+That's a strict generalization of the standard residual ($n = 1$, $A = B = 1$), but it leaves
+expressivity on the table. A sentence about cooking and a sentence about quantum mechanics may
+benefit from being routed through different streams — different layers may want to read and
+write different "channels" depending on what's in the residual stream right now.
+
+Dynamic Hyper-Connections (DHC) makes the routing input-dependent.
+
+<p class="section-eyebrow">§ 2 · The per-token routing</p>
+## A_l and B_l from a small projection
+
+For each token $t$ at layer $\ell$, DHC computes the read and write coefficients from a small
+linear projection of the current read vector $\mathbf{r}_\ell^{(t)}$:
+
+$$
+\begin{aligned}
+\mathbf{A}_\ell^{(t)} &= W_A\, \mathbf{r}_\ell^{(t)} + \mathbf{a}_\ell \in \mathbb{R}^n\\
+\mathbf{B}_\ell^{(t)} &= W_B\, \mathbf{r}_\ell^{(t)} + \mathbf{b}_\ell \in \mathbb{R}^n
+\end{aligned}
+$$
+
+where $W_A, W_B \in \mathbb{R}^{n \times d}$ and $\mathbf{a}_\ell, \mathbf{b}_\ell$ are
+per-layer biases. The block then proceeds as in static HC:
+
+```python
+def dhc_block(X, sublayer, W_A, W_B, a, b):
+    # X: (n, d) — n parallel residual streams
+    A = W_A @ X.mean(axis=0) + a   # (n,) per-token read mix
+    r = A @ X                       # (d,) read
+    u = sublayer(r)                 # (d,) sublayer compute
+    B = W_B @ r + b                 # (n,) per-token write mix
+    X = X + np.outer(B, u)          # (n, d) write
+    return X
+```
+
+The compute cost over static HC is two extra small projections per layer ($W_A, W_B$ are
+$n \times d$, with $n$ typically 4 to 8 — much smaller than $d$). Memory cost per layer is the
+same: $n \times d$ for the stream stack.
+
+<p class="section-eyebrow">§ 3 · What "dynamic" buys</p>
+## Token-level routing patterns
+
+The empirical result the paper highlights (Table 2): DHC outperforms SHC at the same parameter
+count on a 1.3B language modeling benchmark, with the gap growing slightly at larger scales
+within the studied range. The mechanism the authors offer:
+
+- **Per-token specialization.** Different tokens benefit from different routing — DHC lets each
+  one pick its own pattern.
+- **Late-binding routing.** A_l and B_l depend on the *current* state of the residual streams,
+  so a layer's routing reflects what's there now rather than a fixed plan from initialization.
+- **Better gradient flow at depth.** With per-token mixing, no single A or B vector dominates
+  the routing at any layer — gradients distribute more evenly across streams during backprop.
+
+<p class="section-eyebrow">§ 4 · The "mHC" framing</p>
+## Multiple Hyper-Connections
+
+The paper sometimes refers to the technique as "mHC" — multiple-stream Hyper-Connections —
+emphasizing that the variant generalization is about adding the per-token mechanism on top of
+the basic multi-stream architecture. Static and Dynamic are two points in the same design
+space; the static version is the more conservative starting point and the dynamic version
+trades a little compute for a little expressivity.
+
+<p class="section-eyebrow">§ 5 · Production status</p>
+## Same as HC: research, not yet documented in production
+
+As of May 2026, no publicly documented production release uses DHC (or static HC). The
+ByteDance Doubao team that introduced the technique does not publish architecture details for
+its production models in enough depth to confirm or rule out its use; other open frontier
+labs continue with the standard residual.
+
+For the broader Hyper-Connections framework that DHC sits inside, see
+[Hyper-Connections](/llm-arch-kb/residual/hyper-connections/).
+
+<Summary>
+**Dynamic HC in one breath.** Compute the read/write mix coefficients per-token rather than
+per-layer — a small projection from the current read vector produces $A_\ell^{(t)}$ and
+$B_\ell^{(t)}$. Costs two extra small projections per layer; reportedly outperforms the static
+variant at matched parameter count. Same paper as static HC (arXiv 2409.19606), more
+expressive variant. No publicly documented production adoption.
+</Summary>

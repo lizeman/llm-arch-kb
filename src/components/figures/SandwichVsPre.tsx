@@ -94,8 +94,10 @@ export default function SandwichVsPre() {
     <figure class="figure" data-testid="sandwich-vs-pre">
       <svg viewBox="0 0 660 340" role="img" aria-label="Residual stream norm by depth and norm placement">
         <title>
-          Residual stream norm as a function of layer index for three normalization placements:
-          Pre-Norm (unbounded growth), Sandwich-LN (bounded), Post-Norm + DeepNet (re-scaled).
+          Residual stream RMS as a function of layer index for three normalization placements:
+          Pre-Norm (grows like σ·√L), Sandwich-LN (tighter constants — each block contributes
+          unit RMS, so the sum grows like √L independent of σ), Post-Norm + DeepNet β
+          (renormalized to unit RMS every layer).
         </title>
 
         <text

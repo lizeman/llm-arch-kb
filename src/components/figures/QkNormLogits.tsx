@@ -75,6 +75,8 @@ export default function QkNormLogits() {
   const COL_W = 60;
   const ROW_H = 130;
   const BAR_W = 28;
+  // Cap bar height to leave room for the percentage label above (~14px) and the row title.
+  const BAR_H_MAX = 88;
 
   function renderRow(scores: number[], yCenter: number, color: string, label: string) {
     return (
@@ -98,7 +100,7 @@ export default function QkNormLogits() {
         />
         {scores.map((s, i) => {
           const x = X0 + i * COL_W + (COL_W - BAR_W) / 2;
-          const h = s * 100;
+          const h = s * BAR_H_MAX;
           return (
             <g>
               <rect x={x} y={yCenter - h} width={BAR_W} height={h} fill={color} opacity="0.85" />

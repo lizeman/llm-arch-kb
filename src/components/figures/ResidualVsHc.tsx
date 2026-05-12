@@ -43,9 +43,9 @@ export default function ResidualVsHc() {
               <text x={cx - 36} y={yMid + 3} text-anchor="middle" font-family="var(--mono)" font-size="9" fill="#1a4f7a">
                 f_{l}
               </text>
-              {/* Read arrow */}
-              <line x1={cx} y1={yMid - 5} x2={cx - 12} y2={yMid - 5} stroke="#1a4f7a" stroke-width="1" />
-              {/* Write arrow */}
+              {/* Read arrow: from stream into sublayer */}
+              <line x1={cx} y1={yMid - 5} x2={cx - 12} y2={yMid - 5} stroke="#1a4f7a" stroke-width="1" marker-end="url(#hc-arrow)" />
+              {/* Write arrow: from sublayer back into stream */}
               <line x1={cx - 12} y1={yMid + 5} x2={cx} y2={yMid + 5} stroke="#1a4f7a" stroke-width="1" marker-end="url(#hc-arrow)" />
             </g>
           );
@@ -84,23 +84,23 @@ export default function ResidualVsHc() {
           const writeX = startX + writeStream * STREAM_W + STREAM_W / 2;
           return (
             <g>
-              {/* A row read line */}
+              {/* Per-stream read coefficient ticks (A_l). The 'picked' stream is the
+                  dominant coefficient; the rest are minor contributors — a stylized
+                  rendering of A_l^T · X_l. */}
               {Array.from({ length: N }, (_, i) => {
                 const sx = startX + i * STREAM_W + STREAM_W / 2;
                 const isPicked = i === readStream;
                 return (
-                  <line
-                    x1={sx}
-                    y1={yMid - 9}
-                    x2={sx + (i < readStream ? 4 : i > readStream ? -4 : 0)}
-                    y2={yMid - 9}
-                    stroke="#5a5a55"
-                    opacity={isPicked ? 0.8 : 0.25}
-                    stroke-width={isPicked ? 1.5 : 0.7}
+                  <circle
+                    cx={sx}
+                    cy={yMid - 9}
+                    r={isPicked ? 2.4 : 1.2}
+                    fill="#5a5a55"
+                    opacity={isPicked ? 0.85 : 0.3}
                   />
                 );
               })}
-              {/* read concentrating line into sublayer */}
+              {/* read bus line connecting the coefficient ticks */}
               <line x1={startX} y1={yMid - 9} x2={startX + totalStreamsW} y2={yMid - 9} stroke="#5a5a55" stroke-width="0.5" opacity="0.4" />
 
               {/* Sublayer block to the right */}
@@ -125,6 +125,20 @@ export default function ResidualVsHc() {
                 opacity="0.7"
                 marker-end="url(#hc-arrow)"
               />
+              {/* Per-stream write coefficient ticks (B_l) */}
+              {Array.from({ length: N }, (_, i) => {
+                const sx = startX + i * STREAM_W + STREAM_W / 2;
+                const isPicked = i === writeStream;
+                return (
+                  <circle
+                    cx={sx}
+                    cy={yMid + 9}
+                    r={isPicked ? 2.4 : 1.2}
+                    fill="#5a5a55"
+                    opacity={isPicked ? 0.85 : 0.3}
+                  />
+                );
+              })}
             </g>
           );
         })}

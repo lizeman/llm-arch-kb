@@ -28,7 +28,7 @@ export default function LinformerProjection() {
     <figure class="figure" data-testid="linformer-projection">
       <svg viewBox="0 0 700 360" role="img" aria-label="Linformer K-projection visualization">
         <title>
-          Linformer multiplies K and V by learned matrices E, F ∈ ℝ^(L × k) to reduce the
+          Linformer multiplies K and V by learned matrices E, F ∈ ℝ^(k × L) to reduce the
           sequence axis from L to k. The attention matrix is L × k instead of L × L.
         </title>
 
@@ -62,12 +62,12 @@ export default function LinformerProjection() {
           fill="#5a5a55"
         >{`d_h = ${D_H}`}</text>
 
-        {/* Multiplied by E^T (k × L) → (k × d_h) */}
+        {/* Multiplied by E (k × L) → produces K' = E·K (k × d_h) */}
         <text x={X0 + 105} y={Y0 + L * SCALE / 8 + 4} font-family="var(--mono)" font-size="20" fill="#5a5a55">
-          ←
+          →
         </text>
         <text x={X0 + 105} y={Y0 + L * SCALE / 8 + 28} font-family="var(--mono)" font-size="9" fill="#1a4f7a">
-          E^T
+          E · K
         </text>
 
         {/* Projected K' = E^T K (k × d_h) */}
@@ -182,7 +182,7 @@ export default function LinformerProjection() {
 
       <figcaption>
         Linformer compresses the sequence axis of K and V from L to k via two learned matrices
-        E, F ∈ ℝ^(L × k). The attention matrix becomes L × k instead of L × L; total cost is
+        E, F ∈ ℝ^(k × L). The attention matrix becomes L × k instead of L × L; total cost is
         O(L · k · d_h). The catch: <strong>E and F are tied to a specific L</strong>, so a model
         trained at L = 4096 doesn't transfer cleanly to L = 8192. Linformer was a clean
         encoder-side technique; for decoders the fixed-L coupling never made sense.

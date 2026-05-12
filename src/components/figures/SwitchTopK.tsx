@@ -110,7 +110,7 @@ export default function SwitchTopK() {
 
   return (
     <figure class="figure" data-testid="switch-topk">
-      <svg viewBox="0 0 700 380" role="img" aria-label="Switch top-1 vs top-K routing comparison">
+      <svg viewBox="0 0 700 410" role="img" aria-label="Switch top-1 vs top-K routing comparison">
         <title>
           Switch routes each token to exactly one expert (top-1). Top-K (GShard / Mixtral) routes
           each token to K experts. Per-expert traffic and total compute are shown side by side.

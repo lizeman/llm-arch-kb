@@ -83,12 +83,16 @@ export default function LayerNormVsRMS() {
           const x = X0 + i * COL_W + (COL_W - BAR_W) / 2;
           const h = Math.abs(v) * SCALE_PX;
           const y = v >= 0 ? yCenter - h : yCenter;
+          // Label sits just outside the far end of the bar:
+          //   positive bar extends upward → label below the row baseline.
+          //   negative bar extends downward → label below the bar's bottom.
+          const labelY = v >= 0 ? yCenter + 14 : yCenter + h + 12;
           return (
             <g>
               <rect x={x} y={y} width={BAR_W} height={h} fill={color} opacity="0.85" />
               <text
                 x={x + BAR_W / 2}
-                y={yCenter + (v >= 0 ? 16 : -h - 6)}
+                y={labelY}
                 text-anchor="middle"
                 font-family="var(--mono)"
                 font-size="9"

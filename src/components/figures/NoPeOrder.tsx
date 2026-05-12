@@ -18,9 +18,10 @@ const L = 32;
 export default function NoPeOrder() {
   const [t, setT] = createSignal(8);
 
-  const cellSize = 14;
+  // Two L×L masks side by side. cellSize chosen so both grids + gutters fit the viewBox width.
+  const cellSize = 9;
   const X0 = 50;
-  const X1 = 350;
+  const X1 = X0 + L * cellSize + 40; // 40px gutter between the two masks
   const Y0 = 50;
 
   const accessibleBidir = L;
@@ -61,7 +62,7 @@ export default function NoPeOrder() {
 
   return (
     <figure class="figure" data-testid="nope-order">
-      <svg viewBox="0 0 700 600" role="img" aria-label="NoPE causal mask order leakage demonstration">
+      <svg viewBox="0 0 700 500" role="img" aria-label="NoPE causal mask order leakage demonstration">
         <title>
           Two attention masks: bidirectional (every query sees every key) and causal (each query
           sees only itself and earlier keys). With no positional encoding, the causal mask is the

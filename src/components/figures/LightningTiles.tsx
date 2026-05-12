@@ -60,26 +60,14 @@ export default function LightningTiles() {
           {Array.from({ length: numBlocks() }, (_, b) => {
             const x = X0 + b * blockW();
             return (
-              <g>
-                <rect
-                  x={x}
-                  y={Y0}
-                  width={Math.max(0.5, blockW() - 1)}
-                  height={ROW_H}
-                  fill="#1a4f7a"
-                  opacity={0.25 + (b / Math.max(1, numBlocks() - 1)) * 0.4}
-                />
-                {b > 0 ? (
-                  <line
-                    x1={x}
-                    y1={Y0 + ROW_H / 2}
-                    x2={x - 2}
-                    y2={Y0 + ROW_H / 2}
-                    stroke="#1a4f7a"
-                    stroke-width="1.5"
-                  />
-                ) : null}
-              </g>
+              <rect
+                x={x}
+                y={Y0}
+                width={Math.max(0.5, blockW() - 1)}
+                height={ROW_H}
+                fill="#1a4f7a"
+                opacity={0.25 + (b / Math.max(1, numBlocks() - 1)) * 0.4}
+              />
             );
           })}
         </g>

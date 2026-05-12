@@ -177,7 +177,7 @@ export default function AuxLossFreeBias() {
 
   return (
     <figure class="figure" data-testid="aux-loss-free-bias">
-      <svg viewBox="0 0 700 380" role="img" aria-label="Aux-loss-free routing bias visualization">
+      <svg viewBox="0 0 700 470" role="img" aria-label="Aux-loss-free routing bias visualization">
         <title>
           Per-expert traffic before and after bias correction. The bias accumulates over steps to
           push under-used experts above the top-K threshold for more tokens.
@@ -250,6 +250,7 @@ export default function AuxLossFreeBias() {
         <button
           type="button"
           onClick={toggleRun}
+          aria-pressed={running()}
           style={{ padding: "6px 14px", "min-height": "44px", "border-radius": "2px", border: "1px solid #1a4f7a", background: running() ? "#1a4f7a" : "#fff", color: running() ? "#fff" : "#1a4f7a", "font-family": "var(--serif)", cursor: "pointer" }}
         >
           {running() ? "Pause" : "Run"}

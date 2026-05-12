@@ -64,7 +64,13 @@ export default function AlibiSlopes() {
   const Y1 = 320;
   const SBAR_W = 8;
   const SBAR_GAP = 2;
-  const slopePxScale = 60; // pixels per slope-magnitude
+  const SBAR_PANEL_H = 60; // panel height for the bar chart
+  // Normalize bars so the tallest slope fills the panel; ALiBi slopes span ~2^(-1)..2^(-8)
+  // so a fixed pixel-per-slope scale would either overflow upward or stay invisible.
+  const slopeBarScale = createMemo(() => {
+    const maxS = Math.max(...slopes());
+    return maxS > 0 ? SBAR_PANEL_H / maxS : 0;
+  });
 
   return (
     <figure class="figure" data-testid="alibi-slopes">
@@ -137,16 +143,25 @@ export default function AlibiSlopes() {
           ALiBi slope schedule across {H()} heads
         </text>
 
-        <line x1={X0} y1={Y1 + 60} x2={X0 + W} y2={Y1 + 60} stroke="#e3e3dc" />
+        <line x1={X0} y1={Y1 + SBAR_PANEL_H} x2={X0 + W} y2={Y1 + SBAR_PANEL_H} stroke="#e3e3dc" />
         {slopes().map((s, i) => {
           const x = X0 + i * (SBAR_W + SBAR_GAP) + 8;
-          const h = s * slopePxScale * 8; // emphasize visually
+          const h = s * slopeBarScale();
           const fill = i === headIdx() ? "#1a4f7a" : "#5a5a55";
-          return <rect x={x} y={Y1 + 60 - h} width={SBAR_W} height={h} fill={fill} opacity="0.85" />;
+          return (
+            <rect
+              x={x}
+              y={Y1 + SBAR_PANEL_H - h}
+              width={SBAR_W}
+              height={h}
+              fill={fill}
+              opacity="0.85"
+            />
+          );
         })}
         <text
           x={X0}
-          y={Y1 + 78}
+          y={Y1 + SBAR_PANEL_H + 18}
           font-family="var(--mono)"
           font-size="9"
           fill="#8a8a85"
@@ -154,8 +169,9 @@ export default function AlibiSlopes() {
           head 0 (steepest)
         </text>
         <text
-          x={X0 + H() * (SBAR_W + SBAR_GAP) + 8}
-          y={Y1 + 78}
+          x={X0 + (H() - 1) * (SBAR_W + SBAR_GAP) + 8 + SBAR_W}
+          y={Y1 + SBAR_PANEL_H + 18}
+          text-anchor="end"
           font-family="var(--mono)"
           font-size="9"
           fill="#8a8a85"

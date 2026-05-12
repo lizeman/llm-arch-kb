@@ -3,16 +3,17 @@ import { createMemo, createSignal } from "solid-js";
 
 /**
  * ReZero α-evolution demo.
- * Simulate a stack of L layers with per-layer learnable α.
- *   x_{l+1} = x_l + α_l · f_l(x_l)
+ * Simulate a stack of L layers with the residual update
+ *   x_{l+1} = x_l + α · f_l(x_l)
  *
- * Show two cases:
- *   - α_l = 0 (init): every block is identity; gradient flows untouched.
- *   - α_l = α (current value): blocks contribute α-scaled perturbations.
+ * The slider sets α (the figure uses a single shared α to illustrate the gating
+ * mechanism; in practice every branch has its own α_l, all initialized to 0):
+ *   - α = 0 (init): every block is identity; the forward pass is the input
+ *     copied through L layers unchanged, gradient at every layer is exactly 1.
+ *   - α > 0: blocks contribute α-scaled Gaussian perturbations and the residual
+ *     stream RMS grows roughly like √L · α.
  *
- * Plot the per-layer residual stream norm and the per-layer gradient magnitude
- * (||dL/dx_l||) for the current α; also show how training would gradually open the
- * α valve.
+ * The chart plots the per-layer residual stream RMS for the current α.
  */
 
 const L = 32;
@@ -149,9 +150,9 @@ export default function ReZeroAlpha() {
         the input copied through L layers unchanged, and the gradient at every layer is exactly
         1. As training proceeds, each α_l (one scalar per residual branch) is updated by SGD
         and gradually grows, opening the valve on each block's contribution. The mechanism is
-        simpler than LayerNorm, ReZero networks trained without LayerNorm at all in the paper's
-        ablations — though for production decoders the gradient stability from Pre-Norm proved
-        sufficient and α stayed off the consensus stack.
+        simpler than LayerNorm — ReZero networks trained without LayerNorm at all in the
+        paper's ablations — though for production decoders the gradient stability from Pre-Norm
+        proved sufficient and α stayed off the consensus stack.
       </figcaption>
     </figure>
   );

@@ -24,8 +24,10 @@ export default function LandmarkAttention() {
   const [K, setK] = createSignal(2);
 
   const C = createMemo(() => Math.ceil(L / B()));
+  // K can exceed the current chunk count when B grows — clamp for both display and selection.
+  const Keff = createMemo(() => Math.min(K(), C()));
 
-  // Pick the K best-scoring landmarks for a representative query (q = L - 1)
+  // Pick the Keff best-scoring landmarks for a representative query (q = L - 1)
   const selected = createMemo(() => {
     const q = L - 1;
     const scores = Array.from({ length: C() }, (_, c) => ({
@@ -33,7 +35,7 @@ export default function LandmarkAttention() {
       s: landmarkScore(q, c),
     }));
     scores.sort((a, b) => b.s - a.s);
-    return new Set(scores.slice(0, K()).map((x) => x.c));
+    return new Set(scores.slice(0, Keff()).map((x) => x.c));
   });
 
   // Geometry
@@ -108,13 +110,13 @@ export default function LandmarkAttention() {
             Two-stage attention
           </text>
           <text x="0" y="22" font-family="var(--mono)" font-size="11" fill="#5a5a55">
-            Stage 1: query attends to {C()} landmarks (dark blue ticks) — picks top-{K()}
+            Stage 1: query attends to {C()} landmarks (dark blue ticks) — picks top-{Keff()}
           </text>
           <text x="0" y="40" font-family="var(--mono)" font-size="11" fill="#1a4f7a">
-            Stage 2: full attention within {K()} selected chunks ({K() * B()} tokens, highlighted)
+            Stage 2: full attention within {Keff()} selected chunks ({Keff() * B()} tokens, highlighted)
           </text>
           <text x="0" y="62" font-family="var(--mono)" font-size="11" fill="#1a1a1a">
-            Total keys touched: {C() + K() * B()} (vs naive {L}) — {(L / Math.max(1, C() + K() * B())).toFixed(2)}× fewer
+            Total keys touched: {C() + Keff() * B()} (vs naive {L}) — {(L / Math.max(1, C() + Keff() * B())).toFixed(2)}× fewer
           </text>
         </g>
       </svg>
@@ -142,11 +144,11 @@ export default function LandmarkAttention() {
             min={1}
             max={C()}
             step={1}
-            value={Math.min(K(), C())}
+            value={Keff()}
             onInput={(e) => setK(+e.currentTarget.value)}
-            aria-valuetext={`expand top ${K()} chunks at full attention`}
+            aria-valuetext={`expand top ${Keff()} chunks at full attention`}
           />
-          <span class="value">{Math.min(K(), C())}</span>
+          <span class="value">{Keff()}</span>
         </label>
       </div>
 

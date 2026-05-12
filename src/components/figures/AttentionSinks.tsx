@@ -23,12 +23,20 @@ export default function AttentionSinks() {
   const [sinks, setSinks] = createSignal(4);
 
   const windowStart = createMemo(() => Math.max(sinks(), pos() - w() + 1));
-  // Rough StreamingLLM curve: with sinks PPL stays flat; without sinks it grows past the window.
-  const ppl = () => {
+  // Counterfactual: what perplexity *would* be if sinks were S = 0 at this position.
+  // (Used to populate the "without sinks" warning text — it does not depend on sinks().)
+  const pplNoSinks = () => {
     if (pos() < w()) return 1.0;
-    if (sinks() === 0) return Math.min(100, 1.0 + (pos() - w()) * 5);
-    return 1.0;
+    return Math.min(100, 1.0 + (pos() - w()) * 5);
   };
+
+  // Cache size at the current position with the current S, W:
+  //   visible sinks (positions 0..S-1 that have been generated) + window tokens.
+  const cacheSize = createMemo(() => {
+    const visibleSinks = Math.min(sinks(), pos() + 1);
+    const windowTokens = Math.max(0, pos() - windowStart() + 1);
+    return visibleSinks + windowTokens;
+  });
 
   const cellSize = 18;
   const left = 60;
@@ -103,11 +111,11 @@ export default function AttentionSinks() {
         {/* Stats */}
         <g transform={`translate(${left}, ${top + 100})`}>
           <text x={0} y={0} font-family="var(--mono)" font-size="11" fill="#5a5a55">
-            cache size: {sinks() + Math.min(w(), pos() - sinks() + 1)} tokens
-            &nbsp;({sinks()} sinks + ≤{w()} window)
+            cache size: {cacheSize()} tokens
+            &nbsp;({Math.min(sinks(), pos() + 1)} sinks + {Math.max(0, pos() - windowStart() + 1)} window)
           </text>
           <text x={0} y={20} font-family="var(--mono)" font-size="11" fill="#5a5a55">
-            without sinks (S = 0), past position {w()}: perplexity ≈ {ppl().toFixed(1)}× baseline
+            if S = 0, past position {w()}: perplexity ≈ {pplNoSinks().toFixed(1)}× baseline
           </text>
           <text x={0} y={40} font-family="var(--mono)" font-size="11" fill="#5a5a55"
             opacity={sinks() === 0 ? 1 : 0.4}>

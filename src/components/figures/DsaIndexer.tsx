@@ -13,16 +13,19 @@ import { createMemo, createSignal } from "solid-js";
 const L = 256;
 
 function indexerScore(k: number, query_seed: number): number {
-  // A few "needle" peaks plus background noise — illustrative.
-  const peaks = [16, 60, 110, 145, 180, 230];
+  // Six "needle" peaks whose positions depend on the query seed — illustrative of
+  // how a different query attends to a different set of historical positions.
   let s = 0;
-  for (const p of peaks) {
-    const off = k - p;
+  for (let p = 0; p < 6; p++) {
+    // Hash (seed, p) to a position in [0, L)
+    const h = (((query_seed + 1) * 2654435761) ^ ((p + 11) * 40503)) >>> 0;
+    const peak = h % 240 + 8;
+    const off = k - peak;
     s += Math.exp(-(off * off) / 30);
   }
   // Background pseudo-noise
-  const h = ((k + 1) * 2654435761) ^ ((query_seed + 7) * 40503);
-  s += ((h & 0xff) / 0x100) * 0.25;
+  const hh = ((k + 1) * 2654435761) ^ ((query_seed + 7) * 40503);
+  s += ((hh & 0xff) / 0x100) * 0.25;
   return s;
 }
 
@@ -91,10 +94,10 @@ export default function DsaIndexer() {
           })}
         </g>
         <text x={X0} y={Y0 + ROW_H + 16} font-family="var(--mono)" font-size="9" fill="#8a8a85">
-          k = 0
+          key index 0
         </text>
         <text x={X0 + W} y={Y0 + ROW_H + 16} text-anchor="end" font-family="var(--mono)" font-size="9" fill="#8a8a85">
-          k = {L - 1} (current query position)
+          key index {L - 1} (just before current query)
         </text>
 
         {/* Cost panel */}

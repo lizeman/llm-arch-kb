@@ -17,11 +17,11 @@ export default function LongnetDilated() {
 
   const dilations = createMemo(() => Array.from({ length: H() }, (_, i) => 1 << i));
 
-  // For each query q, compute the set of keys attended at a given dilation r:
-  //   {q - r, q - 2r, ..., q - W*r} ∩ [0, L)
+  // For each query q, compute the set of keys attended at a given dilation r,
+  // matching the MDX formula K_i(t) = {t - r, t - 2r, ..., t - W·r} ∩ [0, L).
   function attendedKeys(q: number, r: number): number[] {
     const out: number[] = [];
-    for (let w = 0; w <= W(); w++) {
+    for (let w = 1; w <= W(); w++) {
       const k = q - w * r;
       if (k >= 0) out.push(k);
     }
@@ -137,13 +137,13 @@ export default function LongnetDilated() {
         {/* Coverage stats */}
         <g transform={`translate(${X0}, ${Y0 + L * cellSize + 40})`}>
           <text x="0" y="0" font-family="var(--mono)" font-size="11" fill="#1a1a1a">
-            Per-head budget: W+1 = {W() + 1} keys per query
+            Per-head budget: W = {W()} keys per query
           </text>
           <text x="0" y="18" font-family="var(--mono)" font-size="11" fill="#1a1a1a">
-            Combined budget: H · (W+1) = {H() * (W() + 1)} keys per query
+            Combined budget: H · W = {H() * W()} keys per query (before deduplication of overlaps)
           </text>
           <text x="0" y="36" font-family="var(--mono)" font-size="11" fill="#5a5a55">
-            Naive dense: L = {L} keys per query — {(L / Math.max(1, H() * (W() + 1))).toFixed(1)}× reduction
+            Naive dense: L = {L} keys per query — {(L / Math.max(1, H() * W())).toFixed(1)}× reduction
           </text>
         </g>
       </svg>

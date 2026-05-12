@@ -153,7 +153,12 @@ export default function RopeBaseSweep() {
       </div>
 
       <figcaption>
-        At base 10000 (the original RoPE choice), about {data().filter((d, _, a) => d.rotations >= 1 && Math.abs(Math.pow(10, 4) - 10000) < 1).length}+ dimensions are fast and a similar number are slow. As you raise the base toward Llama 3.1's scaled value (~5×10⁵), more dimensions migrate into the slow regime — they no longer span the unit circle within the training context, so they have less position information to lean on but more headroom to extrapolate. Currently <strong>{fastCount()}</strong> fast / <strong>{slowCount()}</strong> slow dims.
+        At base 10000 (the original RoPE choice), about half the dimensions complete at least one
+        full rotation across the training window and the rest are slower. As you raise the base
+        toward Llama 3.1's scaled value (~5×10⁵), more dimensions migrate into the slow regime —
+        they no longer span the unit circle within the training context, so they have less
+        position information to lean on but more headroom to extrapolate. Currently{" "}
+        <strong>{fastCount()}</strong> fast / <strong>{slowCount()}</strong> slow dims.
       </figcaption>
     </figure>
   );

@@ -58,9 +58,12 @@ export default function LongRopeSearch() {
   const H = 240;
 
   const xPx = (i: number) => X0 + (i / (D_H / 2 - 1)) * W;
-  const allMin = 1 / s();
-  const allMax = 1.5;
-  const yPx = (v: number) => Y0 + H - ((v - allMin) / (allMax - allMin)) * H;
+  // YaRN baseline ranges over [1/s, 1]; evolutionary perturbations can push values up to
+  // ~(1 + magnitude) above 1 or ~(1 - magnitude) below 1/s. Pad the y-range so neither curve
+  // clips against the chart edges.
+  const yMin = createMemo(() => (1 / s()) * Math.max(0.5, 1 - evoMag()));
+  const yMax = createMemo(() => Math.max(1.05, 1 + evoMag()));
+  const yPx = (v: number) => Y0 + H - ((v - yMin()) / (yMax() - yMin())) * H;
 
   const polyYarn = createMemo(() =>
     yarnSchedule().map((v, i) => `${xPx(i).toFixed(1)},${yPx(v).toFixed(1)}`).join(" "),
@@ -95,10 +98,10 @@ export default function LongRopeSearch() {
 
         {/* y-axis labels */}
         <text x={X0 - 6} y={Y0 + 6} text-anchor="end" font-family="var(--mono)" font-size="9" fill="#8a8a85">
-          {allMax.toFixed(2)}
+          {yMax().toFixed(2)}
         </text>
         <text x={X0 - 6} y={Y0 + H + 4} text-anchor="end" font-family="var(--mono)" font-size="9" fill="#8a8a85">
-          {allMin.toFixed(3)}
+          {yMin().toFixed(3)}
         </text>
 
         {/* Reference line at 1.0 */}

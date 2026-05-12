@@ -16,17 +16,17 @@ export default function CompressiveTiers() {
   const Ncomp = createMemo(() => 16); // illustrative compressed-memory length
   const totalReach = createMemo(() => Ncomp() * c() + Nmem() + Nwin());
 
-  // Geometry
+  // Geometry — chosen so that even the max-settings state (Nmem = 32, Nwin = 16) fits in viewBox.
   const X0 = 50;
   const Y0 = 70;
   const slotH = 30;
-  const compW = 16;
-  const memW = 16;
-  const winW = 16;
+  const compW = 11;
+  const memW = 11;
+  const winW = 11;
 
   return (
     <figure class="figure" data-testid="compressive-tiers">
-      <svg viewBox="0 0 700 320" role="img" aria-label="Compressive Transformer two-tier memory">
+      <svg viewBox="0 0 820 320" role="img" aria-label="Compressive Transformer two-tier memory">
         <title>
           Compressive Transformer maintains three regions of context: compressed long-term
           memory (one slot per c original tokens), short-term cache (full resolution), and the
@@ -142,7 +142,7 @@ export default function CompressiveTiers() {
             Per query attends to: {Ncomp() + Nmem() + Nwin()} slots (vs {totalReach()} raw tokens)
           </text>
           <text x="0" y="58" font-family="var(--mono)" font-size="11" fill="#1a1a1a">
-            Memory savings: {(totalReach() / (Ncomp() + Nmem() + Nwin())).toFixed(1)}× via long-term compression
+            Reach per attended slot: {(totalReach() / (Ncomp() + Nmem() + Nwin())).toFixed(1)}× original tokens
           </text>
         </g>
       </svg>

@@ -1,10 +1,12 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
 import StaleBanner from "~/components/StaleBanner.astro";
+import CiteButton from "~/components/CiteButton.astro";
+import SimilarModels from "~/components/SimilarModels.astro";
 import { techniquesAdoptedBy } from "~/utils/adoption-graph";
 import { ARCH_SLOTS, displayArch } from "~/utils/architecture";
 import { BASE } from "~/utils/site";
-import SimilarModels from "~/components/SimilarModels.astro";
+import type { CitationFields } from "~/lib/citations";
 
 interface ArchitectureSpec {
   positional: string | null;
@@ -42,6 +44,21 @@ const arch = frontmatter.architecture;
 const undisclosed = frontmatter.disclosure_level === "undisclosed";
 const adopts = await techniquesAdoptedBy(slug);
 
+// OG card filename matches scripts/generate-og.ts convention: models__<slug>.png
+const ogImage = `${BASE}/og/models__${slug}.png`;
+
+const releaseYear = parseInt(frontmatter.release_date.slice(0, 4), 10);
+const arxivMatch = frontmatter.paper_url?.match(/arxiv\.org\/abs\/([\d.]+)/);
+const modelCitationFields: CitationFields | null = frontmatter.paper_url
+  ? {
+      title: frontmatter.name,
+      authors: frontmatter.organization,
+      year: Number.isFinite(releaseYear) ? releaseYear : new Date().getFullYear(),
+      arxivId: arxivMatch?.[1],
+      url: frontmatter.paper_url,
+    }
+  : null;
+
 const archRows = ARCH_SLOTS.map(({ key, label }) => ({
   label,
   value: displayArch(arch[key]),
@@ -50,7 +67,7 @@ const archRows = ARCH_SLOTS.map(({ key, label }) => ({
 const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
 ---
 
-<BaseLayout title={frontmatter.name} description={`${frontmatter.name} — architecture spec sheet.`}>
+<BaseLayout title={frontmatter.name} description={`${frontmatter.name} — architecture spec sheet.`} ogImage={ogImage}>
   <article class="prose">
     <StaleBanner last_verified={frontmatter.last_verified} />
     <header class="entry-header">
@@ -116,6 +133,8 @@ const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
         <li><a href={u} rel="noopener noreferrer">{u}</a></li>
       ))}
     </ul>
+
+    {modelCitationFields && <CiteButton fields={modelCitationFields} />}
 
     <SimilarModels slug={slug} />
   </article>

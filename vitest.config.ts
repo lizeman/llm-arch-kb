@@ -3,6 +3,7 @@ import solid from "vite-plugin-solid";
 import { fileURLToPath } from "node:url";
 
 const SRC = fileURLToPath(new URL("./src", import.meta.url));
+const ROOT = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   // vite-plugin-solid types come from vite 6; vitest 2 bundles vite 5.
@@ -14,14 +15,18 @@ export default defineConfig({
       "~": SRC,
     },
   },
-  // When running from a git worktree nested under another checkout (e.g. the
-  // .claude/worktrees/ pattern this repo uses), pnpm can pull packages from
-  // the parent checkout's node_modules cache. Vite 5's default fs.strict
-  // refuses to serve those files. Loosening this is safe for unit tests.
   server: {
-    fs: { strict: false },
+    fs: {
+      // The Dropbox-hosted working copy plus the parent repo's hoisted
+      // node_modules both contain content this test setup imports.
+      // Open fs.allow to "/" so vite's strict-fs check can't reject
+      // either path when running from a git worktree.
+      strict: false,
+      allow: ["/"],
+    },
   },
   test: {
+    root: ROOT,
     environment: "jsdom",
     globals: true,
     include: ["tests/**/*.test.{ts,tsx}", "src/**/*.test.{ts,tsx}"],

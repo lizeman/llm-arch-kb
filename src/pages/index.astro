@@ -141,16 +141,29 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
       <section class="prose featured">
         <p class="section-eyebrow">Featured</p>
         <h2>Start here</h2>
-        <ul class="cards">
-          {featured.map((t) => (
-            <li>
-              <a href={`${BASE}/${t.data.category}/${slugTail(t.slug)}/`}>
-                <strong>{t.data.title}</strong>
-                <span class="abbr">{t.data.abbreviation}</span>
-                <p>{t.data.summary}</p>
-              </a>
-            </li>
-          ))}
+        <ul class="cards entry-row-list">
+          {featured.map((t) => {
+            const adopters = (t.data.adopted_by ?? []).length;
+            return (
+              <li>
+                <a href={`${BASE}/${t.data.category}/${slugTail(t.slug)}/`} class="entry-row">
+                  <div class="entry-row__title">
+                    <strong>{t.data.title}</strong>
+                    <span class="entry-row__abbr">{t.data.abbreviation}</span>
+                  </div>
+                  <p class="entry-row__hook">{t.data.problem_solved}</p>
+                  <div class="entry-row__meta">
+                    <span>{t.data.year}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{t.data.status}</span>
+                    <span aria-hidden="true">·</span>
+                    <span><span class="entry-row__adopters">{adopters}</span> {adopters === 1 ? "adopter" : "adopters"}</span>
+                    <span class="entry-row__cta" aria-hidden="true">Read entry <span class="entry-row__chevron">→</span></span>
+                  </div>
+                </a>
+              </li>
+            );
+          })}
         </ul>
       </section>
     )}
@@ -192,29 +205,6 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
   .featured, .categories { margin-top: 64px; }
   .featured h2, .categories h2 { margin-top: 8px; }
 
-  .cards {
-    list-style: none;
-    padding: 0;
-    margin: 32px 0 0;
-  }
-  .cards li { border-bottom: 1px solid var(--border); }
-  .cards a {
-    display: block;
-    padding: 24px 0;
-    color: var(--text);
-    text-decoration: none;
-  }
-  .cards a:hover strong { color: var(--accent); }
-  .cards strong { font-size: 1.25rem; font-weight: 600; }
-  .cards .abbr {
-    font-family: var(--mono);
-    font-size: 0.78rem;
-    color: var(--text-faint);
-    margin-left: 12px;
-    letter-spacing: 0.04em;
-  }
-  .cards p { color: var(--text-soft); margin: 4px 0 0; line-height: 1.55; }
-
   .cat-grid {
     list-style: none;
     padding: 0;
@@ -237,7 +227,7 @@ const byCategory = Object.entries(CATEGORY_LABELS).map(([slug, label]) => {
   .cat-grid strong { font-size: 1.0625rem; flex: 0 0 auto; }
   .cat-grid .count {
     font-family: var(--mono);
-    font-size: 0.78rem;
+    font-size: var(--t-chip-count);
     color: var(--text-faint);
   }
   .cat-grid .newest {

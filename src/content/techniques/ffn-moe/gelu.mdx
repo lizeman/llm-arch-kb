@@ -10,7 +10,7 @@ arxiv_id: "1606.08415"
 paper_url: "https://arxiv.org/abs/1606.08415"
 status: "foundational"
 problem_solved: "Replace ReLU's hard zero cutoff with a smooth, probabilistically-motivated activation. Improves transformer pretraining quality at no compute cost; the standard FFN activation through 2022."
-predecessors: []
+predecessors: ["ffn-relu"]
 successors: ["swiglu", "geglu"]
 adopted_by: []
 summary: "Multiply x by the standard normal CDF: GELU(x) = x · Φ(x). Smoother than ReLU, weighted by the input's z-score. The default transformer FFN activation in BERT, GPT-2, GPT-3 era; superseded by gated variants (SwiGLU, GeGLU) but still the substrate they sit on."

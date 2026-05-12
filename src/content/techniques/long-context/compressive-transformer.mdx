@@ -17,7 +17,7 @@ figure_component: "CompressiveTiers"
 figure_caption: "Three tiers: compressed long-term memory, short-term cache, current window. Drag c to see the compression-vs-reach trade."
 summary: "Two-tier memory: a short-term FIFO cache plus a long-term compressed memory built by applying a learned compression function (mean pooling, conv, or attention) to evicted segments. The original long-context recipe that traded resolution for length."
 tags: ["long-context", "memory", "foundational"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "long-context"
@@ -57,7 +57,8 @@ $$\mathrm{Attn}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \cdot [K_{\text{c
 
 ```python
 def compressive_layer(x, attn, short_mem, long_mem, f_compress, c=4):
-    # When short_mem overflows, compress the oldest tokens into long_mem.
+    # When short_mem overflows, compress the oldest c tokens into one
+    # summary vector and prepend to long_mem.
     if len(short_mem) > N_s:
         evicted = short_mem[:c]                  # oldest tokens leave first
         short_mem = short_mem[c:]

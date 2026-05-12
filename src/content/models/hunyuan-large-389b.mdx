@@ -10,17 +10,18 @@ paper_url: "https://arxiv.org/abs/2411.02265"
 model_card_url: "https://huggingface.co/tencent/Tencent-Hunyuan-Large"
 disclosure_level: "open"
 architecture:
-  positional: "RoPE (base scaled to 1e9 for 256K context)"
+  positional: "RoPE (base 10000 with dynamic scaling, paper reports an effective base near 1e9 at 256K context)"
   normalization_placement: "Pre-Norm"
   normalization_type: "RMSNorm"
   qk_norm: null
   activation: "SwiGLU"
-  attention: "GQA (80 query heads, 8 KV heads)"
+  attention: "GQA (80 query heads, 8 KV heads) with Cross-Layer Attention (KV cache shared across 2 consecutive layers)"
   moe: "16 specialized experts, top-1 routing + 1 always-on shared expert; expert-specific learning rate; recycling routing"
   other:
-    - "64 layers, hidden dim 6400"
+    - "64 layers, hidden dim 6400, FFN intermediate 18304"
+    - "Cross-Layer Attention with share factor 2 (every pair of layers shares KV)"
     - "128K vocabulary"
-    - "7T training tokens"
+    - "~7T training tokens"
     - "Custom Tencent license (research + commercial, with restrictions at very high revenue)"
 source_urls:
   - "https://arxiv.org/abs/2411.02265"
@@ -44,10 +45,14 @@ architecture that follows the dominant 2024 stack with two distinctive MoE-side 
   available expert rather than dropped — a load-balancing fallback distinct from the
   [aux-loss-free](/llm-arch-kb/ffn-moe/aux-loss-free/) approach used by DeepSeek V3.
 
-The non-MoE components are conventional: Pre-Norm [RMSNorm](/llm-arch-kb/normalization/rmsnorm/),
-[SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) FFN inside each expert, [GQA](/llm-arch-kb/attention/gqa/)
-with 80 query heads sharing 8 KV heads, [RoPE](/llm-arch-kb/positional/rope/) with the base
-frequency pushed to 10⁹ for the 256K context window.
+The non-MoE components are mostly conventional: Pre-Norm
+[RMSNorm](/llm-arch-kb/normalization/rmsnorm/), [SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) FFN
+inside each expert, [GQA](/llm-arch-kb/attention/gqa/) with 80 query heads sharing 8 KV heads,
+and [RoPE](/llm-arch-kb/positional/rope/) with dynamic scaling for the 256K context window.
+On top of GQA the model adds **Cross-Layer Attention (CLA)** with share factor 2 — every two
+consecutive layers reuse the same KV projections — for an additional ~2× KV-cache reduction
+on top of GQA. This is the same compression idea (multiple layers sharing one KV cache) that
+later models use under different names.
 
 QK-Norm presence is not surfaced in the technical report and is left out rather than
 guessed (per the [citation policy](/llm-arch-kb/about/)).

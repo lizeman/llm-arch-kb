@@ -15,9 +15,9 @@ successors: []
 adopted_by: []
 figure_component: "LinformerProjection"
 figure_caption: "Drag k. K compresses from L × d_h to k × d_h, attention matrix shrinks from L × L to L × k."
-summary: "Multiply K and V by learned projection matrices E, F ∈ ℝ^{N×k} that compress the sequence axis to a fixed rank k. Attention becomes O(N·k) per query. Empirically near-softmax on encoder tasks; the sequence-length-dependent projection makes decoder use awkward."
+summary: "Multiply K and V by learned projection matrices E, F ∈ ℝ^{k×N} that compress the sequence axis to a fixed rank k. Attention becomes O(N·k) per query. Empirically near-softmax on encoder tasks; the sequence-length-dependent projection makes decoder use awkward."
 tags: ["attention", "approximate", "low-rank"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "efficiency"

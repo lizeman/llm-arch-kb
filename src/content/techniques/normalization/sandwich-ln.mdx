@@ -4,13 +4,13 @@ abbreviation: "Sandwich-LN"
 category: "normalization"
 year: 2021
 month: 5
-introduced_by: "Ming Ding et al. (Tsinghua / Alibaba — CogView)"
+introduced_by: "Ming Ding et al. (Tsinghua University — CogView)"
 paper_title: "CogView: Mastering Text-to-Image Generation via Transformers"
 arxiv_id: "2105.13290"
 paper_url: "https://arxiv.org/abs/2105.13290"
 status: "production-adopted"
 problem_solved: "Cap the magnitude of each block's perturbation to the residual stream — keeping Pre-Norm's gradient-flow benefit while preventing the residual norm from growing unboundedly with depth."
-predecessors: []
+predecessors: ["norm-placement"]
 successors: ["gemma3-norm-everywhere"]
 adopted_by:
   - model: "gemma-2-27b"
@@ -23,7 +23,7 @@ figure_component: "SandwichVsPre"
 figure_caption: "Residual stream RMS by depth: Pre-Norm grows like √L, Sandwich keeps each block's contribution unit-RMS, DeepNet-scaled Post-Norm renormalizes."
 summary: "Two RMSNorms per sublayer: one before, one after, both inside the residual branch. Bounds the per-block contribution to the residual stream while keeping the identity path unnormalized. Used by Gemma 2 and 3."
 tags: ["normalization", "stability", "gemma"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "training-stability"
@@ -108,9 +108,9 @@ unchanged from very small to very large.
 
 For the dominant 2024–26 open stack (Llama, DeepSeek, Qwen, Mistral), plain Pre-Norm + RMSNorm
 remains the default. Gemma is the most prominent counterexample, and the sandwich placement
-shows up in some research-oriented stability work (Peri-LN follow-ons, OLMo 2's deliberate
+shows up in research-oriented stability work (Peri-LN follow-ons). OLMo 2's deliberate
 Post-Norm revival is an adjacent but different choice — see the
-[norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for the placement-space map).
+[norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for the placement-space map.
 
 <Summary>
 **Sandwich-LN in one breath.** Norm before *and* after each sublayer, both inside the residual

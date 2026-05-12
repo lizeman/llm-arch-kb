@@ -3,11 +3,11 @@ title: "Auxiliary-Loss-Free Load Balancing"
 abbreviation: "Aux-Loss-Free"
 category: "ffn-moe"
 year: 2024
-month: 12
-introduced_by: "DeepSeek-AI"
-paper_title: "DeepSeek-V3 Technical Report"
-arxiv_id: "2412.19437"
-paper_url: "https://arxiv.org/abs/2412.19437"
+month: 8
+introduced_by: "Lean Wang, Huazuo Gao, Chenggang Zhao, Xu Sun, Damai Dai (DeepSeek-AI)"
+paper_title: "Auxiliary-Loss-Free Load Balancing Strategy for Mixture-of-Experts"
+arxiv_id: "2408.15664"
+paper_url: "https://arxiv.org/abs/2408.15664"
 status: "production-adopted"
 problem_solved: "Load-balance MoE experts without paying the auxiliary-loss quality tax — by adjusting a per-expert bias that enters at top-K selection but does not enter the final output computation."
 predecessors: ["switch-transformer", "deepseek-moe"]
@@ -20,13 +20,13 @@ adopted_by:
     source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.1"
     notes: "Same aux-loss-free routing inherited from V3 across the MoE layers."
   - model: "deepseek-v3-2"
-    source_url: "https://arxiv.org/abs/2509.04559"
+    source_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp"
     notes: "Aux-loss-free routing carried over from V3 / V3.1; only attention layers change in V3.2."
 summary: "Maintain a per-expert bias term that shifts the gate's top-K decision toward under-used experts. The bias enters at selection time only — the final expert outputs are weighted by the original (unbiased) gate values. Load balance without quality cost."
 tags: ["moe", "load-balance", "deepseek"]
 figure_component: "AuxLossFreeBias"
 figure_caption: "Step the bias update; the biased routing flattens toward the target line within ~20 steps without an explicit auxiliary loss."
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "routing"
@@ -64,12 +64,17 @@ The bias only matters at the top-K argmax. Once experts are selected, the final 
 come from the original gate logits. The model's *expressive output* is unaffected by the bias;
 only the *routing decision* is.
 
-The bias is updated after every step based on the realized expert utilization:
+The bias is updated after every step based on the realized expert utilization. The original
+Wang et al. (2024) formulation uses a smooth update,
 
 $$b_i \leftarrow b_i + \gamma \cdot \bigl(\bar{f} - f_i\bigr),$$
 
+while DeepSeek V3 (§3.4) uses the discrete-sign variant
+
+$$b_i \leftarrow b_i + \gamma \cdot \mathrm{sign}\bigl(\bar{f} - f_i\bigr),$$
+
 where $f_i$ is the fraction of tokens routed to expert $i$ in the batch and $\bar{f} = 1/E$ is
-the target uniform utilization. The update rate $\gamma$ is small (DeepSeek uses $10^{-3}$).
+the target uniform utilization. The update rate $\gamma$ is small (DeepSeek V3 uses $10^{-3}$).
 Over-used experts get a more negative bias and become less likely to be selected; under-used
 experts become more likely.
 

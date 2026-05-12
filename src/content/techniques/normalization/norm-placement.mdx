@@ -11,7 +11,7 @@ paper_url: "https://arxiv.org/abs/2002.04745"
 status: "foundational"
 problem_solved: "Where to put the normalization layer relative to the residual addition — the decision that determines whether deep transformers train stably without warmup."
 predecessors: []
-successors: ["sandwich-ln"]
+successors: ["sandwich-ln", "olmo2-post-norm", "gemma3-norm-everywhere"]
 adopted_by:
   - model: "llama-3-1-70b"
     source_url: "https://arxiv.org/abs/2407.21783"
@@ -30,7 +30,7 @@ adopted_by:
     notes: "Deliberate revival of Post-Norm character with QK-Norm for training stability."
 summary: "Pre-Norm became the default because it lets gradients flow unaltered through the residual stream and removes the need for warmup; sandwich placements like Gemma 3's norm-everywhere are the modern minority alternative."
 tags: ["normalization", "consensus-stack"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "training-stability"

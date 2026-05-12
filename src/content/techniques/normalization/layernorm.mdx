@@ -11,11 +11,11 @@ paper_url: "https://arxiv.org/abs/1607.06450"
 status: "foundational"
 problem_solved: "Normalize the activations of a layer across the feature dimension rather than across the batch — letting recurrent and attention-based networks train stably at any batch size, including batch-of-one inference."
 predecessors: []
-successors: []
+successors: ["rmsnorm"]
 adopted_by: []
 summary: "Per-token feature-axis normalization with learnable scale and shift. The 2016 building block the original transformer used; superseded in modern decoders by RMSNorm, which drops the mean-centering step at no quality cost."
 tags: ["normalization", "foundational"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intro"
 facets:
   - "training-stability"
@@ -72,9 +72,9 @@ attention sub-layer's residual, once after the FFN's. This had a few consequence
 - **The forward signal is bounded.** After LN the output has unit variance per token, which
   constrains how much a single sub-layer's update can drift the residual stream.
 
-The Post-Norm placement was the only thing the original paper got "wrong" in retrospect — see
-the [norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for the Pre-Norm vs
-Post-Norm story.
+The Post-Norm placement the original transformer used was the only thing it got "wrong" in
+retrospect — see the [norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for
+the Pre-Norm vs Post-Norm story.
 
 <p class="section-eyebrow">§ 4 · Why it was eventually replaced</p>
 ## RMSNorm drops half of it
@@ -82,9 +82,9 @@ Post-Norm story.
 Zhang and Sennrich's 2019 RMSNorm paper showed that almost all of LayerNorm's stabilizing
 effect comes from the *re-scaling*, not the *re-centering*. Dropping $\mu$ and $\boldsymbol{\beta}$
 (keeping only the RMS-normalization and the gain $\boldsymbol{\gamma}$) gives essentially
-identical quality at meaningfully less compute. The original LayerNorm paper's mean-subtraction
-machinery has been carried by every transformer for nearly a decade for very little benefit;
-RMSNorm is what is actually load-bearing.
+identical quality at meaningfully less compute. LayerNorm's mean-subtraction machinery was
+carried by every transformer for nearly a decade for very little benefit; the re-scaling step
+is what was actually load-bearing.
 
 See the [RMSNorm entry](/llm-arch-kb/normalization/rmsnorm/) for the analysis. Every open
 frontier dense LLM since Llama 1 uses RMSNorm; plain LayerNorm survives only in legacy code,

@@ -13,9 +13,9 @@ problem_solved: "Give attention 'random access' to a long context by summarizing
 predecessors: ["compressive-transformer"]
 successors: []
 adopted_by: []
-summary: "Insert a learnable landmark token at the end of each chunk; train it to summarize the chunk's content. At inference, queries attend to landmarks to gate which chunks get full attention. Hierarchical chunked attention with O(C + W) cost where C is chunk count and W is per-chunk window."
+summary: "Insert a learnable landmark token at the end of each chunk; train it to summarize the chunk's content. At inference, queries attend to landmarks to gate which chunks get full attention. Hierarchical chunked attention with O(C + K·W) cost where C is the chunk count, K the chunks selected, and W per-chunk size."
 tags: ["long-context", "hierarchical"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "long-context"
@@ -39,9 +39,9 @@ selected get zero attention; selected far-away chunks get attended to at full re
 <p class="section-eyebrow">§ 2 · The landmark token</p>
 ## One summary per chunk
 
-Insert a learnable token $\mathbf{L}$ at the end of each chunk of $C$ tokens during training:
+Insert a learnable token $\mathbf{L}$ at the end of each chunk of $W$ tokens during training:
 
-$$[\text{tok}_1, \ldots, \text{tok}_C, \mathbf{L}, \text{tok}_{C+1}, \ldots, \text{tok}_{2C}, \mathbf{L}, \ldots]$$
+$$[\text{tok}_1, \ldots, \text{tok}_W, \mathbf{L}, \text{tok}_{W+1}, \ldots, \text{tok}_{2W}, \mathbf{L}, \ldots]$$
 
 The landmark token attends to its preceding chunk via standard attention and develops an
 activation that summarizes the chunk's content. The model learns this implicitly during
@@ -64,9 +64,10 @@ def landmark_attention(q, all_landmarks, chunks, top_K, full_attn):
     return full_attn(q, selected_keys, selected_keys)
 ```
 
-Cost: $O(C)$ for the landmark stage plus $O(K \cdot W)$ for the fine stage. For 1M-token
-contexts at $C = 4096$ chunks, $K = 4$, $W = 4096$, total cost is $\sim 20K$ operations per
-query — vs $1M$ for full attention.
+Cost: $O(C)$ for the landmark stage plus $O(K \cdot W)$ for the fine stage, where $C$ is the
+number of chunks and $W$ is each chunk's size. For a 1M-token context with $C = 256$ chunks of
+$W = 4096$ and $K = 4$, total cost is $\sim 16{,}640$ operations per query — vs $10^6$ for full
+attention.
 
 <LandmarkAttention client:visible />
 

@@ -6,7 +6,7 @@ parameters_total: "130B"
 context_length: 2048
 open_weights: true
 paper_url: "https://arxiv.org/abs/2210.02414"
-model_card_url: "https://huggingface.co/THUDM/glm-130b"
+model_card_url: "https://github.com/THUDM/GLM-130B"
 disclosure_level: "open"
 architecture:
   positional: "2D Rotary Position Embedding (RoPE on each axis of the 2D position grid)"
@@ -23,7 +23,6 @@ architecture:
     - "DeepNorm β = (8N)^(-1/4) for Post-Norm stability at 130B scale"
 source_urls:
   - "https://arxiv.org/abs/2210.02414"
-  - "https://huggingface.co/THUDM/glm-130b"
   - "https://github.com/THUDM/GLM-130B"
 notes: "First open 100B+ bilingual model. Architecturally an outlier from the 2022–2025 consensus stack: Post-Norm with DeepNorm, LayerNorm rather than RMSNorm, GeLU rather than a GLU variant, MHA, and a custom 2D RoPE. The choices reflect 2021–22 design conventions rather than the post-Llama settlement."
 ---
@@ -59,4 +58,6 @@ predicts each masked span autoregressively while the surrounding tokens have ful
 visibility. GLM-130B inference can be operated either causally or with the bidirectional infill
 mode active, depending on the task framing.
 
-For later GLM family members see the GLM-4 and GLM-4.5 entries (when those land).
+For later GLM family members see [GLM-4 9B](/llm-arch-kb/models/glm-4-9b/) — which keeps the
+Post-Norm placement and 2D RoPE while moving to RMSNorm + SwiGLU + GQA — and
+[GLM-4.5](/llm-arch-kb/models/glm-4-5/), the 355B / 32B-active MoE flagship.

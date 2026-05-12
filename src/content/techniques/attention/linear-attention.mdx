@@ -8,7 +8,7 @@ introduced_by: "Angelos Katharopoulos, Apoorv Vyas, Nikolaos Pappas, François F
 paper_title: "Transformers are RNNs: Fast Autoregressive Transformers with Linear Attention"
 arxiv_id: "2006.16236"
 paper_url: "https://arxiv.org/abs/2006.16236"
-status: "research"
+status: "production-adopted"
 problem_solved: "Replace softmax with a kernel that lets you reorder QKV multiplications — making attention compute linear in sequence length, with a constant-size recurrent state at autoregressive inference."
 predecessors: []
 successors: ["performer", "lightning-attention"]
@@ -24,7 +24,7 @@ adopted_by:
     notes: "23 Mamba-2 layers (the descendant of structured-state-space variants of the linear-attention family) in a 52-layer hybrid stack."
 summary: "Replace softmax(QK^T)V with φ(Q)·(φ(K)^T·V). The K^T·V term is a small (d×d) state independent of sequence length; the operator becomes a recurrence at inference. Approximate, but linear in T."
 tags: ["attention", "approximate"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "efficiency"

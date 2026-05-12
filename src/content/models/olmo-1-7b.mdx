@@ -9,28 +9,33 @@ paper_url: "https://arxiv.org/abs/2402.00838"
 model_card_url: "https://huggingface.co/allenai/OLMo-7B"
 disclosure_level: "open"
 architecture:
-  positional: "RoPE"
+  positional: "RoPE (base 10000)"
   normalization_placement: "Pre-Norm"
-  normalization_type: "RMSNorm"
+  normalization_type: "LayerNorm (non-parametric)"
   qk_norm: false
   activation: "SwiGLU"
-  attention: "MHA"
+  attention: "MHA (32 query heads, 32 KV heads, head dim 128)"
   moe: null
   other:
-    - "32 layers"
+    - "32 layers, hidden dim 4096, FFN intermediate 11008"
+    - "Non-parametric LayerNorm (no learned scale/bias) — distinctive vs Llama's RMSNorm"
+    - "2048-token context, no attention bias"
     - "Fully open: weights, training data (Dolma), training code, intermediate checkpoints"
     - "Apache 2.0 license"
 source_urls:
   - "https://arxiv.org/abs/2402.00838"
   - "https://huggingface.co/allenai/OLMo-7B"
   - "https://github.com/allenai/OLMo"
-notes: "AI2's first fully-open language model. Architecturally a Llama-1-derived stack — MHA + Pre-Norm RMSNorm + RoPE + SwiGLU. Predecessor to OLMo 2 (which added QK-Norm and reordered Post-Norm)."
+notes: "AI2's first fully-open language model. Architecturally close to Llama 1 — MHA + Pre-Norm + RoPE + SwiGLU — but with a non-parametric LayerNorm rather than Llama's RMSNorm. Predecessor to OLMo 2 (which switched to RMSNorm, added QK-Norm, and moved to a reordered Post-Norm placement)."
 ---
 
 OLMo 1 7B (February 2024) is the Allen Institute for AI's first fully-open language model and
 the start of a lineage that emphasizes reproducibility over architectural novelty. The
-architecture is deliberately a Llama-1 clone — Pre-Norm RMSNorm + RoPE + SwiGLU + MHA — chosen
-not because the team had nothing to add but because the openness contribution was the priority.
+recipe is close to Llama 1 — Pre-Norm + RoPE + SwiGLU + MHA — chosen not because the team
+had nothing to add but because the openness contribution was the priority. The one
+deliberate divergence from Llama is the normalization: OLMo 1 uses a **non-parametric
+LayerNorm** (no learned scale or bias) rather than Llama's RMSNorm. The team cites training
+stability at long horizons as the motivation.
 
 The "fully open" claim refers to four artifacts published together:
 
@@ -43,5 +48,6 @@ For research on long-horizon training dynamics, hyperparameter ablations, and cu
 effects, OLMo 1 remains the most complete open artifact in the field — Llama and DeepSeek
 release weights and papers but not the training data or intermediate checkpoints.
 
-For the OLMo family's current frontier, see [OLMo 2 13B](/llm-arch-kb/models/olmo-2-13b/),
-which added QK-Norm and reordered Post-Norm placement.
+For the next generation, see [OLMo 2 13B](/llm-arch-kb/models/olmo-2-13b/) — which switched
+to RMSNorm, added QK-Norm, and moved the layer-norms into a reordered Post-Norm placement —
+and [OLMo 3 32B](/llm-arch-kb/models/olmo-3-32b/), AI2's flagship dense release.

@@ -8,7 +8,7 @@ introduced_by: "Ofir Press, Noah A. Smith, Mike Lewis"
 paper_title: "Train Short, Test Long: Attention with Linear Biases Enables Input Length Extrapolation"
 arxiv_id: "2108.12409"
 paper_url: "https://arxiv.org/abs/2108.12409"
-status: "production-adopted"
+status: "research"
 problem_solved: "Encode position with no learnable parameters and no rotation — just a static linear bias on attention scores. Trades expressive flexibility for clean length extrapolation."
 predecessors: []
 successors: []
@@ -17,7 +17,7 @@ figure_component: "AlibiSlopes"
 figure_caption: "Slider over head index; the steeper-slope heads attend locally, the shallow-slope heads almost ignore distance."
 summary: "Bias attention scores by a per-head linear function of the query-key distance. No learnable position parameters; extrapolates beyond training length without any fine-tune. Lost the dominance race to RoPE for dense decoders but is mechanically illuminating."
 tags: ["positional", "alternative"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "long-context"

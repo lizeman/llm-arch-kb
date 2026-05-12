@@ -21,7 +21,7 @@ adopted_by:
     notes: "Top-8 routing across 64 small experts; coarse-MoE recipe without DeepSeekMoE's shared experts."
 summary: "Eight full-sized SwiGLU experts per MoE layer; top-2 routing with a standard load-balancing auxiliary loss. The Mistral-org variant that brought open-weights MoE into wide use, sitting on the coarse end of the granularity spectrum that DeepSeekMoE later contested."
 tags: ["moe", "ffn"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "routing"
@@ -62,7 +62,7 @@ def mixtral_moe(x, experts, gate, K=2):
     return dispatch_and_combine(x, experts, topk_idx, weights)
 ```
 
-Auxiliary load-balancing loss (Fedus et al. 2022's Switch Transformer formulation):
+Auxiliary load-balancing loss (Fedus et al. 2021's Switch Transformer formulation, eq. 4):
 
 $$\mathcal{L}_{\text{aux}} = \alpha \cdot E \cdot \sum_i f_i \cdot P_i,$$
 

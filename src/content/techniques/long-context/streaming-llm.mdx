@@ -17,7 +17,7 @@ figure_component: "AttentionSinks"
 figure_caption: "Drag t past the window size with S = 0 to see naive sliding-window failure; bump S to 4 to see the streaming-LLM fix."
 summary: "The first 1-4 tokens of any pretrained decoder act as attention sinks — they absorb the softmax mass that has nowhere else to go. Pin them in the KV cache and you can slide the rest of the window over arbitrarily long input without quality collapse."
 tags: ["long-context", "inference"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "long-context"
@@ -65,6 +65,13 @@ keys, the signal-to-noise ratio collapses, and outputs degrade.
 The minimum change: keep $S$ initial tokens (typically $S = 4$) permanently pinned in the KV
 cache. Slide the rest. Memory becomes $O(S + W)$. Quality stays at the level of the original
 attention window.
+
+Concretely, for a query at position $t$ with input length $T > S + W$, the retained key set is
+
+$$\mathcal{K}_t = \underbrace{\{1, 2, \ldots, S\}}_{\text{sink tokens, always kept}} \;\cup\; \underbrace{\{t - W + 1, \ldots, t\}}_{\text{rolling window of size } W}$$
+
+and attention runs as standard softmax over $\mathcal{K}_t$ — the sinks remain in every step's
+key set regardless of how far past the window front $t$ has advanced.
 
 ```python
 def streaming_kv_update(kv_cache, new_kv, window_w=2048, sinks_s=4):

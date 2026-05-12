@@ -4,7 +4,7 @@ abbreviation: "NoPE"
 category: "positional"
 year: 2022
 month: 3
-introduced_by: "Adi Haviv et al."
+introduced_by: "Adi Haviv, Ori Ram, Ofir Press, Peter Izsak, Omer Levy"
 paper_title: "Transformer Language Models without Positional Encodings Still Learn Positional Information"
 arxiv_id: "2203.16634"
 paper_url: "https://arxiv.org/abs/2203.16634"
@@ -21,7 +21,7 @@ adopted_by:
     notes: "MLA body uses NoPE; RoPE applied only to a small 64-dim decoupled head per query (mla_use_nope: true in the released config)."
 summary: "Drop the positional encoding entirely. The causal mask asymmetrically restricts each query to its left context; the model learns to extract token position from that asymmetry alone. Works surprisingly well; reveals what positional encodings are actually adding."
 tags: ["positional", "research"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -85,18 +85,20 @@ off cliffs at $> L_{\text{train}}$ positions, NoPE degrades smoothly.
 The intuition: there is no positional encoding to extrapolate, so there is nothing to break.
 The model's implicit position-counting mechanism is scale-invariant.
 
-<p class="section-eyebrow">§ 4 · Why no production decoder uses it</p>
-## The non-extrapolation case
+<p class="section-eyebrow">§ 4 · Where production picks it up</p>
+## Partial adoption, not full replacement
 
 For tasks where position-tagged tokens are useful — long-document QA, code, anything with
-explicit hierarchy — NoPE underperforms RoPE in absolute quality (Kazemnejad et al. Table 2).
-The implicit position information is enough but not optimal: a richer relative-position
-signal helps the model when relative position is genuinely informative.
+explicit hierarchy — pure NoPE underperforms RoPE in absolute quality (Kazemnejad et al.
+Table 2). The implicit position information is enough but not optimal: a richer
+relative-position signal helps the model when relative position is genuinely informative.
 
-Production decoders care about absolute quality on context-rich tasks more than about smooth
-length extrapolation. RoPE remains the consensus choice. NoPE survives as the cleanest
-existence proof that "positional encoding is necessary" is *strictly false* for causal
-decoders, and as an option for tasks where length extrapolation dominates.
+What 2025 production models actually adopt is the hybrid form. Llama 4 Scout's iRoPE
+interleaves NoPE layers with RoPE layers for length generalization; Kimi Linear strips RoPE
+from the MLA body and keeps it only on a small decoupled head. In both, NoPE buys
+length-extrapolation headroom while RoPE still carries the bulk of the positional signal.
+RoPE-only remains the consensus for dense decoders; NoPE is the cleanest existence proof
+that "positional encoding is necessary" is *strictly false* for causal decoders.
 
 <Summary>
 **NoPE in one breath.** Drop the positional encoding entirely; the causal mask's asymmetry

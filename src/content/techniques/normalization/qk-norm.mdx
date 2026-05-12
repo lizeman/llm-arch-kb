@@ -38,7 +38,7 @@ figure_component: "QkNormLogits"
 figure_caption: "Inject an outlier into one query coordinate. The raw softmax collapses to one key; QK-Norm holds the distribution."
 summary: "Normalize Q and K before the attention dot product so the logit magnitude stays bounded — a near-free fix for the outlier blow-ups that wreck attention at long context."
 tags: ["normalization", "attention-stability"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "training-stability"
@@ -61,15 +61,14 @@ becomes dominated by that one term, the softmax sharpens to a single key, and gr
 every other key.
 
 This shows up at long context, in mixed-precision (fp16/bf16) training, and during the first few
-hundred steps before LayerNorm has stabilized the residual stream.
+hundred steps before the residual-stream norms have stabilized.
 
 <p class="section-eyebrow">§ 2 · The fix</p>
 ## Normalize Q and K first
 
-Apply a per-head RMSNorm (or LayerNorm) to Q and K *before* taking the dot product:
+Apply a per-head RMSNorm (or LayerNorm) row-wise to Q and K *before* taking the dot product:
 
-$$\tilde{\mathbf{q}} = \mathrm{RMSNorm}(\mathbf{q}),\quad \tilde{\mathbf{k}} = \mathrm{RMSNorm}(\mathbf{k}),$$
-$$\mathrm{logits} = s\cdot\tilde{\mathbf{Q}}\tilde{\mathbf{K}}^\top.$$
+$$\tilde{\mathbf{Q}} = \mathrm{RMSNorm}(\mathbf{Q}),\quad \tilde{\mathbf{K}} = \mathrm{RMSNorm}(\mathbf{K}),\quad \mathrm{logits} = s \cdot \tilde{\mathbf{Q}}\tilde{\mathbf{K}}^\top.$$
 
 Each vector now has unit RMS, so the dot product is bounded by the head dim regardless of input
 outliers. A small learnable scale $s$ (often a single scalar per head) replaces the $1/\sqrt{d_h}$

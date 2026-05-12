@@ -9,18 +9,19 @@ open_weights: true
 model_card_url: "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct"
 disclosure_level: "documented"
 architecture:
-  positional: "iRoPE — interleaved RoPE / no-position layers"
+  positional: "iRoPE (interleaved RoPE / NoPE-style no-position layers)"
   normalization_placement: "Pre-Norm"
   normalization_type: "RMSNorm"
   qk_norm: false
   activation: "SwiGLU"
-  attention: "GQA"
-  moe: "MoE with 16 routed experts + 1 shared expert; top-1 routing"
+  attention: "iRoPE (Llama-4) over GQA"
+  moe: "16 routed experts + 1 shared expert, top-1 routing"
   other:
     - "First Llama with native Mixture of Experts"
     - "iRoPE: a fraction of layers omit RoPE entirely (NoPE-style) for length generalization"
     - "10M-token context window in the Scout configuration"
-    - "Native multimodal (text + image)"
+    - "Native multimodal (text + image) via early fusion"
+    - "Llama 4 Community License"
 source_urls:
   - "https://ai.meta.com/blog/llama-4-multimodal-intelligence/"
   - "https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct"

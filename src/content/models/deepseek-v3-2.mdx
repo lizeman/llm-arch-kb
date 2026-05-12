@@ -6,7 +6,7 @@ parameters_total: "671B"
 parameters_active: "37B"
 context_length: 128000
 open_weights: true
-paper_url: "https://arxiv.org/abs/2509.04559"
+paper_url: "https://github.com/deepseek-ai/DeepSeek-V3.2-Exp/blob/main/DeepSeek_V3_2.pdf"
 model_card_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp"
 disclosure_level: "open"
 parent_model: "deepseek-v3-1"
@@ -23,7 +23,7 @@ architecture:
     - "First production model with DSA — sparse attention via learned top-K selection"
     - "'Exp' label: experimental release, not the mainline V4"
 source_urls:
-  - "https://arxiv.org/abs/2509.04559"
+  - "https://github.com/deepseek-ai/DeepSeek-V3.2-Exp/blob/main/DeepSeek_V3_2.pdf"
   - "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp"
   - "https://github.com/deepseek-ai/DeepSeek-V3.2-Exp"
 notes: "The V3 base architecture plus DeepSeek Sparse Attention. The DSA layer slots into the existing MLA stack; everything else (MoE, routing, FFN, normalization) carries over from V3. See the DSA technique entry for the attention-side details."

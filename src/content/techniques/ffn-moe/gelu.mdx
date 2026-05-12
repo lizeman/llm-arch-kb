@@ -15,7 +15,7 @@ successors: ["swiglu", "geglu"]
 adopted_by: []
 summary: "Multiply x by the standard normal CDF: GELU(x) = x · Φ(x). Smoother than ReLU, weighted by the input's z-score. The default transformer FFN activation in BERT, GPT-2, GPT-3 era; superseded by gated variants (SwiGLU, GeGLU) but still the substrate they sit on."
 tags: ["activation", "ffn", "foundational"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -87,7 +87,7 @@ empirically better than plain GELU FFN at matched parameter count.
 
 GELU is no longer the dominant FFN activation but it is *inside* every GeGLU layer in Gemma 1 / 2 / 3.
 It also remains the default in encoder-only models that haven't migrated to gated FFNs
-(BERT-base, RoBERTa, DeBERTa). The activation itself is not deprecated; the *uncgated* FFN
+(BERT-base, RoBERTa, DeBERTa). The activation itself is not deprecated; the *ungated* FFN
 that used to wrap it is.
 
 <Summary>

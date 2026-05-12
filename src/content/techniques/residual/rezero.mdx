@@ -10,12 +10,12 @@ arxiv_id: "2003.04887"
 paper_url: "https://arxiv.org/abs/2003.04887"
 status: "research"
 problem_solved: "Train arbitrarily deep transformers without LayerNorm, without warmup, without careful initialization — just one learnable scalar per residual branch, initialized to zero."
-predecessors: []
+predecessors: ["residual-overview"]
 successors: []
 adopted_by: []
 summary: "Scale each residual branch by a per-layer learnable scalar α initialized to zero. The network starts at identity (gradient = 1 through every block) and learns to integrate sublayer contributions gradually. Stable at depths where standard transformers diverge."
 tags: ["residual", "stability"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 

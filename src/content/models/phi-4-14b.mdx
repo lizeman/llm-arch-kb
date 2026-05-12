@@ -9,16 +9,16 @@ paper_url: "https://arxiv.org/abs/2412.08905"
 model_card_url: "https://huggingface.co/microsoft/phi-4"
 disclosure_level: "documented"
 architecture:
-  positional: "RoPE"
+  positional: "RoPE (base 250000)"
   normalization_placement: "Pre-Norm"
   normalization_type: "RMSNorm"
   qk_norm: false
   activation: "SwiGLU"
-  attention: "GQA"
+  attention: "GQA (40 query heads, 10 KV heads)"
   moe: null
   other:
-    - "Dense 14B decoder"
-    - "Tokenizer: tiktoken-derived, ~100K vocabulary (per technical report)"
+    - "Dense 14B decoder: 40 layers, hidden size 5120, FFN intermediate 17920"
+    - "Tokenizer: tiktoken-derived, 100352 vocabulary"
     - "MIT license at release"
 source_urls:
   - "https://arxiv.org/abs/2412.08905"
@@ -42,7 +42,8 @@ What is novel in Phi-4:
   reasoning on a single-GPU footprint.
 - **16K base context window.**
 
-Architectural details such as exact layer count and FFN width are in the released model
-config rather than highlighted in the technical report — Phi-4's paper is intentionally
-data-and-evaluation-focused. The open weights release under MIT license is the canonical
-artifact for verifying the architecture spec.
+Architectural details (40 layers, hidden size 5120, FFN 17920, GQA with 40 query heads
+and 10 KV heads, RoPE base 250000) are in the released model `config.json` rather than
+highlighted in the technical report — Phi-4's paper is intentionally data-and-evaluation
+focused. The open-weights release under MIT license is the canonical artifact for verifying
+the architecture spec.

@@ -3,24 +3,24 @@ title: "DeepSeek Sparse Attention"
 abbreviation: "DSA"
 category: "attention"
 year: 2025
-month: 9
+month: 12
 introduced_by: "DeepSeek-AI"
-paper_title: "DeepSeek-V3.2-Exp: Boosting Long-Context Efficiency with DeepSeek Sparse Attention"
-arxiv_id: "2509.04559"
-paper_url: "https://arxiv.org/abs/2509.04559"
+paper_title: "DeepSeek-V3.2: Pushing the Frontier of Open Large Language Models"
+arxiv_id: "2512.02556"
+paper_url: "https://arxiv.org/abs/2512.02556"
 status: "production-adopted"
 problem_solved: "Push attention compute below MLA's already-low cache floor by routing each query to a small top-K subset of historical keys, selected by a lightweight learned indexer."
 predecessors: ["mla"]
 successors: []
 adopted_by:
   - model: "deepseek-v3-2"
-    source_url: "https://arxiv.org/abs/2509.04559"
+    source_url: "https://arxiv.org/abs/2512.02556"
     notes: "First DSA-enabled DeepSeek release; experimental V3 derivative that ships sparse attention as the long-context efficiency lever."
 figure_component: "DsaIndexer"
 figure_caption: "Drag the top-K budget. Indexer scores concentrate on needle positions; DSA attends only to those, paying O(K) instead of O(L)."
 summary: "A two-stage attention: a fast Lightning Indexer scores how relevant each historical key is to the current query, then full attention runs only over the top-K keys. Built on top of MLA — the latent KV cache is unchanged; the sparsity is in which cached entries get attended."
 tags: ["attention", "sparse", "long-context", "deepseek"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "long-context"
@@ -106,7 +106,7 @@ cheap, which is what makes DSA practical.
 The combination — MLA for cache compression, DSA for compute compression on top — is the
 DeepSeek-V3.2 long-context efficiency story. The same V3 base model with DSA enabled at
 inference time reportedly trades a small quality drop for a substantial speedup at 128K
-context (V3.2-Exp tech report, §4).
+context (DeepSeek-V3.2 tech report).
 
 <p class="section-eyebrow">§ 5 · Status</p>
 ## Experimental, but production-grade engineering

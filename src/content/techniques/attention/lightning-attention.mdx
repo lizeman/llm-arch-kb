@@ -3,7 +3,7 @@ title: "Lightning Attention"
 abbreviation: "Lightning"
 category: "attention"
 year: 2024
-month: 5
+month: 1
 introduced_by: "Zhen Qin et al. (MiniMax)"
 paper_title: "Lightning Attention-2: A Free Lunch for Handling Unlimited Sequence Lengths in Large Language Models"
 arxiv_id: "2401.04658"
@@ -21,7 +21,7 @@ adopted_by:
     notes: "Same 7:1 Lightning + softmax stack as MiniMax-01; paper claims 25% of DeepSeek R1's FLOPs at 100K generation length."
 summary: "Tile and fuse linear attention's prefix-sum recurrence so it runs faster than FlashAttention at long context. Interleaved 7:1 with softmax attention in MiniMax-01 to recover what linear attention loses on absolute quality while keeping its linear-in-T scaling."
 tags: ["attention", "linear", "production"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "efficiency"

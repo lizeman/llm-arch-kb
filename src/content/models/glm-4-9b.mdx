@@ -3,7 +3,7 @@ name: "GLM-4 9B"
 organization: "Zhipu AI / Tsinghua KEG"
 release_date: "2024-06-04"
 parameters_total: "9B"
-context_length: 1048576
+context_length: 8192
 open_weights: true
 paper_url: "https://arxiv.org/abs/2406.12793"
 model_card_url: "https://huggingface.co/THUDM/glm-4-9b"
@@ -11,15 +11,15 @@ disclosure_level: "open"
 parent_model: "glm-130b"
 architecture:
   positional: "2D Rotary Position Embedding (the GLM-family signature, carried from GLM-130B)"
-  normalization_placement: "Post-Norm with DeepNorm-style scaling"
+  normalization_placement: "Post-Norm"
   normalization_type: "RMSNorm"
   qk_norm: false
   activation: "SwiGLU"
-  attention: "GQA (32 query heads grouped into smaller KV-head set)"
+  attention: "GQA (32 query heads, 2 KV heads — G = 16; near-MQA aggressive sharing)"
   moe: null
   other:
-    - "40 layers"
-    - "1M-token context window via long-context extension recipe"
+    - "40 layers, hidden dim 4096"
+    - "Base 8K context; companion GLM-4-9B-Chat-1M variant ships with a 1M-token long-context extension"
     - "Bilingual Chinese / English; multilingual support beyond"
     - "Open-weights variant of the GLM-4 family; 32B and larger variants are not openly released"
 source_urls:
@@ -49,12 +49,16 @@ convergence with the post-Llama consensus stack, while keeping two signature GLM
   - **GQA** replaces MHA — the same KV-cache reduction adopted across nearly every open
     release in 2023–24.
 
-The 1M-token context window is the GLM-4 series' headline long-context capability, achieved
-through a long-context training recipe layered on top of the base 32K (or 128K, depending on
-release variant) pretraining. The exact extension method is described in §3 of the GLM-4 tech
-report.
+The base GLM-4-9B ships with an 8K context window. A separate **GLM-4-9B-Chat-1M** variant
+extends this to 1M tokens through long-context continued training; the procedure is described
+in §3 of the GLM-4 tech report. The 1M variant is the family's headline long-context
+capability but is a derivative checkpoint, not the base configuration.
+
+GQA sharing is unusually aggressive — 32 query heads share just 2 KV heads (G = 16). This is
+closer to MQA than the G = 4 / G = 8 ratios common across Llama 3 and Qwen 2/3, and it pushes
+per-token KV-cache footprint very low at the cost of expressiveness in the KV projections.
 
 For the family's earlier and later releases see [GLM-130B](/llm-arch-kb/models/glm-130b/) and
-the GLM-4.5 entry (when added). The 32B GLM-4-Plus and other larger GLM-4 variants are not
-released openly; their architecture is similar to GLM-4-9B at increased scale per the tech
-report, but the precise specifications are not publicly documented.
+[GLM-4.5](/llm-arch-kb/models/glm-4-5/). The 32B GLM-4-Plus and other larger GLM-4 variants
+are not released openly; their architecture is similar to GLM-4-9B at increased scale per the
+tech report, but the precise specifications are not publicly documented.

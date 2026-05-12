@@ -34,7 +34,8 @@ the GQA paper's uptraining recipe to convert an MHA-pretrained checkpoint to GQA
 additional compute (~5% of original training).
 
 The 70B configuration: 80 transformer layers, 8 KV heads shared across 64 query heads, head
-dim 128. Base context 4K. RoPE base 10000 (standard, no scaling).
+dim 128, hidden size 8192, FFN intermediate 28672. Base context 4K. RoPE base 10000 (standard,
+no scaling). Tokenizer: SentencePiece BPE, 32K vocabulary.
 
 For the current Llama frontier with 128K context, see [Llama 3.1 70B](/llm-arch-kb/models/llama-3-1-70b/).
 The dense architecture is essentially identical; the context extension and tokenizer changes

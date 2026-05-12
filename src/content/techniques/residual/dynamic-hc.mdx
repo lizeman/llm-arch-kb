@@ -15,7 +15,7 @@ successors: []
 adopted_by: []
 summary: "The per-token variant of Hyper-Connections: A_l and B_l are computed as small projections of the current input rather than learned constants. Each token gets its own routing pattern across the n streams, at the cost of one extra projection per layer."
 tags: ["residual", "research", "bytedance", "dynamic"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -40,12 +40,14 @@ Dynamic Hyper-Connections (DHC) makes the routing input-dependent.
 ## A_l and B_l from a small projection
 
 For each token $t$ at layer $\ell$, DHC computes the read and write coefficients from a small
-linear projection of the current read vector $\mathbf{r}_\ell^{(t)}$:
+linear projection of a token-level summary of the stream stack
+$\bar{\mathbf{x}}_\ell^{(t)} \in \mathbb{R}^d$ (the paper uses a learned mix of the $n$ streams
+to form this summary):
 
 $$
 \begin{aligned}
-\mathbf{A}_\ell^{(t)} &= W_A\, \mathbf{r}_\ell^{(t)} + \mathbf{a}_\ell \in \mathbb{R}^n\\
-\mathbf{B}_\ell^{(t)} &= W_B\, \mathbf{r}_\ell^{(t)} + \mathbf{b}_\ell \in \mathbb{R}^n
+\mathbf{A}_\ell^{(t)} &= W_A\, \bar{\mathbf{x}}_\ell^{(t)} + \mathbf{a}_\ell \in \mathbb{R}^n\\
+\mathbf{B}_\ell^{(t)} &= W_B\, \bar{\mathbf{x}}_\ell^{(t)} + \mathbf{b}_\ell \in \mathbb{R}^n
 \end{aligned}
 $$
 
@@ -54,11 +56,12 @@ per-layer biases. The block then proceeds as in static HC:
 
 ```python
 def dhc_block(X, sublayer, W_A, W_B, a, b):
-    # X: (n, d) — n parallel residual streams
-    A = W_A @ X.mean(axis=0) + a   # (n,) per-token read mix
+    # X: (n, d) — n parallel residual streams for a single token
+    x_bar = X.mean(axis=0)          # (d,) token-level summary of the stream stack
+    A = W_A @ x_bar + a             # (n,) per-token read mix
     r = A @ X                       # (d,) read
     u = sublayer(r)                 # (d,) sublayer compute
-    B = W_B @ r + b                 # (n,) per-token write mix
+    B = W_B @ x_bar + b             # (n,) per-token write mix
     X = X + np.outer(B, u)          # (n, d) write
     return X
 ```

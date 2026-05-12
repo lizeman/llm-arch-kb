@@ -38,12 +38,12 @@ larger dense baselines. Architecturally a 32-layer transformer with the Pre-Norm
   [SWA entry](/llm-arch-kb/attention/sliding-window/).
 
 The Mistral 7B paper's empirical comparisons (Table 2) showed the model matching or beating
-Llama 2 13B on most benchmarks despite half the parameters — a result mostly attributable to
-data and training rather than architecture, but the architectural simplicity made the recipe
-easily reproducible. Subsequent open-weights efforts (Mixtral 8x7B from the same lab, OLMo 1
-from AI2) adopted variations of the same stack.
+Llama 2 13B on most benchmarks despite roughly half the parameters — a result mostly
+attributable to data and training rather than architecture, but the architectural simplicity
+made the recipe easily reproducible. The 32-layer configuration: hidden size 4096, FFN
+intermediate 14336, RoPE base 10000, 32K base context.
 
-Although the v1 ship explicitly draws core adoption lists from Llama / OLMo / DeepSeek / Gemma
-/ Kimi / MiniMax / GLM, Mistral 7B meets the citation bar of [§9](/llm-arch-kb/about/) — open
-weights, paper-documented architecture, Apache license — and is included here as the
-canonical SWA adopter.
+Subsequent open-weights efforts adopted variations of the same stack: [Mixtral 8x7B](/llm-arch-kb/models/mixtral-8x7b/)
+from the same lab kept the Mistral-7B shape per expert while dropping SWA, and the OLMo
+family from AI2 picked up the GQA + RoPE + SwiGLU triple. Mistral 7B remains the canonical
+production reference for [sliding window attention](/llm-arch-kb/attention/sliding-window/).

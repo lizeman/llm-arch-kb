@@ -9,15 +9,17 @@ open_weights: true
 model_card_url: "https://huggingface.co/openai/gpt-oss-120b"
 disclosure_level: "documented"
 architecture:
-  positional: "RoPE"
+  positional: "RoPE (base 150K, YaRN scaling from a 4K base context to 131K)"
   normalization_placement: "Pre-Norm"
   normalization_type: "RMSNorm"
   qk_norm: false
   activation: "SwiGLU"
-  attention: "GQA with alternating dense / banded sliding-window layers"
-  moe: "Sparse MoE — 128 experts, top-4 routing"
+  attention: "GQA (64 query heads, 8 KV heads) with strict alternation of 128-token sliding-window and full-attention layers"
+  moe: "Sparse MoE — 128 experts per layer, top-4 routing"
   other:
     - "117B total parameters / 5.1B active per token"
+    - "36 layers, hidden 2880, head dim 64; 18 sliding + 18 full attention layers alternating"
+    - "Vocab 201,088; max position 131,072"
     - "First OpenAI open-weights release since GPT-2"
     - "Apache 2.0 license"
     - "MXFP4 quantization of expert weights as the default inference format"
@@ -32,17 +34,16 @@ The introduction blog post and the Hugging Face model card disclose the architec
 sparse Mixture-of-Experts transformer with the now-dominant open-weights backbone:
 
 - **117B total parameters, 5.1B active per token.** 128 experts per MoE layer with top-4
-  routing — a relatively wide, fine-grained routing recipe compared to Mixtral's 8-experts /
-  top-2 baseline.
-- **Pre-Norm RMSNorm + RoPE + GQA + SwiGLU** dense backbone.
-- **Alternating attention pattern**: most layers use banded sliding-window attention; a
-  subset use full (dense) attention. The interleaving keeps long-context KV-cache cost in
-  check at the 131K-token window.
+  routing — a wider, finer-grained recipe than Mixtral's 8-experts / top-2 baseline.
+- **Pre-Norm RMSNorm + SwiGLU + GQA** backbone with **RoPE base 150K and YaRN scaling**
+  from a 4K base context up to 131K.
+- **36 layers, strict 1:1 alternation** of 128-token banded sliding-window attention and
+  full-attention layers (18 sliding + 18 full). GQA is configured with 64 query heads and
+  8 KV heads at head dim 64.
 - **MXFP4 expert quantization** is documented as the default inference format — the expert
   weight matrices ship in the OCP Microscaling FP4 format, with the rest of the model in
   BF16/FP16.
 
-The release is under Apache 2.0 license. Specific quantitative architecture parameters (exact
-head dim, exact layer count, exact expert FFN width, RoPE base) are present in the released
-model config files rather than highlighted in the announcement; this entry sticks to what
-the official announcement and model card describe.
+The release is under Apache 2.0 license. The fields above come from the official
+announcement, the Hugging Face model card, and the released `config.json` (which encodes
+the layer types, head counts, and RoPE configuration).

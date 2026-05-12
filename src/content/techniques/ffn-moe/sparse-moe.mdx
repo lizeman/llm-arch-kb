@@ -27,7 +27,7 @@ adopted_by:
     notes: "128 routed experts + 1 shared expert per MoE layer; top-6 routing; 23 MoE layers in the 52-layer hybrid stack."
 summary: "Top-K gating with per-expert noise plus an importance-balancing loss. The 2017 paper that established that 'sparse activation + load balance' is a viable training-time recipe; every modern MoE descends from it."
 tags: ["moe", "foundational"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "routing"
@@ -57,10 +57,10 @@ quality and converged in fewer wall-clock steps.
 
 The gate computes logits, adds tunable per-expert Gaussian noise, and selects the top-K:
 
-$$g(\mathbf{x}) = \mathrm{softmax}\bigl(\mathrm{KeepTopK}(\mathrm{logits}(\mathbf{x}) + \epsilon,\ K)\bigr),$$
+$$g(\mathbf{x}) = \mathrm{softmax}\bigl(\mathrm{KeepTopK}(\mathbf{x} W_g + \boldsymbol{\epsilon},\ K)\bigr),$$
 
-where $\epsilon \sim \mathcal{N}(0, \mathrm{softplus}(\mathrm{stddev}(\mathbf{x})))$ and
-$\mathrm{KeepTopK}$ sets the non-top-K entries to $-\infty$ before softmax. The noise
+where $\boldsymbol{\epsilon}_i \sim \mathcal{N}(0,\ 1) \cdot \mathrm{softplus}(\mathbf{x} W_{\text{noise}})_i$
+and $\mathrm{KeepTopK}$ sets the non-top-K entries to $-\infty$ before softmax. The noise
 serves two purposes:
 
 - It makes the routing decision a stochastic distribution, so gradients propagate via the

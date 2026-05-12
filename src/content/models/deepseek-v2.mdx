@@ -34,7 +34,7 @@ established the DeepSeek architectural lineage. The four defining choices:
 
 - **MLA attention**: latent-space K, V compression to a per-token bottleneck ($d_c = 512$),
   with a decoupled RoPE head ($d_R = 64$). 5–7× smaller KV cache than MHA on this scale.
-- **[DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/)**: 162 routed experts plus 2 shared
+- **[DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/)**: 160 routed experts plus 2 shared
   experts per MoE layer, top-6 routing. Established the fine-grained-plus-shared design
   pattern that V3 inherits.
 - **Standard auxiliary balance loss**: V2 still uses Switch-style aux loss for MoE load

@@ -10,7 +10,7 @@ arxiv_id: "2002.05202"
 paper_url: "https://arxiv.org/abs/2002.05202"
 status: "production-adopted"
 problem_solved: "Same gated bilinear FFN as SwiGLU, with GELU as the gate activation instead of Swish. Adopted by the Gemma family; matches SwiGLU's quality within noise."
-predecessors: ["swiglu"]
+predecessors: ["gelu"]
 successors: []
 adopted_by:
   - model: "gemma-1-7b"
@@ -24,7 +24,7 @@ adopted_by:
     notes: "GeGLU FFN; the dominant variant choice in the Gemma family."
 summary: "Bilinear gated FFN with a GELU-activated gating path. Matches SwiGLU on quality; lineage difference is mostly historical, with the Gemma family carrying GeGLU forward and the Llama/DeepSeek family carrying SwiGLU."
 tags: ["ffn", "activation"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 

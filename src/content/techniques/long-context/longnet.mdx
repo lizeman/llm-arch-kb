@@ -15,7 +15,7 @@ successors: []
 adopted_by: []
 summary: "Each attention head operates at a different dilation rate r ∈ {1, 2, 4, ...}: stride-r local windows. Combining log₂(N) such heads gives O(N · log N) total cost with full reachability across the sequence. Demonstrated training on 1B-token sequences."
 tags: ["long-context", "dilated", "sparse"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "advanced"
 facets:
   - "long-context"
@@ -42,11 +42,12 @@ $10^6$ tokens away in a *single layer* via the head whose stride covers that dis
 For head $i$ with dilation rate $r_i \in \{1, 2, 4, 8, \ldots, 2^k\}$, the head attends to a
 window of size $w$ at stride $r_i$. Specifically, query at position $t$ attends to keys
 
-$$\{t - r_i, t - 2 r_i, t - 3 r_i, \ldots, t - w \cdot r_i\}.$$
+$$\mathcal{K}_i(t) = \{t - r_i, t - 2 r_i, t - 3 r_i, \ldots, t - w \cdot r_i\}.$$
 
-The head sees $w$ keys, spaced $r_i$ apart, covering a span of $w \cdot r_i$ positions. With
-$\log_2(N)$ heads at exponentially-increasing dilation rates, the head ensemble covers
-positions from $t$ all the way to $t - N$ at $\log_2(N)$ different resolutions.
+The head sees $w$ keys, spaced $r_i$ apart, covering a span of $w \cdot r_i$ positions —
+that is, it attends to only $1/r_i$ of the keys within its reach, so $r_i$ is the per-head
+sparsity factor. With $\log_2(N)$ heads at exponentially-increasing dilation rates, the head
+ensemble covers positions from $t$ all the way to $t - N$ at $\log_2(N)$ different resolutions.
 
 ```python
 def dilated_attention(q, k, v, dilation_rate, window_size):
@@ -62,8 +63,8 @@ def dilated_attention(q, k, v, dilation_rate, window_size):
 ```
 
 Total compute per layer: $O(N \cdot w \cdot \log N)$. With $w \approx 1024$ and the head count
-scaling logarithmically in target context length, this scales sub-linearly past softmax's
-$O(N^2)$.
+scaling logarithmically in target context length, this is sub-quadratic — well below softmax
+attention's $O(N^2)$.
 
 <LongnetDilated client:visible />
 

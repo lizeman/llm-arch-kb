@@ -18,6 +18,9 @@ architecture:
   moe: "Sparse MoE with 384 routed experts + 1 shared expert; top-K routing"
   other:
     - "1T total parameters / 32B active per token — first publicly released open-weights model at the trillion-parameter scale"
+    - "61 layers (1 dense + 60 MoE), hidden 7168, 64 attention heads"
+    - "384 routed experts + 1 shared expert, top-8 routing, MoE intermediate 2048 per expert"
+    - "Pre-trained on 15.5T tokens; block-FP8 default weight format"
     - "Trained with MuonClip optimizer (Muon family with weight clipping for large-scale stability)"
     - "Modified MIT-style license"
 source_urls:

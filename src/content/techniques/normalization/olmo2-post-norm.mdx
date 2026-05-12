@@ -3,14 +3,14 @@ title: "OLMo 2 Reordered Post-Norm"
 abbreviation: "OLMo 2 Post-Norm"
 category: "normalization"
 year: 2024
-month: 11
+month: 12
 introduced_by: "Allen Institute for AI (AI2)"
 paper_title: "2 OLMo 2 Furious"
 arxiv_id: "2501.00656"
 paper_url: "https://arxiv.org/abs/2501.00656"
 status: "production-adopted"
 problem_solved: "Recover Post-Norm's bounded residual-stream norm at production depth without the gradient instability that pushed everyone to Pre-Norm in the first place."
-predecessors: []
+predecessors: ["norm-placement"]
 successors: []
 adopted_by:
   - model: "olmo-2-13b"
@@ -21,7 +21,7 @@ adopted_by:
     notes: "Same reordered Post-Norm layout carried forward to AI2's 32B dense flagship."
 summary: "Move both RMSNorms to sit after each sublayer output, inside the residual branch — recovering Post-Norm's bounded residual stream while keeping Pre-Norm's gradient flow. Trained stably at 13B by combining with QK-Norm and an output-side Z-loss."
 tags: ["normalization", "stability", "olmo"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "training-stability"

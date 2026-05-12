@@ -10,15 +10,17 @@ paper_url: "https://arxiv.org/abs/2501.08313"
 model_card_url: "https://huggingface.co/MiniMaxAI/MiniMax-Text-01"
 disclosure_level: "open"
 architecture:
-  positional: "RoPE"
-  normalization_placement: "Pre-Norm"
+  positional: "RoPE (base 1e7, applied to half of head dim)"
+  normalization_placement: "Post-Norm"
   normalization_type: "RMSNorm"
   qk_norm: false
   activation: "SwiGLU"
   attention: "Lightning Attention (7 layers) interleaved with softmax attention (1 layer); ratio 7:1"
-  moe: "32 routed experts + 1 shared expert; top-2 routing"
+  moe: "32 routed experts (no shared expert); top-2 routing"
   other:
-    - "4M token context window"
+    - "80 layers, hidden 6144, 64 attention heads (head dim 128), 8 KV heads (GQA on the softmax layers)"
+    - "32 experts per MoE layer, top-2 routing, expert FFN dim 9216"
+    - "Training context up to 1M tokens; inference extrapolates to 4M"
     - "Hybrid linear/softmax attention stack"
 source_urls:
   - "https://arxiv.org/abs/2501.08313"
@@ -36,8 +38,9 @@ Attention at frontier scale. The defining choices:
   tasks plus near-linear compute scaling on long sequences.
 - **4M token context**: enabled by the linear-attention cost profile in the 7 Lightning layers
   per group; quadratic cost concentrates in the 1 softmax layer per group.
-- **MoE architecture**: DeepSeekMoE-style with 32 routed experts plus 1 shared expert per MoE
-  layer, top-2 routing. 456B total parameters, 45.9B active per token.
+- **MoE architecture**: 32 routed experts per layer, top-2 routing, no shared expert
+  (`shared_intermediate_size: 0` in the released config). 456B total parameters, 45.9B
+  active per token across 80 layers.
 
 The architectural bet — linear attention is viable in production if interleaved with periodic
 softmax for quality recovery — is the most concrete 2025 case for the linear-attention

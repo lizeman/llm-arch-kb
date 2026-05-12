@@ -10,7 +10,7 @@ arxiv_id: "2002.05202"
 paper_url: "https://arxiv.org/abs/2002.05202"
 status: "production-adopted"
 problem_solved: "Replace the FFN's ReLU/GELU with a gated activation that consistently improves perplexity at matched compute."
-predecessors: []
+predecessors: ["gelu"]
 successors: []
 adopted_by:
   - model: "llama-1-65b"
@@ -68,7 +68,7 @@ figure_component: "SwiGluCurves"
 figure_caption: "Drag β to sharpen Swish; toggle the bilinear gate output. SwiGLU's actual 1D shape is Swish(x)·x, not just Swish(x)."
 summary: "Replace the FFN with a Swish-gated bilinear form: one linear path multiplied element-wise by Swish of another. Consistent quality win over ReLU/GELU at matched parameter count; the default modern FFN."
 tags: ["ffn", "consensus-stack"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 

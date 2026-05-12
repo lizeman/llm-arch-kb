@@ -5,7 +5,7 @@ category: "ffn-moe"
 year: 2025
 month: 7
 introduced_by: "Moonshot AI"
-paper_title: "Kimi K2 — Open Agentic Intelligence"
+paper_title: "Kimi K2: Open Agentic Intelligence"
 arxiv_id: "2507.20534"
 paper_url: "https://arxiv.org/abs/2507.20534"
 status: "production-adopted"
@@ -18,7 +18,10 @@ adopted_by:
     notes: "1T total / 32B active across 384 routed experts plus 1 shared expert."
 summary: "Trillion-parameter MoE with 384 routed experts plus one shared expert — wider than DeepSeek V3's 256 + 1 by ~50%. Stabilized at scale by the MuonClip optimizer (Muon family with weight clipping). Same shared-expert + aux-loss-free routing lineage as DeepSeekMoE."
 tags: ["moe", "kimi", "production"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
+difficulty: "advanced"
+facets:
+  - "routing"
 ---
 
 import Summary from "~/components/Summary.astro";
@@ -47,8 +50,8 @@ From the model card and tech report:
 - **Active parameters per token:** 32B
 - **Routed experts per MoE layer:** 384
 - **Shared experts per MoE layer:** 1 (always on)
-- **Routing:** top-K with K small relative to 384 (the exact K is on the smaller side per the
-  released config; see the Hugging Face model card for the precise value at release)
+- **Routing:** top-8 (per the released config — same K as DeepSeek V3, but selecting from a
+  wider 384-expert pool)
 - **Attention:** [MLA](/llm-arch-kb/attention/mla/)-style latent compression, same family as
   DeepSeek V2 / V3
 - **Other stack:** Pre-Norm RMSNorm, SwiGLU FFN inside each expert

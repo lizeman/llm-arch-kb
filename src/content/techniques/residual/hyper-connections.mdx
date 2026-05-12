@@ -10,14 +10,14 @@ arxiv_id: "2409.19606"
 paper_url: "https://arxiv.org/abs/2409.19606"
 status: "research"
 problem_solved: "Replace the single residual stream with a small bank of parallel streams plus learned read/write matrices, letting different sublayers route information through different channels."
-predecessors: []
+predecessors: ["residual-overview"]
 successors: ["dynamic-hc"]
 adopted_by: []
 figure_component: "ResidualVsHc"
 figure_caption: "Drag n; at n=1 both panels match; at n>1 the right panel routes layer reads/writes across multiple streams."
-summary: "Generalize the residual connection to n parallel streams. Each sublayer learns a depth-wise read/write matrix that mixes streams in and out. Recovers the standard residual at n=1 and gives a strict superset of expressivity above that."
+summary: "Generalize the residual connection to n parallel streams. Each sublayer learns depth-wise read/write coefficients that mix streams in and out. Recovers the standard residual at n=1 and gives a strict superset of expressivity above that."
 tags: ["residual", "research", "bytedance"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -56,9 +56,9 @@ $$
 \end{aligned}
 $$
 
-The matrices $\mathbf{A}_\ell \in \mathbb{R}^{n}$ and $\mathbf{B}_\ell \in \mathbb{R}^{n}$ are
-learned per-layer. At $n = 1$ with $\mathbf{A}_\ell = \mathbf{B}_\ell = 1$, the construction
-reduces to the standard residual connection. For $n > 1$, the architecture has strictly more
+The coefficient vectors $\mathbf{A}_\ell, \mathbf{B}_\ell \in \mathbb{R}^{n}$ are learned
+per-layer. At $n = 1$ with $\mathbf{A}_\ell = \mathbf{B}_\ell = 1$, the construction reduces
+to the standard residual connection. For $n > 1$, the architecture has strictly more
 expressivity: a sublayer can read from one stream and write to a different one, deferring
 information across many layers without contention.
 
@@ -123,7 +123,7 @@ identity." Hyper-Connections is the most aggressive form so far.
 
 <Summary>
 **Hyper-Connections in one breath.** Replace one residual stream with $n$ parallel streams plus
-learned read/write matrices per layer. Static (per-layer) and Dynamic (per-token) variants.
-Recovers the standard residual at $n=1$. Reportedly stabilizes very deep training; no
-publicly-documented production adoption yet.
+learned read/write coefficient vectors per layer. Static (per-layer) and Dynamic (per-token)
+variants. Recovers the standard residual at $n=1$. Reportedly stabilizes very deep training;
+no publicly-documented production adoption yet.
 </Summary>

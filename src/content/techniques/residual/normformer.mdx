@@ -9,13 +9,13 @@ paper_title: "NormFormer: Improved Transformer Pretraining with Extra Normalizat
 arxiv_id: "2110.09456"
 paper_url: "https://arxiv.org/abs/2110.09456"
 status: "research"
-problem_solved: "Add three small per-block normalization terms — head-wise output scaling, post-FFN norm, head-wise gain — that improve Pre-Norm transformer pretraining speed by 22% with no architectural changes downstream."
+problem_solved: "Add three small per-block normalization terms — a LayerNorm after self-attention, head-wise scaling of attention outputs, and a LayerNorm after the FFN's first linear — that speed up Pre-Norm transformer pretraining by ~24% with no downstream architectural changes."
 predecessors: ["residual-overview"]
 successors: []
 adopted_by: []
-summary: "Three extra normalizations bolted onto Pre-Norm: head-wise scale on attention output, RMSNorm after FFN output, and a learnable per-head gain on the attention's projected output. 22% faster pretraining at matched final perplexity; not adopted in production but cleanly motivated."
+summary: "Three extra normalizations bolted onto Pre-Norm: a LayerNorm on the attention output, learnable per-head scaling of that output, and a LayerNorm inside the FFN after the first linear. 24% faster pretraining at matched final perplexity on the 1.3B baseline; not adopted in production but cleanly motivated."
 tags: ["residual", "normalization"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -39,48 +39,57 @@ without compromising Pre-Norm's gradient-flow properties.
 
 For a standard Pre-Norm block `x ← x + sublayer(norm(x))`, NormFormer adds:
 
-1. **Head-wise scaling on attention output.** A per-head learnable scalar
-   $\alpha_i \in \mathbb{R}$ multiplied into each head's output before concatenation:
-   $\mathrm{head}_i \leftarrow \alpha_i \cdot \mathrm{head}_i$. This lets the model attenuate
+1. **LayerNorm after self-attention.** A LayerNorm applied to the attention sub-layer's output
+   *before* the residual addition: `x ← x + LN_post_attn(attn(LN(x)))`. Caps the magnitude of
+   the attention block's per-step contribution to the stream.
+2. **Head-wise scaling of attention outputs.** A per-head learnable scalar
+   $\gamma_i \in \mathbb{R}$ multiplied into each head's output before the output projection
+   $W_O$: $\mathrm{head}_i \leftarrow \gamma_i \cdot \mathrm{head}_i$. Lets the model attenuate
    noisy heads' contributions to the residual.
-2. **RMSNorm after the FFN sub-layer.** Apply RMSNorm to the FFN output *before* the residual
-   addition:
-   `x ← x + RMSNorm(FFN(norm(x)))`. Caps the magnitude of the FFN's per-block contribution.
-3. **Head-wise gain on attention's projection.** A learnable per-head scalar applied to
-   $W_O$'s output, similar to (1) but at the post-projection stage rather than per-head
-   pre-projection.
+3. **LayerNorm after the FFN's first linear.** Inside the FFN, after the first linear and
+   activation but *before* the second linear: $\mathrm{FFN}(x) = W_2 \cdot \mathrm{LN}(\sigma(W_1 x))$.
+   Stabilizes the activations the second projection sees.
 
 ```python
-def normformer_block(x, attn, ffn, norm_attn, norm_ffn, post_ffn_norm, head_scales):
-    # head_scales: [num_heads] learnable per-head attention scale
-    attn_out = attn(norm_attn(x))                 # [B, T, num_heads, d_h]
-    attn_out = attn_out * head_scales[None, None, :, None]
-    x = x + flatten_heads(attn_out)
-    x = x + post_ffn_norm(ffn(norm_ffn(x)))       # extra RMSNorm here
+def normformer_block(x, attn_qkv, W_O, ffn_w1, ffn_w2,
+                     ln_pre_attn, ln_post_attn, ln_pre_ffn, ln_mid_ffn,
+                     head_scales):
+    # ----- attention sub-block -----
+    h = attn_qkv(ln_pre_attn(x))                          # (B, T, num_heads, d_h)
+    h = h * head_scales[None, None, :, None]              # (2) per-head scaling
+    a = W_O(flatten_heads(h))                             # output projection
+    x = x + ln_post_attn(a)                               # (1) extra LN after attn
+
+    # ----- FFN sub-block -----
+    h = ffn_w1(ln_pre_ffn(x))
+    h = ln_mid_ffn(gelu(h))                               # (3) extra LN inside FFN
+    x = x + ffn_w2(h)
     return x
 ```
 
-The three additions cost a handful of learnable scalars per block — negligible vs the FFN and
-attention's parameter counts.
+The three additions cost only a handful of extra learnable parameters per block — the paper
+reports +0.4% parameter overhead, negligible against the FFN and attention.
 
 <p class="section-eyebrow">§ 3 · Results</p>
 ## Empirical evidence
 
-Shleifer et al. (Table 1) report NormFormer reaching the baseline Pre-Norm GPT-3-style model's
-final perplexity in **22% fewer steps** at scales from 125M to 6.7B parameters. The speedup
-holds across causal LM and masked LM pretraining. At matched compute, NormFormer reaches lower
-final perplexity by ~0.2 nats.
+Shleifer et al. report NormFormer reaching the baseline Pre-Norm GPT-3-style model's final
+perplexity in **24% fewer steps** at the 1.3B scale, with consistent gains across the studied
+range of 125M to 2.7B parameters and across both causal and masked LM pretraining. At matched
+compute, the 1.3B model reaches 0.27 perplexity lower than the baseline, and downstream
+zero-shot performance matches GPT-3-Large 60% faster.
 
-The mechanism the paper attributes: residual-stream norm grows more slowly with depth (Figure 3),
-so deeper layers see a more stable distribution and can spend gradient signal on actual
-learning rather than on adapting to shifting input statistics.
+The mechanism the paper attributes: Pre-Norm transformers suffer a *gradient magnitude
+mismatch* — early layers see much larger gradients than late ones. The three extra norms
+re-balance this, so deeper layers see a stable distribution and can spend gradient signal on
+actual learning rather than on adapting to shifting input statistics.
 
 <p class="section-eyebrow">§ 4 · Why production decoders didn't adopt it</p>
 ## Three small things vs no things
 
 NormFormer's three additions are individually small but collectively change the parameter
 inventory of every block. For a research team building a new model, the question is whether
-the 22% training speedup justifies the architectural divergence from the Pre-Norm + RMSNorm
+the ~24% training speedup justifies the architectural divergence from the Pre-Norm + RMSNorm
 consensus that the rest of the open ecosystem assumes.
 
 In practice, the answer has been no: Llama, DeepSeek, Gemma, OLMo, Mistral, Qwen all run pure
@@ -92,8 +101,8 @@ not Pareto-optimal — there exists a strict improvement on training efficiency.
 nobody ships it is a coordination problem more than a technical one.
 
 <Summary>
-**NormFormer in one breath.** Three small per-block additions on top of Pre-Norm: head-wise
-attention scaling, post-FFN RMSNorm, head-wise attention-output gain. 22% faster pretraining
-at matched final quality. Lost to consensus drag: no open frontier model has switched, despite
-the benefit being real and well-replicated.
+**NormFormer in one breath.** Three small per-block additions on top of Pre-Norm: a LayerNorm
+after self-attention, head-wise scaling of attention outputs, and a LayerNorm after the FFN's
+first linear. ~24% faster pretraining at matched final quality. Lost to consensus drag: no
+open frontier model has switched, despite the benefit being real and well-replicated.
 </Summary>

@@ -9,13 +9,13 @@ paper_title: "DeepNet: Scaling Transformers to 1,000 Layers"
 arxiv_id: "2203.00555"
 paper_url: "https://arxiv.org/abs/2203.00555"
 status: "research"
-problem_solved: "Train 1000+ layer transformers stably by rescaling the residual addition by an initialization-derived constant β, recovering Post-Norm's expressivity with Pre-Norm's stability."
-predecessors: []
+problem_solved: "Train 1000+ layer transformers stably by rescaling the residual addition by a depth-derived constant α and shrinking sublayer-weight initialization by a companion β, recovering Post-Norm's expressivity with Pre-Norm's stability."
+predecessors: ["residual-overview"]
 successors: []
 adopted_by: []
-summary: "Scale each residual addition by a constant β(N) computed from depth N. Trains 1000-layer encoder-decoders without divergence; gives Post-Norm geometry back to deep transformers that had been pushed toward Pre-Norm purely for stability reasons."
+summary: "Scale each Post-Norm residual addition by a constant α(N) and shrink sublayer-weight init by β(N), both derived from depth. Trains 1000-layer encoder-decoders without divergence; gives Post-Norm geometry back to deep transformers that had been pushed toward Pre-Norm purely for stability reasons."
 tags: ["residual", "stability", "depth"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -37,30 +37,32 @@ DeepNet's question: can you keep Post-Norm's stable distribution and *fix* the g
 problem by rescaling the residual?
 
 <p class="section-eyebrow">§ 2 · The scaling</p>
-## β-scaled residuals
+## α-scaled residuals, β-shrunk init
 
-DeepNet uses Post-Norm placement but adds a scalar $\beta$ to the residual addition:
+DeepNet (the paper calls the modification *DeepNorm*) uses Post-Norm placement but rescales
+the residual addition by a constant $\alpha$:
 
-$$\mathbf{x}_{\ell+1} = \mathrm{Norm}\bigl(\beta \cdot \mathbf{x}_\ell + f_\ell(\mathbf{x}_\ell)\bigr).$$
+$$\mathbf{x}_{\ell+1} = \mathrm{Norm}\bigl(\alpha \cdot \mathbf{x}_\ell + f_\ell(\mathbf{x}_\ell)\bigr).$$
 
-The trick: $\beta$ is not learned. It's set to a constant derived from the network's depth $N$
-such that the forward-pass variance and gradient magnitudes are both bounded.
+The trick: $\alpha$ is not learned. It is a constant derived from the network's depth $N$,
+paired with a companion constant $\beta$ that shrinks the initialization of the FFN, value, and
+output-projection weights so that forward-pass variance and gradient magnitudes are both
+bounded at step 0.
 
 For an $N$-layer encoder, Wang et al. derive
 
-$$\beta_{\text{enc}} = (8N)^{-1/4},\quad \alpha_{\text{enc}} = (2N)^{1/4},$$
+$$\alpha_{\text{enc}} = (2N)^{1/4},\quad \beta_{\text{enc}} = (8N)^{-1/4}.$$
 
-where $\alpha$ scales the initialization of the sublayer weights. The decoder formulas are
-analogous with constants that account for both encoder and decoder depth.
-
-The result is an *initialization recipe* rather than a training-time modification: you compute
-$\alpha, \beta$ once based on the architecture's depth, apply them at init and freeze. No
-learnable scalar to track during training.
+The decoder formulas are analogous, with constants that account for both encoder and decoder
+depth. The result is an *initialization recipe* rather than a training-time modification: you
+compute $\alpha, \beta$ once based on the architecture's depth and freeze. No learnable scalar
+to track during training.
 
 ```python
-def deepnet_residual(x, sublayer, beta):
-    # beta is depth-derived constant, e.g., (8N)^(-1/4) for an N-layer encoder
-    return layer_norm(beta * x + sublayer(x))
+def deepnet_residual(x, sublayer, alpha):
+    # alpha is depth-derived constant, e.g., (2N)^(1/4) for an N-layer encoder
+    # (sublayer weights have already been shrunk by beta = (8N)^(-1/4) at init)
+    return layer_norm(alpha * x + sublayer(x))
 ```
 
 <p class="section-eyebrow">§ 3 · Results</p>
@@ -84,15 +86,17 @@ practically lives in academia. Two reasons:
 1. **Depth 32–80 is the production regime.** At those depths, Pre-Norm + RMSNorm + warmup is
    well-understood and known to work. DeepNet's edge appears past 100 layers, where production
    models don't go.
-2. **The $\beta$ constants are architecture-specific.** Changing the model's depth requires
-   re-deriving $\beta$ from scratch. Pre-Norm is depth-agnostic, which is operationally simpler.
+2. **The $\alpha, \beta$ constants are architecture-specific.** Changing the model's depth
+   requires re-deriving both from scratch. Pre-Norm is depth-agnostic, which is operationally
+   simpler.
 
 DeepNet's framework — depth-derived initialization constants that bound forward/backward
 variance — is also the conceptual ancestor of the careful-init story in OLMo 2's Post-Norm
 revival. The lineage is alive in current open-frontier research, just not under the same name.
 
 <Summary>
-**DeepNet in one breath.** Post-Norm residual rescaled by a depth-derived constant β = (8N)^(-1/4).
-Trains 1000-layer transformers from scratch. Lives in research because production caps out at
-~80 layers where Pre-Norm + RMSNorm has incumbent advantages.
+**DeepNet in one breath.** Post-Norm residual rescaled by a depth-derived constant
+α = (2N)^(1/4), with sublayer-weight init shrunk by β = (8N)^(-1/4). Trains 1000-layer
+transformers from scratch. Lives in research because production caps out at ~80 layers where
+Pre-Norm + RMSNorm has incumbent advantages.
 </Summary>

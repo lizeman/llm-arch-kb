@@ -26,9 +26,17 @@ source_urls:
 notes: "Dense (non-MoE) 80-layer transformer. RoPE base scaled to extend context from 8K to 128K."
 ---
 
-Llama 3.1 70B is Meta's flagship dense decoder from the Llama 3 family. Architecturally it is
-the canonical "consensus stack" for dense models in 2024–25: **Pre-Norm RMSNorm + RoPE + GQA +
-SwiGLU**. The 70B model has 80 layers, 64 query heads sharing 8 KV heads (GQA group count 8).
+Llama 3.1 70B (July 2024) is Meta's flagship dense decoder from the Llama 3 family.
+Architecturally it is the canonical "consensus stack" for dense models in 2024–25:
+**Pre-Norm RMSNorm + RoPE + GQA + SwiGLU**. The 70B model has 80 layers, 64 query heads
+sharing 8 KV heads (GQA group count 8), head dim 128.
 
 Llama 3.1's training extends context from 8K to 128K via continued pre-training with a scaled
-RoPE base rather than a parameter-free interpolation scheme like YaRN.
+RoPE base rather than a parameter-free interpolation scheme like YaRN. The tokenizer changes
+from the SentencePiece BPE used in Llama 2 to a tiktoken-based BPE with a 128K vocabulary,
+roughly 4× larger than Llama 2's 32K.
+
+Relative to [Llama 2 70B](/llm-arch-kb/models/llama-2-70b/) the pretraining architecture is
+essentially unchanged — the 2.x → 3.x deltas are the larger vocabulary, the longer trained
+context, and a substantially larger pretraining corpus (~15T tokens vs ~2T). The Llama 3
+paper ("The Llama 3 Herd of Models", arXiv 2407.21783) is the canonical disclosure.

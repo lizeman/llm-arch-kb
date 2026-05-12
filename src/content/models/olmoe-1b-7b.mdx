@@ -10,15 +10,16 @@ paper_url: "https://arxiv.org/abs/2409.02060"
 model_card_url: "https://huggingface.co/allenai/OLMoE-1B-7B-0924"
 disclosure_level: "open"
 architecture:
-  positional: "RoPE"
+  positional: "RoPE (base 10000)"
   normalization_placement: "Pre-Norm"
   normalization_type: "RMSNorm"
-  qk_norm: false
+  qk_norm: true
   activation: "SwiGLU"
-  attention: "GQA"
+  attention: "MHA (16 query heads, 16 KV heads)"
   moe: "Top-8 routing across 64 routed experts; no shared expert; Switch-style aux balance loss"
   other:
-    - "16 layers, 2048 d_model"
+    - "16 layers, hidden dim 2048, expert intermediate 1024"
+    - "QK-Norm in attention (the OLMo 2 line later adopts it across dense variants too)"
     - "Fully open: weights, training data (Dolma 1.7 + custom MoE mix), training code, intermediate checkpoints"
 source_urls:
   - "https://arxiv.org/abs/2409.02060"
@@ -41,5 +42,7 @@ notably different empirical conclusion than DeepSeek's own ablations, possibly d
 training data differences. The "should you use shared experts" question therefore remains
 genuinely contested in the literature.
 
-Context length is 4K base (later extended in derivatives). The dense Pre-Norm + RMSNorm + RoPE
-+ GQA + SwiGLU stack matches the rest of the OLMo lineage.
+Context length is 4K base (later extended in derivatives). The dense Pre-Norm + RMSNorm +
+RoPE + MHA + SwiGLU stack is straightforward; the architectural interest is concentrated in
+the MoE routing choices above. (Note: KV heads equal query heads here — no GQA — so the
+inference economics come entirely from the sparse FFN, not from KV-cache compression.)

@@ -24,7 +24,7 @@ adopted_by:
     notes: "Decoupled RoPE on a 64-dim head in MLA layers; MLA body uses NoPE (mla_use_nope: true)."
 summary: "Split the K projection into a small position-aware head that carries RoPE and a larger position-free body that absorbs into the latent KV cache. The trick that lets MLA compress K, V without losing position."
 tags: ["positional", "rope", "kv-cache", "deepseek"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -39,7 +39,7 @@ on token position. The rotation is applied **after** the per-head linear project
 
 $$
 \text{attn}(t, s) = \bigl(R_t \mathbf{q}_t\bigr)^{\!\top}\!\bigl(R_s \mathbf{k}_s\bigr) =
-\mathbf{q}_t^{\!\top}\, R_{t-s}\, \mathbf{k}_s.
+\mathbf{q}_t^{\!\top}\, R_{s-t}\, \mathbf{k}_s.
 $$
 
 The cached object is the rotated $\mathbf{k}_s$ — one full per-head K vector per token per

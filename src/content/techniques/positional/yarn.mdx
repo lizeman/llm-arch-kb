@@ -10,7 +10,7 @@ arxiv_id: "2309.00071"
 paper_url: "https://arxiv.org/abs/2309.00071"
 status: "production-adopted"
 problem_solved: "Extend a pretrained RoPE model's usable context far beyond the training length with only a short fine-tune, by treating fast and slow rotation bands differently."
-predecessors: []
+predecessors: ["rope", "position-interpolation", "ntk-aware-rope"]
 successors: ["longrope"]
 adopted_by:
   - model: "deepseek-v2"
@@ -35,7 +35,7 @@ figure_component: "YarnBands"
 figure_caption: "Drag context scale s to see the slow band get pushed down to θ/s while the fast band stays untouched."
 summary: "Treat RoPE's rotation bands as three regimes — preserve the fast ones, linearly interpolate the slow ones — and rescale the softmax temperature. The 2023 long-context extension recipe of choice."
 tags: ["positional", "long-context"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "long-context"
@@ -69,7 +69,7 @@ that rotational phase. Attention degrades.
 Two extension techniques preceded YaRN:
 
 - **Position Interpolation** (Chen et al. 2023, "Extending Context Window of Large Language
-  Models via Position Interpolation"): linearly squeeze new positions into the original range.
+  Models via Positional Interpolation"): linearly squeeze new positions into the original range.
   For a $4\times$ extension, position $t$ becomes $t/4$. Every dimension is rescaled equally.
   Works, but loses precision on the fast dimensions because they no longer span the full
   rotational range.
@@ -117,12 +117,14 @@ def yarn_theta(theta_i, s, rot_count_i, r_min=1, r_max=32):
 ## Adjust softmax sharpness
 
 A longer context means more keys for every query. The softmax distribution naturally flattens;
-attention loses sharpness. YaRN compensates by scaling logits by an explicit temperature
+attention loses sharpness. YaRN compensates by sharpening the logits before softmax — divide by
+a temperature $t$ with
 
-$$\text{temp}(s) = \frac{1}{\sqrt{1 + 0.1 \log s}},$$
+$$\frac{1}{t} = \sqrt{1 + 0.1 \log s},$$
 
-applied multiplicatively to the attention logits. The constants were fit empirically; the form
-keeps attention entropy approximately matched to the pretraining context.
+so logits get multiplied by a factor $> 1$ that grows with the extension ratio. The constants
+were fit empirically; the form keeps attention entropy approximately matched to the pretraining
+context.
 
 <p class="section-eyebrow">§ 5 · Results</p>
 ## Empirical evidence
@@ -131,8 +133,8 @@ Peng et al. (Table 1) report YaRN extending Llama-2 7B's context from 4K to 64K 
 short 400-step fine-tune (~0.1% of pretraining tokens), with perplexity strictly below PI,
 NTK-aware, and dynamic NTK on PG-19 and Proof-Pile at all tested lengths.
 
-DeepSeek-V2 and V3 (Liu et al. 2024; Liu et al. 2024) report using YaRN for the 4K-to-128K
-extension, citing its sample efficiency vs continued pretraining with a uniformly scaled base.
+DeepSeek-V2 and V3 (Liu et al. 2024) report using YaRN for the 4K-to-128K extension, citing
+its sample efficiency vs continued pretraining with a uniformly scaled base.
 
 For models like Llama 3.1, the team went with a simpler scaled-base recipe (multiplying $b$ by
 a fixed factor) plus long continued pretraining, which works at the larger token budget but

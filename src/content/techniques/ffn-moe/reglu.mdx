@@ -10,12 +10,12 @@ arxiv_id: "2002.05202"
 paper_url: "https://arxiv.org/abs/2002.05202"
 status: "foundational"
 problem_solved: "Same gated bilinear FFN as SwiGLU and GeGLU, with ReLU as the gate. The third evaluated variant in the original GLU-variants paper; rarely adopted in production but useful as a baseline."
-predecessors: ["gelu"]
-successors: ["swiglu", "geglu"]
+predecessors: ["ffn-relu"]
+successors: []
 adopted_by: []
 summary: "Bilinear gated FFN with a ReLU-activated gating path. Matches SwiGLU and GeGLU on quality within noise per Shazeer's original ablations; the rarely-shipped third GLU variant."
 tags: ["ffn", "activation", "foundational"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 ---
 
@@ -63,8 +63,8 @@ FFN's effective capacity for that input, with no smooth gradient path back to "a
 Swish and GELU avoid this failure mode by producing small-but-nonzero outputs for negative
 inputs. The cost is slightly more compute per gate; the benefit is no dead units.
 
-For the v1 ship's open-weights models (Llama, OLMo, DeepSeek, Gemma), all four producers chose
-SwiGLU or GeGLU. ReGLU shows up occasionally in research baselines but not in production
+Across the major open-weights families (Llama, OLMo, DeepSeek, Gemma), all four producers
+chose SwiGLU or GeGLU. ReGLU shows up occasionally in research baselines but not in production
 frontier decoders.
 
 <Summary>

@@ -62,7 +62,7 @@ figure_component: "LayerNormVsRMS"
 figure_caption: "Drag the bias slider: LayerNorm absorbs the offset (mean-subtraction step), RMSNorm visibly shifts."
 summary: "Normalize by RMS instead of subtracting the mean — drop one statistic, one bias, and ~5-10% of normalization compute, with no measurable quality cost."
 tags: ["normalization", "consensus-stack"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intro"
 facets:
   - "training-stability"
@@ -125,7 +125,7 @@ bottleneck — fewer reductions means lower memory traffic.
 <p class="section-eyebrow">§ 4 · Results</p>
 ## Empirical evidence
 
-The original paper (Table 4) reports RMSNorm reducing per-step time by 7–64% across translation
+The original paper reports RMSNorm reducing per-step running time by 7–64% across translation
 and language-modeling benchmarks vs LayerNorm, with no statistically significant quality
 difference on the tested tasks.
 

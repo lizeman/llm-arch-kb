@@ -22,7 +22,7 @@ architecture:
 source_urls:
   - "https://cohere.com/blog/command-r-plus-microsoft-azure"
   - "https://huggingface.co/CohereForAI/c4ai-command-r-plus"
-notes: "Cohere's open-weights release at 104B dense. Public disclosure highlights GQA attention, RoPE, 128K context, and the multilingual training focus; some lower-level architecture fields (exact normalization type, activation) are not explicitly named in the blog or model card and are left null per the citation policy."
+notes: "Cohere's open-weights release at 104B dense. GQA and RoPE are surfaced via the released model config files; the public blog and model card emphasize 128K context, RAG and tool use, and multilingual coverage. Lower-level architecture fields (normalization type, activation, exact layer/head shapes) are not explicitly named in the cited sources and are left null per the citation policy."
 ---
 
 Command R+ 104B (April 2024) is Cohere's open-weights flagship — a 104B dense decoder with
@@ -30,10 +30,9 @@ Command R+ 104B (April 2024) is Cohere's open-weights flagship — a 104B dense 
 positioned as Cohere's frontier model for retrieval-augmented generation and tool use, with
 particular emphasis on multilingual performance across ten primary languages.
 
-What the public materials confirm about the architecture:
+What the public materials and the released model config files confirm about the architecture:
 
-- **GQA** attention. Cohere's blog and the Hugging Face model card both call out grouped-query
-  attention as part of the efficiency story at 104B scale and 128K context.
+- **GQA** attention — surfaced in the released model config.
 - **RoPE** positional encoding.
 - **128K context** window.
 - Dense — no Mixture-of-Experts component.

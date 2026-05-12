@@ -15,7 +15,7 @@ successors: []
 adopted_by: []
 summary: "Hash Q and K to discrete buckets via random rotation; restrict attention to queries and keys in the same bucket. O(N · log N) compute via learned (not hand-designed) sparsity. Lost to FlashAttention's I/O-aware exact computation on practical grounds."
 tags: ["attention", "sparse", "hashing"]
-last_verified: "2026-05-11"
+last_verified: "2026-05-12"
 difficulty: "intermediate"
 facets:
   - "efficiency"
@@ -44,9 +44,9 @@ $(\mathrm{sign}(\boldsymbol{\omega}_1^\top \mathbf{x}), \ldots, \mathrm{sign}(\b
 Vectors that point in similar directions get similar hash bit strings; cosine similarity is
 approximately preserved by hash similarity.
 
-For Reformer, $Q = K$ (the same projection is used for both — a small simplification of the
-standard transformer): each token is hashed once. Tokens with the same hash form a *bucket*.
-Attention then runs within each bucket via standard scaled-dot-product.
+For Reformer, $W_Q = W_K$ (the same projection is shared between query and key — a small
+simplification of the standard transformer): each token is hashed once. Tokens with the same
+hash form a *bucket*. Attention then runs within each bucket via standard scaled-dot-product.
 
 ```python
 def lsh_attention(q, k, v, num_buckets, num_hashes):

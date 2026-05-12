@@ -26,11 +26,26 @@ source_urls:
 notes: "27B dense. Notable for QK-Norm and aggressive interleaving of sliding-window attention."
 ---
 
-Gemma 3 27B is Google's open weights dense decoder. Notable architectural choices:
-**QK-Norm** (RMSNorm applied to Q and K before the attention dot product), an aggressive **5:1
-interleaving** of local sliding-window attention with global attention layers, and a "norm
-everywhere" placement that adds a Post-Norm after each block in addition to the standard
-Pre-Norm.
+Gemma 3 27B (March 2025) is Google's open-weights dense flagship and the multimodal successor
+to [Gemma 2 27B](/llm-arch-kb/models/gemma-2-27b/). It retains the Gemma family's GeGLU FFN
+and sandwich-style norm placement, and adds two stability/scale choices that distinguish it
+from the 2024 generation:
 
-The interleaved SWA + global pattern is the defining long-context move: most layers see only a
-local 4K window, with every 6th layer doing full attention at a much higher RoPE base.
+- **QK-Norm.** An RMSNorm applied to Q and K before the attention dot product. Replaces
+  Gemma 2's reliance on a tanh attention-logit soft cap for stability — though Gemma 3 keeps
+  the soft cap in place, this is a belt-and-braces combination.
+- **Norm-everywhere placement.** RMSNorm appears both before and after each attention and FFN
+  sub-layer (inside the residual branch). The "sandwich" pattern Gemma 2 introduced is
+  retained and tightened.
+
+The defining long-context move is an aggressive **5:1 interleaving** of local sliding-window
+attention (window 4096) with global full-attention layers. Most layers see only a 4K local
+neighborhood; every sixth layer runs full attention. The two layer types also use different
+RoPE bases — local layers at 10K, global layers at 1M — letting the rare global layers
+extrapolate over the full 128K context while the cheap local layers stay numerically
+well-behaved. See the [sliding-window attention](/llm-arch-kb/attention/sliding-window/)
+entry for the family-wide pattern.
+
+Gemma 3 is also multimodal: the released checkpoints pair a SigLIP vision encoder with the
+text decoder. The architecture entry above describes only the language-model component;
+vision details are out of scope for this knowledge base.

@@ -11,15 +11,15 @@ model_card_url: "https://huggingface.co/MiniMaxAI/MiniMax-M1-80k"
 disclosure_level: "open"
 parent_model: "minimax-01"
 architecture:
-  positional: "RoPE"
-  normalization_placement: "Pre-Norm"
+  positional: "RoPE (base 1e7)"
+  normalization_placement: "Post-Norm"
   normalization_type: "RMSNorm"
   qk_norm: false
   activation: "SwiGLU"
   attention: "Lightning Attention (7 layers) interleaved with softmax attention (1 layer); ratio 7:1"
-  moe: "32 routed experts + 1 shared expert; top-2 routing"
+  moe: "32 routed experts (no shared expert); top-2 routing"
   other:
-    - "Same MiniMax-Text-01 base architecture (456B / 45.9B / 7:1 hybrid)"
+    - "Inherits MiniMax-Text-01 base architecture (456B / 45.9B / 80 layers / 7:1 hybrid)"
     - "Reasoning model trained with CISPO reinforcement learning"
     - "Released as 40K and 80K 'thinking budget' variants"
 source_urls:
@@ -31,9 +31,9 @@ notes: "MiniMax-M1 is the reasoning variant of MiniMax-Text-01 — same architec
 
 MiniMax-M1 (June 2025) is the reasoning-tuned successor to
 [MiniMax-Text-01](/llm-arch-kb/models/minimax-01/). The architecture is identical — 456B
-total parameters, 45.9B active per token, 7:1 hybrid
+total parameters, 45.9B active per token, 80 layers, 7:1 hybrid
 [Lightning Attention](/llm-arch-kb/attention/lightning-attention/) + softmax stack, 32
-routed experts plus 1 shared expert at top-2 routing — but the post-training pipeline is
+routed experts at top-2 routing (no shared expert) — but the post-training pipeline is
 new.
 
 The headline claim of the paper (arXiv:2506.13585) is that the hybrid attention stack

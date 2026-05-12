@@ -61,9 +61,9 @@ export default function MemorizingKnn() {
     <figure class="figure" data-testid="memorizing-knn">
       <svg viewBox="0 0 700 440" role="img" aria-label="Memorizing Transformers kNN retrieval">
         <title>
-          Memory bank of N (key, value) pairs shown as 2D points. The query (red cross) retrieves
-          the K nearest neighbors (highlighted), which are then merged into the current
-          attention pass.
+          Memory bank of N (key, value) pairs shown as 2D points. The query (blue cross at the
+          centre, draggable via the X/Y sliders) retrieves the K nearest neighbours (filled
+          dots), which are then merged into the current attention pass.
         </title>
 
         <text

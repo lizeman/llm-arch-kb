@@ -89,14 +89,22 @@ export default function RopeBaseSweep() {
         <line x1={X0} y1={Y0 + H} x2={X0 + W} y2={Y0 + H} stroke="#e3e3dc" />
 
         {/* y-axis log labels */}
-        {[1e-3, 1e-1, 1, 1e1, 1e3].map((v) => (
-          <g>
-            <line x1={X0} y1={yPx(v)} x2={X0 + W} y2={yPx(v)} stroke="#e3e3dc" stroke-dasharray="2 4" />
-            <text x={X0 - 6} y={yPx(v) + 3} text-anchor="end" font-family="var(--mono)" font-size="9" fill="#8a8a85">
-              {v >= 1 ? v.toExponential(0).replace("e+0", "e") : v.toExponential(0).replace("e-0", "e-")}
-            </text>
-          </g>
-        ))}
+        {[1e-3, 1e-1, 1, 1e1, 1e3].map((v) => {
+          // Format as plain "1", "10", "0.1" etc rather than letting the previous
+          // replace() chain produce "1e" for v = 1 (when toExponential returns "1e+0").
+          let label: string;
+          if (v === 1) label = "1";
+          else if (v >= 1) label = `10^${Math.round(Math.log10(v))}`;
+          else label = `10^${Math.round(Math.log10(v))}`;
+          return (
+            <g>
+              <line x1={X0} y1={yPx(v)} x2={X0 + W} y2={yPx(v)} stroke="#e3e3dc" stroke-dasharray="2 4" />
+              <text x={X0 - 6} y={yPx(v) + 3} text-anchor="end" font-family="var(--mono)" font-size="9" fill="#8a8a85">
+                {label}
+              </text>
+            </g>
+          );
+        })}
 
         {/* Highlight: 1-rotation cutoff */}
         <line x1={X0} y1={yOne} x2={X0 + W} y2={yOne} stroke="#1a4f7a" stroke-width="1" stroke-dasharray="4 3" />

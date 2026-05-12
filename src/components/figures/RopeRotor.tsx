@@ -76,9 +76,14 @@ export default function RopeRotor() {
           <line x1={cx} y1={cy} x2={tipX()} y2={tipY()} stroke="#1a4f7a" stroke-width="2.5" />
           <circle cx={tipX()} cy={tipY()} r={5} fill="#1a4f7a" />
 
-          {/* Arc showing angle */}
+          {/* Arc showing angle.
+              In SVG, the Y axis grows downward. The math-CCW rotation of the Q vector
+              (tipY = cy − r·sin(angle)) corresponds to screen-CW, which is SVG arc
+              sweep-flag = 1. We pick large-arc-flag from whether the wrapped angle
+              exceeds π, and keep sweep-flag pinned to 1 so the arc always traces in
+              the same direction as the line. */}
           <path
-            d={`M ${cx + 28} ${cy} A 28 28 0 ${wrapped() > Math.PI ? 1 : 0} 0 ${cx + 28 * Math.cos(wrapped())} ${cy - 28 * Math.sin(wrapped())}`}
+            d={`M ${cx + 28} ${cy} A 28 28 0 ${wrapped() > Math.PI ? 1 : 0} 1 ${cx + 28 * Math.cos(wrapped())} ${cy - 28 * Math.sin(wrapped())}`}
             fill="none" stroke="#1a4f7a" stroke-width="1.5" opacity="0.6"
           />
 

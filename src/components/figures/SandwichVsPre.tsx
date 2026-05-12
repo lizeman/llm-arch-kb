@@ -16,12 +16,6 @@ const D = 256;
 function rms(v: number[]): number {
   return Math.sqrt(v.reduce((a, b) => a + b * b, 0) / v.length);
 }
-function gauss(): number {
-  // Box-Muller
-  const u1 = 1 - Math.random();
-  const u2 = 1 - Math.random();
-  return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
-}
 function newSeededVec(seed: number, sigma: number): number[] {
   // Simple LCG so the figure is deterministic across re-renders.
   let s = seed * 2654435761 >>> 0;
@@ -47,11 +41,12 @@ export default function SandwichVsPre() {
     const x_pre = new Array(D).fill(0);
     const x_sand = new Array(D).fill(0);
     const x_post = new Array(D).fill(0);
-    // Tiny init
+    // Tiny init — deterministic so the figure is stable across renders / signal updates.
+    const init = newSeededVec(0, 0.5);
     for (let i = 0; i < D; i++) {
-      x_pre[i] = 0.5 * gauss();
-      x_sand[i] = x_pre[i];
-      x_post[i] = x_pre[i];
+      x_pre[i] = init[i];
+      x_sand[i] = init[i];
+      x_post[i] = init[i];
     }
 
     const beta = Math.pow(8 * L, -0.25); // DeepNet scaling for L-layer encoder

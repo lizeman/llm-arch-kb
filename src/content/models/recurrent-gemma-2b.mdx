@@ -1,0 +1,64 @@
+---
+name: "RecurrentGemma 2B"
+organization: "Google DeepMind"
+release_date: "2024-04-11"
+parameters_total: "2.7B"
+context_length: 8192
+open_weights: true
+paper_url: "https://arxiv.org/abs/2404.07839"
+model_card_url: "https://huggingface.co/google/recurrentgemma-2b"
+disclosure_level: "open"
+architecture:
+  positional: "Implicit (linear recurrence carries position) + RoPE on local attention blocks"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "GeGLU"
+  attention: "Hybrid: interleaved Griffin recurrent blocks + local Sliding Window Attention (window 2048)"
+  moe: null
+  other:
+    - "Based on the Griffin architecture (Botev et al. 2024, arXiv 2402.19427)"
+    - "RG-LRU: Real-Gated Linear Recurrent Unit — input-dependent diagonal recurrence"
+    - "Bounded inference state regardless of sequence length (the recurrent advantage)"
+    - "26 blocks total"
+source_urls:
+  - "https://arxiv.org/abs/2404.07839"
+  - "https://arxiv.org/abs/2402.19427"
+  - "https://huggingface.co/google/recurrentgemma-2b"
+notes: "First open release using the Griffin recurrence + local-attention recipe. Same training data and tokenizer as Gemma 1 2B; the architectural divergence is the central thing being demonstrated."
+---
+
+RecurrentGemma 2B (April 2024) is the first open model based on the
+[Griffin](/llm-arch-kb/) architecture (Botev et al. 2024) — a hybrid of input-gated linear
+recurrence (RG-LRU blocks) with conventional
+[local sliding-window attention](/llm-arch-kb/attention/sliding-window/). The motivation is
+inference-time efficiency at long sequences: the recurrent blocks have bounded state
+regardless of context length, so per-token cost stays constant where a pure-attention model's
+cost grows with sequence length.
+
+The block layout interleaves two kinds of layer:
+
+- **Griffin recurrent blocks (RG-LRU).** A diagonal linear recurrence with input-dependent
+  gating. The state at each layer is a single $d$-dim vector per token, updated by an
+  element-wise gate computed from the current input. No softmax, no quadratic cost. Position
+  information is implicit — the recurrence's update rule depends on token order but not on an
+  explicit position embedding.
+- **Local Sliding Window Attention.** Standard scaled-dot-product attention restricted to a
+  fixed window (2048 tokens here), with [RoPE](/llm-arch-kb/positional/rope/) on Q and K.
+  Reintroduces explicit attention behavior over a recent neighborhood, which the recurrence
+  alone struggles to do.
+
+Other components match the [Gemma 1](/llm-arch-kb/models/gemma-1-7b/) lineage: Pre-Norm
+RMSNorm, [GeGLU](/llm-arch-kb/ffn-moe/geglu/) FFN, the same tokenizer and pretraining data.
+The 2B parameter count and 8K training context are also matched to the Gemma 1 2B baseline,
+so the architectural difference can be read directly from comparable evaluations.
+
+The paper's headline (Table 4): RecurrentGemma 2B matches Gemma 1 2B on most language
+benchmarks and substantially exceeds it on long-context throughput (constant inference cost vs
+linearly growing attention cost). The downside is harder copying / retrieval at very long
+ranges, where the bounded recurrent state cannot perfectly recall an arbitrary token from
+2K+ tokens ago.
+
+RecurrentGemma is a strict architectural minority within the open frontier (the Mamba family
+and Jamba being adjacent attempts), but it is one of the cleanest published demonstrations of
+a hybrid recurrent + local-attention stack at modest production scale.

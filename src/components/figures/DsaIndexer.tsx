@@ -130,6 +130,7 @@ export default function DsaIndexer() {
           <span>Top-K budget</span>
           <input
             type="range"
+            aria-label="Top-K budget"
             min={4}
             max={L}
             step={1}
@@ -143,6 +144,7 @@ export default function DsaIndexer() {
           <span>Query seed (regenerate score pattern)</span>
           <input
             type="range"
+            aria-label="Query seed (regenerate score pattern)"
             min={0}
             max={31}
             step={1}

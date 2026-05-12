@@ -1,0 +1,48 @@
+---
+name: "gpt-oss-120b"
+organization: "OpenAI"
+release_date: "2025-08-05"
+parameters_total: "117B"
+parameters_active: "5.1B"
+context_length: 131072
+open_weights: true
+model_card_url: "https://huggingface.co/openai/gpt-oss-120b"
+disclosure_level: "documented"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA with alternating dense / banded sliding-window layers"
+  moe: "Sparse MoE — 128 experts, top-4 routing"
+  other:
+    - "117B total parameters / 5.1B active per token"
+    - "First OpenAI open-weights release since GPT-2"
+    - "Apache 2.0 license"
+    - "MXFP4 quantization of expert weights as the default inference format"
+source_urls:
+  - "https://openai.com/index/introducing-gpt-oss/"
+  - "https://huggingface.co/openai/gpt-oss-120b"
+notes: "OpenAI's first open-weights model since GPT-2. The release page and Hugging Face model card disclose a sparse MoE architecture (128 experts, top-4) atop a Pre-Norm RMSNorm + RoPE + GQA + SwiGLU dense backbone, with alternating banded sliding-window and full-attention layers. Lower-level details (exact head counts, expert FFN dim, RoPE base) are in the model config rather than the announcement materials."
+---
+
+gpt-oss-120b (August 2025) is OpenAI's first open-weights model release since GPT-2 in 2019.
+The introduction blog post and the Hugging Face model card disclose the architecture as a
+sparse Mixture-of-Experts transformer with the now-dominant open-weights backbone:
+
+- **117B total parameters, 5.1B active per token.** 128 experts per MoE layer with top-4
+  routing — a relatively wide, fine-grained routing recipe compared to Mixtral's 8-experts /
+  top-2 baseline.
+- **Pre-Norm RMSNorm + RoPE + GQA + SwiGLU** dense backbone.
+- **Alternating attention pattern**: most layers use banded sliding-window attention; a
+  subset use full (dense) attention. The interleaving keeps long-context KV-cache cost in
+  check at the 131K-token window.
+- **MXFP4 expert quantization** is documented as the default inference format — the expert
+  weight matrices ship in the OCP Microscaling FP4 format, with the rest of the model in
+  BF16/FP16.
+
+The release is under Apache 2.0 license. Specific quantitative architecture parameters (exact
+head dim, exact layer count, exact expert FFN width, RoPE base) are present in the released
+model config files rather than highlighted in the announcement; this entry sticks to what
+the official announcement and model card describe.

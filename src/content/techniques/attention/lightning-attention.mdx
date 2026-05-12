@@ -19,6 +19,10 @@ adopted_by:
 summary: "Tile and fuse linear attention's prefix-sum recurrence so it runs faster than FlashAttention at long context. Interleaved 7:1 with softmax attention in MiniMax-01 to recover what linear attention loses on absolute quality while keeping its linear-in-T scaling."
 tags: ["attention", "linear", "production"]
 last_verified: "2026-05-11"
+difficulty: "intermediate"
+facets:
+  - "efficiency"
+  - "hardware-aware"
 ---
 
 import LightningTiles from "~/components/figures/LightningTiles";

@@ -16,6 +16,10 @@ adopted_by: []
 summary: "Each attention head operates at a different dilation rate r ∈ {1, 2, 4, ...}: stride-r local windows. Combining log₂(N) such heads gives O(N · log N) total cost with full reachability across the sequence. Demonstrated training on 1B-token sequences."
 tags: ["long-context", "dilated", "sparse"]
 last_verified: "2026-05-11"
+difficulty: "advanced"
+facets:
+  - "long-context"
+  - "efficiency"
 ---
 
 import LongnetDilated from "~/components/figures/LongnetDilated";

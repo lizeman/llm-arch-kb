@@ -1,0 +1,16 @@
+---
+title: "From MHA to MLA"
+description: "Walk the four canonical attention layouts in chronological order — the path from full multi-head to grouped to latent compression."
+difficulty: "intermediate"
+techniques:
+  - "mha"
+  - "mqa"
+  - "gqa"
+  - "mla"
+order: 1
+---
+
+Attention is the part of the transformer that has changed most under inference pressure.
+Each step on this path keeps the math recognizably "scaled dot product over heads" but trades a
+little quality for a lot of KV-cache compression. The endpoint, in 2026, is either GQA
+(most frontier dense decoders) or MLA (DeepSeek-line).

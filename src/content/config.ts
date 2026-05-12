@@ -48,6 +48,40 @@ const techniques = defineCollection({
 
     order: z.number().int().optional(),
     last_verified: z.string(),
+
+    facets: z.array(z.enum([
+      "efficiency",
+      "training-stability",
+      "kv-cache",
+      "long-context",
+      "inference-only",
+      "hardware-aware",
+      "parameter-free",
+      "quality",
+      "routing",
+    ])).default([]),
+    tradeoffs: z.object({
+      pros: z.array(z.string()).optional(),
+      cons: z.array(z.string()).optional(),
+      when_to_use: z.array(z.string()).optional(),
+      when_to_avoid: z.array(z.string()).optional(),
+    }).optional(),
+    ablations: z.array(z.object({
+      paper: z.string(),
+      baseline: z.string(),
+      metric: z.string(),
+      delta: z.string(),
+      notes: z.string().optional(),
+    })).default([]),
+    cost: z.object({
+      params_overhead: z.string().optional(),
+      flops_overhead: z.string().optional(),
+      kv_cache_overhead: z.string().optional(),
+      inference_only: z.boolean().optional(),
+    }).optional(),
+    prerequisites: z.array(z.string()).default([]),
+    difficulty: z.enum(["intro", "intermediate", "advanced"]).optional(),
+    open_questions: z.array(z.string()).default([]),
   }),
 });
 
@@ -80,8 +114,20 @@ const models = defineCollection({
 
     source_urls: z.array(z.string().url()),
     notes: z.string().optional(),
+    parent_model: z.string().optional(),
   }),
 });
 
-export const collections = { techniques, models };
+const paths = defineCollection({
+  type: "content",
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    techniques: z.array(z.string()),
+    difficulty: z.enum(["intro", "intermediate", "advanced"]),
+    order: z.number().int().optional(),
+  }),
+});
+
+export const collections = { techniques, models, paths };
 export { TECHNIQUE_CATEGORIES };

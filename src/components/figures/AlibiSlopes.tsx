@@ -169,6 +169,7 @@ export default function AlibiSlopes() {
           <span>Number of heads H</span>
           <input
             type="range"
+            aria-label="Number of heads H"
             min={4}
             max={32}
             step={1}
@@ -186,6 +187,7 @@ export default function AlibiSlopes() {
           <span>Selected head index</span>
           <input
             type="range"
+            aria-label="Selected head index"
             min={0}
             max={H() - 1}
             step={1}

@@ -168,6 +168,7 @@ export default function NoPeOrder() {
           <span>Highlighted query position</span>
           <input
             type="range"
+            aria-label="Highlighted query position"
             min={0}
             max={L - 1}
             step={1}

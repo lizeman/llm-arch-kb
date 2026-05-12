@@ -107,6 +107,7 @@ export default function PerformerKernel() {
           <span>Sequence length N</span>
           <input
             type="range"
+            aria-label="Sequence length N"
             min={32}
             max={512}
             step={32}
@@ -120,6 +121,7 @@ export default function PerformerKernel() {
           <span>Feature dim m</span>
           <input
             type="range"
+            aria-label="Feature dim m"
             min={8}
             max={256}
             step={8}

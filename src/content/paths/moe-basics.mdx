@@ -1,0 +1,16 @@
+---
+title: "Sparse MoE foundations"
+description: "The four entries that built today's sparse mixture-of-experts FFN: the original sparse routing idea, Switch's k=1 simplification, Mixtral's open instantiation, and DeepSeek's shared-expert refinement."
+difficulty: "intermediate"
+techniques:
+  - "sparse-moe"
+  - "switch-transformer"
+  - "mixtral-moe"
+  - "deepseek-moe"
+order: 3
+---
+
+Mixture-of-experts decouples parameter count from per-token FLOPs by activating only a small
+subset of experts for each token. Read these in order to see how the four moving pieces — the
+router, the top-k rule, load balancing, and the shared-expert design — stabilized into the
+modern sparse-MoE recipe used by Mixtral, DeepSeek, and their successors.

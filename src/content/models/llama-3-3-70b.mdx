@@ -1,0 +1,42 @@
+---
+name: "Llama 3.3 70B Instruct"
+organization: "Meta"
+release_date: "2024-12-06"
+parameters_total: "70B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2407.21783"
+model_card_url: "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct"
+disclosure_level: "open"
+parent_model: "llama-3-1-70b"
+architecture:
+  positional: "RoPE (theta scaled for 128K context)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA (8 key-value heads, 64 query heads)"
+  moe: null
+  other:
+    - "Same base architecture as Llama 3.1 70B — 80 layers, 128K context"
+    - "Instruction-tuned only release; the architectural deltas vs 3.1 are post-training, not pretraining"
+    - "Tokenizer: tiktoken-based, 128K vocabulary"
+source_urls:
+  - "https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct"
+  - "https://arxiv.org/abs/2407.21783"
+notes: "Llama 3.3 70B Instruct is a post-training refresh of the Llama 3.1 70B base — the pretraining architecture is unchanged. The model card explicitly notes the same architecture family (Pre-Norm RMSNorm + RoPE + GQA + SwiGLU) as 3.1; the gains are from improved instruction-tuning and alignment recipes."
+---
+
+Llama 3.3 70B Instruct (December 2024) is Meta's late-2024 post-training refresh of the
+[Llama 3.1 70B](/llm-arch-kb/models/llama-3-1-70b/) base. The pretraining architecture is
+unchanged — 80 layers, GQA with 8 KV heads / 64 query heads, Pre-Norm RMSNorm, SwiGLU FFN,
+and a 128K-context RoPE configuration. What changed is the post-training recipe: improved
+instruction tuning and alignment data lift the 70B-Instruct quality close to the
+405B-Instruct on several reasoning benchmarks.
+
+Because the architecture is identical to 3.1, this entry exists primarily to capture the
+lineage. For architectural detail see the [Llama 3.1 70B](/llm-arch-kb/models/llama-3-1-70b/)
+spec sheet and the Llama 3 paper.
+
+Meta released 3.3 as an instruction-tuned variant only — there is no separately released
+3.3 base. The model card on Hugging Face is the canonical disclosure.

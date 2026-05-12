@@ -156,6 +156,7 @@ export default function LightningTiles() {
           <span>Sequence length L</span>
           <input
             type="range"
+            aria-label="Sequence length L"
             min={256}
             max={32768}
             step={256}
@@ -169,6 +170,7 @@ export default function LightningTiles() {
           <span>Block size B</span>
           <input
             type="range"
+            aria-label="Block size B"
             min={32}
             max={512}
             step={32}

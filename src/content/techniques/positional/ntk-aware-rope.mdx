@@ -16,6 +16,10 @@ adopted_by: []
 summary: "Multiply RoPE's base b by s^(d_h/(d_h-2)) for extension factor s. Fast dimensions (low index) are nearly untouched; slow dimensions get linearly interpolated. Zero fine-tuning needed at small extensions; the inspiration for YaRN's per-band approach."
 tags: ["positional", "long-context"]
 last_verified: "2026-05-11"
+difficulty: "intermediate"
+facets:
+  - "long-context"
+  - "inference-only"
 ---
 
 import Summary from "~/components/Summary.astro";

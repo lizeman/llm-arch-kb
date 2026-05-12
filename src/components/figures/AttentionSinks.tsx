@@ -137,6 +137,7 @@ export default function AttentionSinks() {
           <span>Position t</span>
           <input
             type="range"
+            aria-label="Position t"
             min={0}
             max={TOTAL - 1}
             step={1}
@@ -150,6 +151,7 @@ export default function AttentionSinks() {
           <span>Window W</span>
           <input
             type="range"
+            aria-label="Window W"
             min={1}
             max={16}
             step={1}
@@ -163,6 +165,7 @@ export default function AttentionSinks() {
           <span>Sinks S</span>
           <input
             type="range"
+            aria-label="Sinks S"
             min={0}
             max={6}
             step={1}

@@ -2,7 +2,11 @@
 import BaseLayout from "./BaseLayout.astro";
 import AdoptionList from "~/components/AdoptionList.astro";
 import Lineage from "~/components/Lineage.astro";
+import RelatedTechniques from "~/components/RelatedTechniques.astro";
 import Cite from "~/components/Cite.astro";
+import StaleBanner from "~/components/StaleBanner.astro";
+import CiteButton from "~/components/CiteButton.astro";
+import { entryToCitationFields } from "~/lib/citations";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
 import { monthName } from "~/utils/chronological-sort";
 import { BASE } from "~/utils/site";
@@ -24,6 +28,9 @@ interface Props {
     adopted_by: { model: string; source_url: string; notes?: string }[];
     predecessors?: string[];
     successors?: string[];
+    prerequisites?: string[];
+    difficulty?: 'intro' | 'intermediate' | 'advanced';
+    facets?: string[];
     last_verified: string;
   };
 }
@@ -31,21 +38,38 @@ interface Props {
 const { frontmatter } = Astro.props;
 const month = monthName(frontmatter.month, "long");
 const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
+const citationFields = entryToCitationFields(frontmatter);
+const routeSlug = (Astro.params as { slug?: string }).slug ?? "";
+
+// OG card filename matches scripts/generate-og.ts convention: <category>__<slug-tail>.png
+const ogSlugTail = Astro.url.pathname.replace(/\/$/, "").split("/").pop() ?? "";
+const ogImage = `${BASE}/og/${frontmatter.category}__${ogSlugTail}.png`;
 ---
 
-<BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary}>
+<BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary} ogImage={ogImage}>
   <article class="prose">
+    <StaleBanner last_verified={frontmatter.last_verified} />
     <header class="entry-header">
       <p class="section-eyebrow">
         <a href={`${BASE}/${frontmatter.category}/`}>{CATEGORY_LABELS[frontmatter.category]}</a>
         &nbsp;·&nbsp;{date}
       </p>
       <h1>{frontmatter.title}</h1>
+      {frontmatter.difficulty && (
+        <p class="entry-difficulty">{frontmatter.difficulty}</p>
+      )}
       <p class="entry-meta">
         Introduced by <strong>{frontmatter.introduced_by}</strong> in
         &nbsp;<a href={frontmatter.paper_url} rel="noopener noreferrer"><cite>{frontmatter.paper_title}</cite></a>
         &nbsp;(<span class="arxiv">arXiv:{frontmatter.arxiv_id}</span>)
       </p>
+      {frontmatter.facets && frontmatter.facets.length > 0 && (
+        <p class="entry-facets">
+          {frontmatter.facets.map((f) => (
+            <span class="facet-chip">{f}</span>
+          ))}
+        </p>
+      )}
       <p class="entry-problem">{frontmatter.problem_solved}</p>
     </header>
 
@@ -53,9 +77,12 @@ const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
 
     <AdoptionList adopted_by={frontmatter.adopted_by} />
 
+    <RelatedTechniques slug={routeSlug} category={frontmatter.category} />
+
     <Lineage
       predecessors={frontmatter.predecessors ?? []}
       successors={frontmatter.successors ?? []}
+      prerequisites={frontmatter.prerequisites ?? []}
     />
 
     <Cite
@@ -65,6 +92,8 @@ const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
       arxiv_id={frontmatter.arxiv_id}
       paper_url={frontmatter.paper_url}
     />
+
+    <CiteButton fields={citationFields} />
 
     <footer class="entry-footer">
       <p>Last verified {frontmatter.last_verified}.</p>
@@ -87,6 +116,28 @@ const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
   }
   .entry-meta cite { font-style: italic; }
   .arxiv { font-family: var(--mono); font-size: 0.85em; }
+  .entry-difficulty {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+    margin: 0 0 16px;
+  }
+  .entry-facets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 0 0 16px;
+  }
+  .facet-chip {
+    font-size: 0.78rem;
+    color: var(--text-soft);
+    border: 1px solid var(--border);
+    background: transparent;
+    padding: 2px 6px;
+    border-radius: 2px;
+    line-height: 1.4;
+  }
   .entry-problem {
     font-size: 1.125rem;
     color: var(--text-soft);

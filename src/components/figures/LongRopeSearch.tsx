@@ -134,6 +134,7 @@ export default function LongRopeSearch() {
           <span>Context scale s</span>
           <input
             type="range"
+            aria-label="Context scale s"
             min={1}
             max={64}
             step={0.5}
@@ -147,6 +148,7 @@ export default function LongRopeSearch() {
           <span>Evolutionary seed</span>
           <input
             type="range"
+            aria-label="Evolutionary seed"
             min={0}
             max={31}
             step={1}
@@ -160,6 +162,7 @@ export default function LongRopeSearch() {
           <span>Search magnitude</span>
           <input
             type="range"
+            aria-label="Search magnitude"
             min={0}
             max={0.5}
             step={0.01}

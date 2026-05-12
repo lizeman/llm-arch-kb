@@ -21,6 +21,7 @@ const FIGURES_DIR = path.join(ROOT, "src", "components", "figures");
 
 type Issue = { file: string; message: string };
 const issues: Issue[] = [];
+const warnings: string[] = [];
 
 function readFrontmatter(filePath: string): Record<string, unknown> | null {
   const text = fs.readFileSync(filePath, "utf8");
@@ -152,7 +153,9 @@ function validate() {
   const models = loadModels();
   const techniques = loadTechniques();
   const modelSlugs = new Set(models.map((m) => m.slug));
+  const techniqueSlugs = new Set(techniques.map((t) => t.slug));
   const figureComponents = listFigureComponents();
+  const arxivVersionRe = /^\d{4}\.\d{4,5}v\d+$/;
 
   // 1. Closed-model policy: undisclosed → null architecture fields
   for (const m of models) {
@@ -171,6 +174,16 @@ function validate() {
     }
     if (!Array.isArray(m.data.source_urls) || m.data.source_urls.length === 0) {
       issues.push({ file: rel(m.file), message: "models must declare source_urls[] (§9)" });
+    }
+
+    const parent = m.data.parent_model;
+    if (parent && typeof parent === "string" && parent.trim() !== "") {
+      if (!modelSlugs.has(parent)) {
+        issues.push({
+          file: rel(m.file),
+          message: `parent_model "${parent}" does not resolve to a model at src/content/models/${parent}.mdx`,
+        });
+      }
     }
   }
 
@@ -213,9 +226,30 @@ function validate() {
         message: `arxiv_id "${arxiv}" does not match paper_url "${paperUrl}"`,
       });
     }
+    if (arxiv && !arxivVersionRe.test(arxiv)) {
+      warnings.push(`[warn] ${rel(t.file)}: arxiv_id "${arxiv}" lacks version suffix (vN); recommend pinning`);
+    }
+
+    const prereqs = (t.data.prerequisites ?? []) as unknown[];
+    if (Array.isArray(prereqs)) {
+      for (const p of prereqs) {
+        const ref = String(p ?? "");
+        if (!ref) continue;
+        if (!techniqueSlugs.has(ref)) {
+          issues.push({
+            file: rel(t.file),
+            message: `prerequisites entry "${ref}" does not resolve to a technique at src/content/techniques/<category>/${ref}.mdx`,
+          });
+        }
+      }
+    }
   }
 
   // 3. Reporting
+  for (const w of warnings) {
+    console.warn(w);
+  }
+
   if (issues.length === 0) {
     console.log(`[validate-content] ok — ${techniques.length} technique(s), ${models.length} model(s)`);
     process.exit(0);

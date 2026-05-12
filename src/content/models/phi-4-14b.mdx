@@ -1,0 +1,48 @@
+---
+name: "Phi-4 14B"
+organization: "Microsoft Research"
+release_date: "2024-12-12"
+parameters_total: "14B"
+context_length: 16384
+open_weights: true
+paper_url: "https://arxiv.org/abs/2412.08905"
+model_card_url: "https://huggingface.co/microsoft/phi-4"
+disclosure_level: "documented"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA"
+  moe: null
+  other:
+    - "Dense 14B decoder"
+    - "Tokenizer: tiktoken-derived, ~100K vocabulary (per technical report)"
+    - "MIT license at release"
+source_urls:
+  - "https://arxiv.org/abs/2412.08905"
+  - "https://huggingface.co/microsoft/phi-4"
+notes: "Phi-4 is documented primarily for its data-centric training recipe — high-quality synthetic plus curated data dominates the technical report. The architecture as described in the report follows the standard Pre-Norm RMSNorm + RoPE + GQA + SwiGLU stack at 14B dense; specific layer/head counts are in the model config."
+---
+
+Phi-4 14B (December 2024) is Microsoft Research's fourth-generation Phi model. The
+distinguishing claim of the Phi family has never been architectural novelty — it is the
+data-centric training recipe, and Phi-4's technical report reinforces that framing. The
+architecture is described as conventional dense decoder transformer with Pre-Norm RMSNorm,
+RoPE, GQA, and SwiGLU.
+
+What is novel in Phi-4:
+
+- **Synthetic-data-heavy training mix.** The technical report details a curriculum that
+  blends high-quality web data, curated educational sources, and synthetic data generated
+  with strong frontier models — an evolution of the "textbooks are all you need" thesis from
+  earlier Phi work.
+- **14B parameter scale.** Larger than Phi-3 (3.8B / 14B Mini), targeting GPT-4-class
+  reasoning on a single-GPU footprint.
+- **16K base context window.**
+
+Architectural details such as exact layer count and FFN width are in the released model
+config rather than highlighted in the technical report — Phi-4's paper is intentionally
+data-and-evaluation-focused. The open weights release under MIT license is the canonical
+artifact for verifying the architecture spec.

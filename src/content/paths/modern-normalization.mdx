@@ -1,0 +1,16 @@
+---
+title: "Norm placement and type"
+description: "Where to put the normalization layer, and which variant to use. Four short entries to grasp the 2024+ consensus."
+difficulty: "intro"
+techniques:
+  - "layernorm"
+  - "rmsnorm"
+  - "norm-placement"
+  - "qk-norm"
+order: 2
+---
+
+Normalization is the cheapest module in a transformer block and one of the most argued-about.
+This short path takes you from the original LayerNorm to RMSNorm, surveys where the norm
+goes (pre, post, sandwich), and finishes with QK-Norm — the small addition that has slipped
+into several recent frontier dense decoders.

@@ -152,6 +152,7 @@ export default function CompressiveTiers() {
           <span>Compression ratio c</span>
           <input
             type="range"
+            aria-label="Compression ratio c"
             min={1}
             max={32}
             step={1}
@@ -165,6 +166,7 @@ export default function CompressiveTiers() {
           <span>Short-term cache size</span>
           <input
             type="range"
+            aria-label="Short-term cache size"
             min={4}
             max={32}
             step={1}
@@ -178,6 +180,7 @@ export default function CompressiveTiers() {
           <span>Current window size</span>
           <input
             type="range"
+            aria-label="Current window size"
             min={4}
             max={16}
             step={1}

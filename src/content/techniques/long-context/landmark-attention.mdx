@@ -16,6 +16,9 @@ adopted_by: []
 summary: "Insert a learnable landmark token at the end of each chunk; train it to summarize the chunk's content. At inference, queries attend to landmarks to gate which chunks get full attention. Hierarchical chunked attention with O(C + W) cost where C is chunk count and W is per-chunk window."
 tags: ["long-context", "hierarchical"]
 last_verified: "2026-05-11"
+difficulty: "intermediate"
+facets:
+  - "long-context"
 ---
 
 import LandmarkAttention from "~/components/figures/LandmarkAttention";

@@ -73,11 +73,28 @@ export default function AuxLossFreeBias() {
     setStep((s) => s + 1);
   }
 
+  // Respect prefers-reduced-motion: when reduced motion is requested, the auto-run loop
+  // is suppressed but a click on the run button still advances one step so the final
+  // state stays reachable.
+  function prefersReducedMotion(): boolean {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    try {
+      return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch {
+      return false;
+    }
+  }
+
   // Auto-run loop
   let timer: number | undefined;
   function tick() {
     if (!running()) return;
     doStep();
+    if (prefersReducedMotion()) {
+      // Single step only — do not schedule the next tick.
+      setRunning(false);
+      return;
+    }
     timer = setTimeout(tick, 250) as unknown as number;
   }
   function toggleRun() {
@@ -248,6 +265,7 @@ export default function AuxLossFreeBias() {
           <span>Update step γ</span>
           <input
             type="range"
+            aria-label="Update step γ"
             min={0.001}
             max={0.2}
             step={0.001}

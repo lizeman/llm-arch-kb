@@ -123,6 +123,7 @@ export default function LandmarkAttention() {
           <span>Chunk size B</span>
           <input
             type="range"
+            aria-label="Chunk size B"
             min={4}
             max={32}
             step={4}
@@ -136,6 +137,7 @@ export default function LandmarkAttention() {
           <span>Top-K chunks to expand</span>
           <input
             type="range"
+            aria-label="Top-K chunks to expand"
             min={1}
             max={C()}
             step={1}

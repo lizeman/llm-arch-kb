@@ -13,11 +13,14 @@ problem_solved: "Encode position with no learnable parameters and no rotation �
 predecessors: []
 successors: []
 adopted_by: []
+figure_component: "AlibiSlopes"
+figure_caption: "Slider over head index; the steeper-slope heads attend locally, the shallow-slope heads almost ignore distance."
 summary: "Bias attention scores by a per-head linear function of the query-key distance. No learnable position parameters; extrapolates beyond training length without any fine-tune. Lost the dominance race to RoPE for dense decoders but is mechanically illuminating."
 tags: ["positional", "alternative"]
 last_verified: "2026-05-11"
 ---
 
+import AlibiSlopes from "~/components/figures/AlibiSlopes";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -55,6 +58,8 @@ def alibi_bias(seq_len, num_heads, device):
 ```
 
 The bias matrix is computed once per layer, not per token, so the overhead is negligible.
+
+<AlibiSlopes client:visible />
 
 <p class="section-eyebrow">§ 3 · Length extrapolation</p>
 ## Why it generalizes

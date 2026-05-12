@@ -1,0 +1,62 @@
+---
+name: "GLM-130B"
+organization: "Tsinghua KEG / Zhipu AI"
+release_date: "2022-10-05"
+parameters_total: "130B"
+context_length: 2048
+open_weights: true
+paper_url: "https://arxiv.org/abs/2210.02414"
+model_card_url: "https://huggingface.co/THUDM/glm-130b"
+disclosure_level: "open"
+architecture:
+  positional: "2D Rotary Position Embedding (RoPE on each axis of the 2D position grid)"
+  normalization_placement: "Post-Norm with DeepNorm scaling"
+  normalization_type: "LayerNorm"
+  qk_norm: false
+  activation: "GeLU"
+  attention: "MHA (96 query heads, head_dim 128)"
+  moe: null
+  other:
+    - "70 transformer layers; hidden_dim 12288"
+    - "GLM autoregressive blank infilling pretraining objective (not pure causal LM)"
+    - "Bilingual Chinese / English; 400B-token training corpus"
+    - "DeepNorm β = (8N)^(-1/4) for Post-Norm stability at 130B scale"
+source_urls:
+  - "https://arxiv.org/abs/2210.02414"
+  - "https://huggingface.co/THUDM/glm-130b"
+  - "https://github.com/THUDM/GLM-130B"
+notes: "First open 100B+ bilingual model. Architecturally an outlier from the 2022–2025 consensus stack: Post-Norm with DeepNorm, LayerNorm rather than RMSNorm, GeLU rather than a GLU variant, MHA, and a custom 2D RoPE. The choices reflect 2021–22 design conventions rather than the post-Llama settlement."
+---
+
+GLM-130B (October 2022) is the first 100B+ open bilingual model, released by Tsinghua KEG and
+Zhipu AI under a non-commercial research license. The architecture is a snapshot of
+late-2021 / early-2022 design conventions, predating the Llama-driven settlement on
+Pre-Norm + RMSNorm + RoPE + SwiGLU + GQA. Reading GLM-130B against contemporary models is
+useful for seeing what the consensus stack quietly displaced.
+
+The four architectural choices that age GLM-130B against modern models:
+
+- **Post-Norm with [DeepNorm](/llm-arch-kb/residual/deepnet/) scaling.** The Microsoft DeepNet
+  paper showed that Post-Norm could be made stable at very deep stacks by rescaling residuals
+  by a depth-derived constant $\beta = (8N)^{-1/4}$. GLM-130B uses this recipe at 70 layers.
+  Modern open models settled on Pre-Norm instead.
+- **LayerNorm, not RMSNorm.** RMSNorm was published in 2019 (Zhang & Sennrich) but didn't
+  become the open-stack default until Llama 1 made the choice in early 2023. See the
+  [LayerNorm](/llm-arch-kb/normalization/layernorm/) and
+  [RMSNorm](/llm-arch-kb/normalization/rmsnorm/) entries.
+- **GeLU FFN, not a GLU variant.** Plain ReLU/GeLU FFN at 4× hidden expansion. Shazeer's
+  GLU-variant ablations (2020) had been published but adoption lagged; the GLU split came
+  with Llama 1's [SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) choice in 2023.
+- **2D RoPE.** GLM-130B encodes position as a 2D grid (segment index, intra-segment position)
+  with RoPE applied on each axis. The 2D structure supports the GLM blank-infilling
+  pretraining objective, which uses non-causal attention within infill spans. Single-axis RoPE
+  became standard with Llama; 2D RoPE remains a GLM-family signature, carried into GLM-4 and
+  GLM-4.5.
+
+The GLM pretraining objective itself — autoregressive blank infilling — is also distinct from
+the pure causal-LM objective Llama and successors use. The model masks contiguous spans, then
+predicts each masked span autoregressively while the surrounding tokens have full bidirectional
+visibility. GLM-130B inference can be operated either causally or with the bidirectional infill
+mode active, depending on the task framing.
+
+For later GLM family members see the GLM-4 and GLM-4.5 entries (when those land).

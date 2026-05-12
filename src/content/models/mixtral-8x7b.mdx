@@ -1,0 +1,52 @@
+---
+name: "Mixtral 8x7B"
+organization: "Mistral AI"
+release_date: "2023-12-11"
+parameters_total: "46.7B"
+parameters_active: "12.9B"
+context_length: 32768
+open_weights: true
+paper_url: "https://arxiv.org/abs/2401.04088"
+model_card_url: "https://huggingface.co/mistralai/Mixtral-8x7B-v0.1"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 1000000)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA (32 query heads, 8 KV heads)"
+  moe: "8 experts per MoE layer, top-2 routing, all FFNs are MoE; standard load-balancing auxiliary loss"
+  other:
+    - "32 layers, d_model 4096, d_ff 14336"
+    - "Apache 2.0 license — the first open-weights production MoE"
+source_urls:
+  - "https://arxiv.org/abs/2401.04088"
+  - "https://huggingface.co/mistralai/Mixtral-8x7B-v0.1"
+notes: "The model that introduced production MoE to the open-weights community. 8 full-size SwiGLU experts per layer, top-2 routing, GQA attention, no sliding-window (unlike Mistral 7B). Active-parameter cost of a ~13B dense model at quality near Llama 2 70B."
+---
+
+Mixtral 8x7B (December 2023) is the model that brought sparse mixture-of-experts to the
+open-weights world at production quality. Each of its 32 transformer layers replaces the
+dense FFN with 8 experts of the same shape; a learned router selects the top 2 per token and
+mixes their outputs by routing weights. Total parameter count is 46.7B; active count per
+token is 12.9B — roughly a 3.6× sparsity factor.
+
+The architectural choices outside the MoE layer match the [Mistral 7B](/llm-arch-kb/models/mistral-7b/)
+ancestor: Pre-Norm RMSNorm, RoPE (base 10⁶, an extended setting that supports 32K context
+natively), [GQA](/llm-arch-kb/attention/gqa/) with 32 query heads and 8 KV heads, and
+[SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) inside each expert. Unlike Mistral 7B, Mixtral 8x7B
+drops sliding-window attention — at 32K base context the cache cost was tolerated for the
+full-attention quality.
+
+The routing recipe is what the [Mixtral-MoE entry](/llm-arch-kb/ffn-moe/mixtral-moe/)
+describes in detail: top-2 of 8 full-sized experts, standard Switch-style load-balancing
+auxiliary loss, no shared expert. [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) later
+contested this granularity — smaller, more numerous experts with a shared always-on expert —
+but in late 2023 Mixtral's coarse recipe was the production-validated baseline.
+
+Mixtral 8x7B's release under Apache 2.0 set the licensing precedent that subsequent
+open-weights MoE models ([OLMoE](/llm-arch-kb/models/olmoe-1b-7b/),
+[DeepSeek V2](/llm-arch-kb/models/deepseek-v2/), [DeepSeek V3](/llm-arch-kb/models/deepseek-v3/))
+followed. Inference-time the model competes with Llama 2 70B at roughly the compute of a 13B
+dense model.

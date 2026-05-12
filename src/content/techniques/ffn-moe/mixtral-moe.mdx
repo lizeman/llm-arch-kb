@@ -13,6 +13,9 @@ problem_solved: "Sparsely activate a small number of large experts per token. Co
 predecessors: ["switch-transformer"]
 successors: ["deepseek-moe"]
 adopted_by:
+  - model: "mixtral-8x7b"
+    source_url: "https://arxiv.org/abs/2401.04088"
+    notes: "Reference implementation — 8 SwiGLU experts per layer, top-2 routing, all 32 transformer layers MoE."
   - model: "olmoe-1b-7b"
     source_url: "https://arxiv.org/abs/2409.02060"
     notes: "Top-8 routing across 64 small experts; coarse-MoE recipe without DeepSeekMoE's shared experts."

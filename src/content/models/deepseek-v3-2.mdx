@@ -1,0 +1,54 @@
+---
+name: "DeepSeek V3.2-Exp"
+organization: "DeepSeek-AI"
+release_date: "2025-09-29"
+parameters_total: "671B"
+parameters_active: "37B"
+context_length: 128000
+open_weights: true
+paper_url: "https://arxiv.org/abs/2509.04559"
+model_card_url: "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (decoupled head for MLA)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "MLA + DeepSeek Sparse Attention (Lightning Indexer + top-K key selection)"
+  moe: "DeepSeekMoE with aux-loss-free routing"
+  other:
+    - "Same V3 base: 671B total, 37B active, 61 layers"
+    - "First production model with DSA — sparse attention via learned top-K selection"
+    - "'Exp' label: experimental release, not the mainline V4"
+source_urls:
+  - "https://arxiv.org/abs/2509.04559"
+  - "https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp"
+  - "https://github.com/deepseek-ai/DeepSeek-V3.2-Exp"
+notes: "The V3 base architecture plus DeepSeek Sparse Attention. The DSA layer slots into the existing MLA stack; everything else (MoE, routing, FFN, normalization) carries over from V3. See the DSA technique entry for the attention-side details."
+---
+
+DeepSeek V3.2-Exp (September 2025) is the experimental V3 derivative that ships
+[DeepSeek Sparse Attention (DSA)](/llm-arch-kb/attention/dsa/) as the long-context efficiency
+mechanism. Architecturally it is V3 plus one new layer: the Lightning Indexer + top-K key
+selection that sits on top of MLA.
+
+Everything else carries over from [DeepSeek V3](/llm-arch-kb/models/deepseek-v3/):
+
+- 671B total parameters, 37B active per token
+- 61 transformer layers
+- [MLA](/llm-arch-kb/attention/mla/) attention with a
+  [decoupled RoPE head](/llm-arch-kb/positional/decoupled-rope/)
+- [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) with
+  [aux-loss-free routing](/llm-arch-kb/ffn-moe/aux-loss-free/)
+- Pre-Norm RMSNorm, SwiGLU FFN
+- 128K context window via [YaRN](/llm-arch-kb/positional/yarn/) extension
+
+The "Exp" label signals that DeepSeek treats this as an experimental release rather than the
+mainline V4. The DSA mechanism is novel enough that long-term behavior at extreme contexts
+and on retrieval-heavy tasks is still under study; V3.2 lets the open community evaluate the
+approach at frontier scale before it gets baked into a fully numbered release.
+
+For the architectural details specific to V3.2 — how the Lightning Indexer is trained, how
+top-K selection interacts with the MLA latent cache, the cost/quality tradeoff at 128K — see
+the [DSA technique entry](/llm-arch-kb/attention/dsa/).

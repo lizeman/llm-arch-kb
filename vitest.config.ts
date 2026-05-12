@@ -14,6 +14,13 @@ export default defineConfig({
       "~": SRC,
     },
   },
+  // When running from a git worktree nested under another checkout (e.g. the
+  // .claude/worktrees/ pattern this repo uses), pnpm can pull packages from
+  // the parent checkout's node_modules cache. Vite 5's default fs.strict
+  // refuses to serve those files. Loosening this is safe for unit tests.
+  server: {
+    fs: { strict: false },
+  },
   test: {
     environment: "jsdom",
     globals: true,

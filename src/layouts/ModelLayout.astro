@@ -1,5 +1,6 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
+import StaleBanner from "~/components/StaleBanner.astro";
 import { techniquesAdoptedBy } from "~/utils/adoption-graph";
 import { ARCH_SLOTS, displayArch } from "~/utils/architecture";
 import { BASE } from "~/utils/site";
@@ -31,6 +32,7 @@ interface Props {
     architecture: ArchitectureSpec;
     source_urls: string[];
     notes?: string;
+    last_verified?: string;
   };
   slug: string;
 }
@@ -50,6 +52,7 @@ const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
 
 <BaseLayout title={frontmatter.name} description={`${frontmatter.name} — architecture spec sheet.`}>
   <article class="prose">
+    <StaleBanner last_verified={frontmatter.last_verified} />
     <header class="entry-header">
       <p class="section-eyebrow">Production model</p>
       <h1>{frontmatter.name}</h1>

@@ -153,6 +153,7 @@ export default function MemorizingKnn() {
           <span>Memory bank size N</span>
           <input
             type="range"
+            aria-label="Memory bank size N"
             min={20}
             max={200}
             step={5}
@@ -166,6 +167,7 @@ export default function MemorizingKnn() {
           <span>Retrieval budget K</span>
           <input
             type="range"
+            aria-label="Retrieval budget K"
             min={1}
             max={32}
             step={1}
@@ -179,6 +181,7 @@ export default function MemorizingKnn() {
           <span>Query X position</span>
           <input
             type="range"
+            aria-label="Query X position"
             min={-0.8}
             max={0.8}
             step={0.02}
@@ -192,6 +195,7 @@ export default function MemorizingKnn() {
           <span>Query Y position</span>
           <input
             type="range"
+            aria-label="Query Y position"
             min={-0.8}
             max={0.8}
             step={0.02}

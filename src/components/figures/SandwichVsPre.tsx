@@ -157,6 +157,7 @@ export default function SandwichVsPre() {
           <span>Depth (layers)</span>
           <input
             type="range"
+            aria-label="Depth (layers)"
             min={4}
             max={200}
             step={1}
@@ -170,6 +171,7 @@ export default function SandwichVsPre() {
           <span>Sublayer perturbation σ</span>
           <input
             type="range"
+            aria-label="Sublayer perturbation σ"
             min={0.1}
             max={3}
             step={0.05}

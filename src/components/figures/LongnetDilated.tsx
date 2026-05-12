@@ -153,6 +153,7 @@ export default function LongnetDilated() {
           <span>Number of heads / dilation rates H</span>
           <input
             type="range"
+            aria-label="Number of heads / dilation rates H"
             min={1}
             max={6}
             step={1}
@@ -170,6 +171,7 @@ export default function LongnetDilated() {
           <span>Window per head W</span>
           <input
             type="range"
+            aria-label="Window per head W"
             min={1}
             max={16}
             step={1}
@@ -183,6 +185,7 @@ export default function LongnetDilated() {
           <span>Highlighted head index</span>
           <input
             type="range"
+            aria-label="Highlighted head index"
             min={0}
             max={H() - 1}
             step={1}

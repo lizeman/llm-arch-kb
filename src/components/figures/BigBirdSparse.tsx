@@ -154,6 +154,7 @@ export default function BigBirdSparse() {
           <span>Window width W</span>
           <input
             type="range"
+            aria-label="Window width W"
             min={0}
             max={16}
             step={1}
@@ -167,6 +168,7 @@ export default function BigBirdSparse() {
           <span>Random keys per query R</span>
           <input
             type="range"
+            aria-label="Random keys per query R"
             min={0}
             max={8}
             step={1}
@@ -180,6 +182,7 @@ export default function BigBirdSparse() {
           <span>Global positions G</span>
           <input
             type="range"
+            aria-label="Global positions G"
             min={0}
             max={6}
             step={1}

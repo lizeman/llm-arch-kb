@@ -159,6 +159,7 @@ export default function LayerNormVsRMS() {
           <span>Constant bias added to every dim</span>
           <input
             type="range"
+            aria-label="Constant bias added to every dim"
             min={-2}
             max={2}
             step={0.05}
@@ -172,6 +173,7 @@ export default function LayerNormVsRMS() {
           <span>Multiplicative scale</span>
           <input
             type="range"
+            aria-label="Multiplicative scale"
             min={0.1}
             max={3}
             step={0.05}

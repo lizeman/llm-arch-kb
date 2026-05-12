@@ -132,6 +132,7 @@ export default function ReZeroAlpha() {
           <span>Per-block α scalar</span>
           <input
             type="range"
+            aria-label="Per-block α scalar"
             min={0}
             max={1}
             step={0.005}

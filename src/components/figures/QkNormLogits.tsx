@@ -172,6 +172,7 @@ export default function QkNormLogits() {
           <span>Outlier magnitude added to q[{outlierDim()}]</span>
           <input
             type="range"
+            aria-label="Outlier magnitude added to q[{outlierDim()}]"
             min={0}
             max={20}
             step={0.1}
@@ -185,6 +186,7 @@ export default function QkNormLogits() {
           <span>Coordinate to perturb</span>
           <input
             type="range"
+            aria-label="Coordinate to perturb"
             min={0}
             max={D - 1}
             step={1}

@@ -131,6 +131,7 @@ export default function SlidingWindow() {
           <span>Window size W</span>
           <input
             type="range"
+            aria-label="Window size W"
             min={1}
             max={N}
             step={1}
@@ -144,6 +145,7 @@ export default function SlidingWindow() {
           <span>Stacked layers</span>
           <input
             type="range"
+            aria-label="Stacked layers"
             min={1}
             max={32}
             step={1}

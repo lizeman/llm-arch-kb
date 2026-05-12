@@ -132,6 +132,7 @@ export default function SwiGluCurves() {
           <span>Swish sharpness β</span>
           <input
             type="range"
+            aria-label="Swish sharpness β"
             min={0.1}
             max={5}
             step={0.05}

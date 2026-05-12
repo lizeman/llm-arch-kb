@@ -168,6 +168,7 @@ export default function LinformerProjection() {
           <span>Projection rank k</span>
           <input
             type="range"
+            aria-label="Projection rank k"
             min={1}
             max={L}
             step={1}

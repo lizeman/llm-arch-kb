@@ -148,6 +148,7 @@ export default function YarnBands() {
           <span>Context scale s = T_new / T_train</span>
           <input
             type="range"
+            aria-label="Context scale s = T_new / T_train"
             min={1}
             max={32}
             step={0.5}
@@ -161,6 +162,7 @@ export default function YarnBands() {
           <span>r_min (slow threshold)</span>
           <input
             type="range"
+            aria-label="r_min (slow threshold)"
             min={0.5}
             max={8}
             step={0.5}
@@ -174,6 +176,7 @@ export default function YarnBands() {
           <span>r_max (fast threshold)</span>
           <input
             type="range"
+            aria-label="r_max (fast threshold)"
             min={8}
             max={64}
             step={1}

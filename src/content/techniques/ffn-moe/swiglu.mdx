@@ -37,11 +37,14 @@ adopted_by:
   - model: "minimax-01"
     source_url: "https://arxiv.org/abs/2501.08313"
     notes: "SwiGLU FFN inside each routed expert."
+figure_component: "SwiGluCurves"
+figure_caption: "Drag β to sharpen Swish; toggle the bilinear gate output. SwiGLU's actual 1D shape is Swish(x)·x, not just Swish(x)."
 summary: "Replace the FFN with a Swish-gated bilinear form: one linear path multiplied element-wise by Swish of another. Consistent quality win over ReLU/GELU at matched parameter count; the default modern FFN."
 tags: ["ffn", "consensus-stack"]
 last_verified: "2026-05-11"
 ---
 
+import SwiGluCurves from "~/components/figures/SwiGluCurves";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -84,6 +87,8 @@ def swiglu_ffn(x, W, V, W2):
 def silu(z):
     return z * z.sigmoid()
 ```
+
+<SwiGluCurves client:visible />
 
 <p class="section-eyebrow">§ 3 · Parameter accounting</p>
 ## Why d_ff = 8/3 · d_model

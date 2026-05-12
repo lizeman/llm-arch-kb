@@ -24,6 +24,9 @@ figure_caption: "Inject an outlier into one query coordinate. The raw softmax co
 summary: "Normalize Q and K before the attention dot product so the logit magnitude stays bounded — a near-free fix for the outlier blow-ups that wreck attention at long context."
 tags: ["normalization", "attention-stability"]
 last_verified: "2026-05-11"
+difficulty: "intermediate"
+facets:
+  - "training-stability"
 ---
 
 import QkNormLogits from "~/components/figures/QkNormLogits";

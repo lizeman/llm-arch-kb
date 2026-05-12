@@ -18,6 +18,7 @@ tags: ["positional", "research"]
 last_verified: "2026-05-11"
 ---
 
+import NoPeOrder from "~/components/figures/NoPeOrder";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -63,6 +64,8 @@ def no_pe_attn(q, k, v, causal_mask):
     logits = (q @ k.transpose(-2, -1)) / d_h**0.5
     return (logits + causal_mask).softmax(-1) @ v
 ```
+
+<NoPeOrder client:visible />
 
 <p class="section-eyebrow">§ 3 · Length generalization</p>
 ## What Kazemnejad et al. added

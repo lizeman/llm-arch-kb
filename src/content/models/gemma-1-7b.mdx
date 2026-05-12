@@ -1,0 +1,55 @@
+---
+name: "Gemma 1 7B"
+organization: "Google DeepMind"
+release_date: "2024-02-21"
+parameters_total: "7B"
+context_length: 8192
+open_weights: true
+paper_url: "https://arxiv.org/abs/2403.08295"
+model_card_url: "https://huggingface.co/google/gemma-7b"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10000)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "GeGLU"
+  attention: "MHA (16 query heads, 16 KV heads, head_dim 256)"
+  moe: null
+  other:
+    - "28 layers"
+    - "Wide head dim (256 vs the typical 64–128) is the most distinctive choice"
+    - "GeGLU FFN with hidden_dim 24576 (4× the 6144 d_model)"
+    - "8K context window"
+source_urls:
+  - "https://arxiv.org/abs/2403.08295"
+  - "https://huggingface.co/google/gemma-7b"
+notes: "First open Gemma. Pre-Norm + RMSNorm + RoPE consensus; GeGLU rather than SwiGLU is the distinctive Google choice; MHA with unusually wide head_dim 256. Sandwich placement and interleaved SWA come with Gemma 2."
+---
+
+Gemma 1 7B (February 2024) is the first open release in the Gemma family. The architecture
+follows the early-2024 consensus on three of four major axes — Pre-Norm, RMSNorm, RoPE —
+but diverges from the dominant Llama-aligned stack on the FFN activation and on attention
+geometry:
+
+- **GeGLU** rather than SwiGLU. Gated GELU on the FFN inner activation, not Swish-gated. The
+  difference in benchmark performance is small (~0.1–0.2 perplexity in published Shazeer-style
+  ablations); it's a fingerprint of Google's preferred default rather than a fundamental
+  divergence. See the [GeGLU entry](/llm-arch-kb/ffn-moe/geglu/).
+- **Multi-Head Attention with very wide head dim** — 16 heads at head_dim 256 (rather than
+  the common 32 heads at 128 or 64 heads at 128). This trades the per-token KV-cache footprint
+  upward (128 × 16 × 2 = 4096 floats per token per layer in fp16) in exchange for richer
+  per-head representational capacity. GQA appears in Gemma 2; in Gemma 1, every query head has
+  its own K, V.
+
+The other components are standard: 28 transformer blocks, RoPE base 10000, 8K context window
+without scaling tricks, GeGLU at hidden_dim 24576 (4× the 6144 model dim).
+
+The Gemma 2B variant from the same release uses MQA (one shared KV head) rather than MHA — a
+small-model concession to KV-cache pressure that the 7B doesn't make. The architectural
+divergence between 2B and 7B was reduced in Gemma 2 and 3, which use the same GQA + sandwich
+placement pattern across their entire size families.
+
+For the rest of the family see [Gemma 2 27B](/llm-arch-kb/models/gemma-2-27b/) (sandwich norm
++ interleaved local/global SWA appears) and [Gemma 3 27B](/llm-arch-kb/models/gemma-3-27b/)
+(QK-Norm, norm-everywhere, multimodal).

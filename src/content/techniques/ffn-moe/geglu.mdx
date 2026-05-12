@@ -13,6 +13,9 @@ problem_solved: "Same gated bilinear FFN as SwiGLU, with GELU as the gate activa
 predecessors: ["swiglu"]
 successors: []
 adopted_by:
+  - model: "gemma-1-7b"
+    source_url: "https://arxiv.org/abs/2403.08295"
+    notes: "First open Gemma; established GeGLU as the Google-family default."
   - model: "gemma-2-27b"
     source_url: "https://arxiv.org/abs/2408.00118"
     notes: "GeGLU FFN."

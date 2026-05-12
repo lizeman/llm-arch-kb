@@ -19,6 +19,9 @@ adopted_by:
   - model: "olmo-1-7b"
     source_url: "https://arxiv.org/abs/2402.00838"
     notes: "First OLMo, deliberately Llama-1-derived with MHA."
+  - model: "gemma-1-7b"
+    source_url: "https://arxiv.org/abs/2403.08295"
+    notes: "MHA with unusually wide head_dim 256 (16 query heads, 16 KV heads). GQA only arrived in Gemma 2."
 summary: "The original attention layout: H independent heads, each computing scaled dot-product attention on a d_h-dim subspace, concatenated then projected. Now superseded by GQA, MLA in production decoders, but still the conceptual foundation."
 tags: ["attention", "foundational"]
 last_verified: "2026-05-11"

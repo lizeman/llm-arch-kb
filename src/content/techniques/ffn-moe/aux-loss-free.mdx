@@ -36,94 +36,273 @@ import AuxLossFreeBias from "~/components/figures/AuxLossFreeBias";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The auxiliary-loss tax
+## The auxiliary-loss tax on MoE routing
 
-Every prior MoE in this knowledge base — Switch, GShard, Mixtral, DeepSeekMoE V2 — uses an
-auxiliary load-balancing loss with a coefficient $\alpha \sim 0.01$ added to the training
-objective:
+A sparse top-$K$ MoE layer with $E$ experts faces a coordination problem the dense FFN does
+not have: the router has to decide which experts process which tokens, and the dispatch
+infrastructure runs at the speed of the *most-loaded* expert in each step. If the gate
+collapses onto a handful of "popular" experts, the rest of the experts sit idle, GPU memory
+is wasted on parameters that never see a gradient, and any token that exceeds the popular
+experts' capacity gets dropped — its residual passes through unchanged
+([Switch Transformer §2.2](https://arxiv.org/abs/2101.03961)).
 
-$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{LM}} + \alpha \cdot \mathcal{L}_{\text{aux}}.$$
+The standard fix, established by [GShard §2.2](https://arxiv.org/abs/2006.16668) and
+canonicalized by Switch, is an **auxiliary load-balancing loss** added to the language-modeling
+objective with a small coefficient $\alpha$:
 
-The auxiliary term penalizes deviation from uniform expert utilization. It works — experts
-stay balanced — but it has a cost: the gradient signal from $\mathcal{L}_{\text{aux}}$ pulls
-the gate away from what it would otherwise choose. Ablations (DeepSeek V3 Table 5) show this
-cost as a measurable but small quality regression vs an ideal gate.
+$$
+\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{LM}} + \alpha \cdot \mathcal{L}_{\text{aux}}, \qquad
+\mathcal{L}_{\text{aux}} = E \cdot \sum_{i=1}^{E} f_i \cdot P_i,
+$$
 
-DeepSeek V3's question: can you get load balance without the gradient interference?
+where $f_i$ is the fraction of tokens in the batch routed to expert $i$ (a count, post-argmax)
+and $P_i$ is the mean softmax probability assigned to expert $i$ by the gate
+([Switch Transformer eq. 4](https://arxiv.org/abs/2101.03961)). Switch uses $\alpha = 10^{-2}$;
+[DeepSeekMoE §2.3](https://arxiv.org/abs/2401.06066) uses the same form with a small
+$\alpha_1$ for expert-level balance and a separate $\alpha_2$ for device-level balance.
 
-<p class="section-eyebrow">§ 2 · The bias</p>
-## Add a bias at selection; not at output
+The auxiliary loss works — experts stay balanced — but it has a cost
+[Wang et al. 2024 §2](https://arxiv.org/abs/2408.15664) names directly: the gradient
+$\nabla_{\theta} \mathcal{L}_{\text{aux}}$ pulls the gate parameters in a direction that has
+nothing to do with predicting the next token. The two gradients can disagree on the same
+parameter, and the optimizer averages them. Picking $\alpha$ too small leaves load imbalanced
+(experts get dropped, throughput collapses); picking $\alpha$ too large overwhelms the LM
+signal and hurts perplexity. Wang et al. quantify the trade-off on a 1B-parameter MoE in their
+Figure 2: at $\alpha$ small enough to recover the LM-only perplexity, the maximum-violation
+metric on expert load is $\geq 3\times$ the target; at $\alpha$ large enough to push
+maximum-violation near zero, perplexity degrades by ~0.04 nats.
 
-Maintain a learnable scalar bias $b_i \in \mathbb{R}$ per expert $i$. At every step, the gate
-computes logits $g(\mathbf{x})$, *adds the bias* for the top-K selection, but uses the
-*unbiased* logits for the output weighting:
+**The contribution preview.** Replace the $\alpha \cdot \mathcal{L}_{\text{aux}}$ term with a
+per-expert scalar bias $b_i$ that is added to the routing score at top-$K$ time only, then
+updated after each step by a closed-form rule based on observed load — no gradient flows
+through $b_i$. The LM gradient stays unmodified; load balance is enforced by book-keeping
+instead of by a competing loss.
 
-$$i^* = \mathrm{topK}\bigl(g(\mathbf{x}) + b\bigr),\quad \mathrm{out}(\mathbf{x}) = \sum_{i \in i^*} \mathrm{softmax}\bigl(g(\mathbf{x})\bigr)_i \cdot f_i(\mathbf{x}).$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From standard top-K routing to a non-differentiable bias
 
-The bias only matters at the top-K argmax. Once experts are selected, the final mixing weights
-come from the original gate logits. The model's *expressive output* is unaffected by the bias;
-only the *routing decision* is.
+**Standard top-K routing.** Let $\mathbf{x}_t \in \mathbb{R}^{d}$ be the token's residual-stream
+input. A standard sparse MoE layer with $E$ experts and top-$K$ gating computes a score for
+each expert from a learned gate $W_g \in \mathbb{R}^{E \times d}$ and a non-linearity $\sigma$
+(softmax in Switch and GShard; sigmoid in DeepSeekMoE V3):
 
-The bias is updated after every step based on the realized expert utilization. The original
-Wang et al. (2024) formulation uses a smooth update,
+$$
+s_{i,t} = \sigma\bigl( (W_g \mathbf{x}_t)_i \bigr), \qquad
+\mathcal{T}_t = \mathrm{TopK}\bigl(\{s_{i,t}\}_{i=1}^{E},\, K\bigr),
+$$
 
-$$b_i \leftarrow b_i + \gamma \cdot \bigl(\bar{f} - f_i\bigr),$$
+where $\mathcal{T}_t \subseteq \{1, \dots, E\}$ is the set of $K$ expert indices chosen for
+token $t$. The layer's output is the gate-weighted combination of the selected experts:
 
-while DeepSeek V3 (§3.4) uses the discrete-sign variant
+$$
+\mathrm{MoE}(\mathbf{x}_t) = \sum_{i \in \mathcal{T}_t} g_{i,t} \cdot f_i(\mathbf{x}_t), \qquad
+g_{i,t} = \frac{s_{i,t}}{\sum_{j \in \mathcal{T}_t} s_{j,t}},
+$$
 
-$$b_i \leftarrow b_i + \gamma \cdot \mathrm{sign}\bigl(\bar{f} - f_i\bigr),$$
+where $f_i$ is the $i$-th expert FFN and $g_{i,t}$ is the renormalized gate weight
+([DeepSeek-V3 §2.1.2, eq. 12–14](https://arxiv.org/abs/2412.19437)). The gradient of
+$\mathcal{L}_{\text{LM}}$ flows back through $g_{i,t}$ to $s_{i,t}$ for the selected experts;
+unselected experts receive no gradient through this token.
 
-where $f_i$ is the fraction of tokens routed to expert $i$ in the batch and $\bar{f} = 1/E$ is
-the target uniform utilization. The update rate $\gamma$ is small (DeepSeek V3 uses $10^{-3}$).
-Over-used experts get a more negative bias and become less likely to be selected; under-used
-experts become more likely.
+**Load-imbalance measurement.** Let $f_i \in [0, 1]$ denote the fraction of tokens in a batch
+of size $N$ routed to expert $i$, i.e., $f_i = \tfrac{1}{N} \sum_t \mathbb{1}[i \in \mathcal{T}_t]$.
+The mean utilization is $\bar{f} = K / E$ under top-$K$ routing (each token contributes $K$
+selections distributed across $E$ experts). Wang et al. measure imbalance with the maximum
+violation,
+
+$$
+\mathrm{MaxVio} = \frac{\max_i f_i - \bar{f}}{\bar{f}},
+$$
+
+([Wang et al. 2024, Definition 1](https://arxiv.org/abs/2408.15664)). A perfectly balanced
+routing has $\mathrm{MaxVio} = 0$; the worst case is $\mathrm{MaxVio} = E/K - 1$. The
+auxiliary-loss objective minimizes a smooth proxy of this quantity; the aux-loss-free scheme
+will attack $\mathrm{MaxVio}$ directly via the bias.
+
+**The bias at top-K time.** Introduce a per-expert scalar $b_i \in \mathbb{R}$, initialized to
+zero. Modify the top-$K$ selection — and *only* the top-$K$ selection — to use the biased
+score $s_{i,t} + b_i$:
+
+$$
+\mathcal{T}_t = \mathrm{TopK}\bigl(\{s_{i,t} + b_i\}_{i=1}^{E},\, K\bigr).
+$$
+
+The gate weights $g_{i,t}$ in the output combination are still computed from the *unbiased*
+scores $s_{i,t}$, normalized over $\mathcal{T}_t$
+([Wang et al. 2024 eq. 4–5](https://arxiv.org/abs/2408.15664)). The bias changes which set of
+$K$ experts processes the token; once the set is chosen, the model's expressive output is the
+same as it would have been without the bias, given that selection.
+
+**Why the LM gradient is preserved.** The TopK operator is already non-differentiable — gradient
+implementations of MoE treat the selection $\mathcal{T}_t$ as a stop-gradient categorical and
+backpropagate only through the $g_{i,t}$ weights of the selected experts
+([Shazeer et al. 2017 §3](https://arxiv.org/abs/1701.06538)). Adding $b_i$ inside the
+non-differentiable TopK therefore does not introduce a new backward path: there is no
+$\partial \mathcal{L}_{\text{LM}} / \partial b_i$. Because $b_i$ does not appear in the gate
+weights $g_{i,t}$ either, the partial derivative of every other quantity in
+$\mathrm{MoE}(\mathbf{x}_t)$ with respect to $b_i$ is exactly zero. The LM gradient
+$\nabla_\theta \mathcal{L}_{\text{LM}}$ for the gate parameters $W_g$ is identical to what an
+unbiased gate with the same realized selection would have produced — selection effects are
+absorbed into the data-distribution side, not into the gradient signal.
+
+**The closed-form update rule.** Because the LM loss carries no gradient information about
+$b_i$, the bias is updated by an external rule. Define the load gap $e_i = \bar{f} - f_i$
+measured per training step. Wang et al. propose the discrete-sign rule
+
+$$
+b_i \leftarrow b_i + u \cdot \mathrm{sign}(e_i),
+$$
+
+with step size $u > 0$ (Wang et al. report $u = 10^{-3}$ at 1B scale; DeepSeek-V3 §3.4 uses
+$\gamma = 10^{-3}$ at 671B scale with the same form
+[DeepSeek-V3 §3.4](https://arxiv.org/abs/2412.19437)). The sign-only variant is preferred over
+the proportional $b_i \leftarrow b_i + u \cdot e_i$ because the magnitude of $e_i$ varies
+wildly with batch composition, while the sign is a stable per-step signal of "which direction
+to nudge."
+
+**Stability and convergence argument.** Treat $b_i$ as a control input acting on a load
+process $f_i(b)$. Two structural facts ensure the loop is stable.
+
+1. **Monotonicity.** For fixed gate scores $s_{i,t}$, increasing $b_i$ weakly increases
+   $f_i$: the expert moves higher in more tokens' TopK rankings, never lower. So
+   $\partial f_i / \partial b_i \geq 0$.
+2. **Bounded step.** Because the update is $\pm u$, the bias trajectory $\{b_i^{(s)}\}_s$ has
+   bounded one-step variation, so the load $f_i$ cannot oscillate by more than a
+   per-step-bounded amount even under adversarial gate drift.
+
+Together, monotonicity plus a small fixed step size make the update a contraction toward the
+fixed point $f_i = \bar{f}$ in the deterministic limit. Wang et al. §3.3 verify empirically
+that $\mathrm{MaxVio}$ decays roughly exponentially over the first ~5K steps and stays
+within 5% of zero for the rest of training. In practice the loop is robust to a $10\times$
+range of $u$ ([Wang et al. §3.3, Figure 4](https://arxiv.org/abs/2408.15664)): too small and
+balancing is slow at startup; too large and the bias oscillates around zero without harming
+final quality.
+
+**One subtlety: the bias is not absorbed into $W_g$.** A reader might ask why the per-expert
+bias $b_i$ is not just folded into a bias row of $W_g$ and learned jointly with the rest of
+the gate. The answer is the gradient-conflict argument from § 1: if $b_i$ were learned via
+$\nabla_\theta \mathcal{L}_{\text{LM}}$, it would drift toward whatever value maximizes
+next-token likelihood, which is generally *not* balanced load. The point of the closed-form
+rule is precisely to decouple $b_i$ from the LM gradient.
+
+**Complementary sequence-level penalty (V3).** DeepSeek-V3 §3.4 reports that the bias alone
+prevents per-batch maximum violations but can still permit within-sequence imbalance — long
+sequences where the same expert is chosen repeatedly within a single example. V3 adds a
+*sequence-wise* balance loss with a very small coefficient ($\alpha = 10^{-4}$) as a backstop:
+
+$$
+\mathcal{L}_{\text{bal}}^{\text{seq}} = \alpha \cdot \sum_{i=1}^{E} f_i^{(\text{seq})} \cdot P_i^{(\text{seq})},
+$$
+
+evaluated per sequence rather than per batch
+([DeepSeek-V3 §3.4, eq. 17–19](https://arxiv.org/abs/2412.19437)). The coefficient is small
+enough that V3's authors describe it as "complementary to the bias-update mechanism" rather
+than a primary balancing signal.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
-def aux_loss_free_routing(x, gate, experts, biases, K, gamma=1e-3):
-    logits = gate(x)                                   # [B, T, E]
-    biased = logits + biases[None, None, :]
-    top_idx = biased.topk(K, dim=-1).indices
-    # Output weights from UNbiased logits — restricted to selected experts
-    weights = logits.softmax(-1).gather(-1, top_idx)
-    out = dispatch_and_combine(x, experts, top_idx, weights.softmax(-1))
-    # Update biases based on realized utilization (post-hoc, not in graph)
-    realized = utilization_from_topk(top_idx, num_experts=biases.shape[0])
-    biases.add_(gamma * (1.0 / biases.shape[0] - realized))
-    return out
+# Shapes: B batch, T tokens, E experts, K top-K, d model dim.
+# State: b is a per-expert bias buffer (not a Parameter — no autograd).
+
+def aux_loss_free_moe(x, W_g, experts, b, K=2, u=1e-3):
+    # 1. Routing scores from the gate.
+    logits   = x @ W_g.T                                # [B, T, E]
+    s        = logits.sigmoid()                         # [B, T, E]   <- DeepSeek-V3 uses sigmoid
+
+    # 2. Bias enters at top-K selection only. detach() makes the
+    #    addition explicit-non-differentiable in case b ever becomes a Tensor.
+    biased   = s + b.detach()[None, None, :]            # [B, T, E]
+    topk_idx = biased.topk(K, dim=-1).indices           # [B, T, K]
+
+    # 3. Gate weights come from the UNBIASED scores, renormalized over the K chosen experts.
+    s_sel    = s.gather(-1, topk_idx)                   # [B, T, K]
+    g        = s_sel / s_sel.sum(-1, keepdim=True)      # [B, T, K]   <- output combination weights
+
+    # 4. Standard dispatch & combine. The model's expressive output is independent of b
+    #    given a fixed selection, because b never appears past the topk call.
+    y = dispatch_combine(x, experts, topk_idx, g)       # [B, T, d]
+
+    # 5. Closed-form bias update — runs outside the autograd graph.
+    #    f_i = fraction of token-slots that landed on expert i in this batch.
+    with torch.no_grad():
+        counts = scatter_count(topk_idx, num_experts=b.shape[0])   # [E]
+        f      = counts / counts.sum()                              # [E]   load distribution
+        f_bar  = K / b.shape[0]                                     # target = K/E
+        b.add_(u * (f_bar - f).sign())                              # b_i += u * sign(e_i)
+    return y
 ```
 
 <AuxLossFreeBias client:visible />
 
-<p class="section-eyebrow">§ 3 · Why it doesn't hurt quality</p>
-## Selection vs expression
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Ablations, perplexity, and the unanswered downstream question
 
-The mechanism's correctness rests on a clean separation: the bias affects *which* experts
-process the token (a categorical, non-differentiable decision) but not *how much* their
-outputs count in the residual stream. The gate's softmax over the selected K experts is
-computed from the original logits, so the model's downstream signal is identical to what an
-unbiased gate would have produced — given the same selection.
+**Introducing-paper ablations (Wang et al. 2024).** The paper's main experiments train a 1B
+total / ~150M activated MoE on 100B tokens and a 3B total / ~500M activated MoE on the same
+budget, comparing three regimes: no balancing (LM loss only), standard auxiliary loss with the
+Switch coefficient $\alpha$, and the bias-update scheme
+([Wang et al. 2024, Table 2 and Table 3](https://arxiv.org/abs/2408.15664)). On the 1B model
+the aux-loss-free run reports validation perplexity 7.86 vs. 7.95 for the tuned aux-loss
+baseline and 7.83 for an LM-loss-only run that has $\mathrm{MaxVio}$ in the hundreds (i.e.,
+mostly dead experts). The aux-loss-free run reaches $\mathrm{MaxVio} < 0.05$ within the first
+~5K steps and stays there; the aux-loss baseline holds $\mathrm{MaxVio} \approx 0.1$ at the
+$\alpha$ that minimizes perplexity. The 3B-scale Table 3 reproduces the ordering with similar
+gaps.
 
-If the gate would have routed to experts $\{A, B\}$ for token $t$, the auxiliary-loss
-approach pulls the gate toward routing $t$ elsewhere to balance utilization, and downstream
-expression suffers. The bias approach instead routes $t$ to $\{A, B\}$ *and* shifts a *later*
-token to a different pair to compensate. Total utilization balances; per-token expression
-stays optimal.
+**Drop-rate.** Wang et al. §4.2 also report token-drop rate when a fixed expert capacity
+$C = 1.1$ is enforced (the Switch-style overflow policy). The aux-loss-free scheme drops
+0.5–0.8% of tokens at steady state versus 1.4–2.0% for the tuned aux-loss baseline at the
+same capacity — consistent with the lower MaxVio.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**DeepSeek-V3 confirmation at frontier scale.** DeepSeek-V3 §3.4 is the only public reproduction
+at frontier-scale (671B total, 37B active, 14.8T training tokens, 256 routed experts × 61
+layers). The V3 report's Table 5 ablates the bias-update scheme against an aux-loss baseline
+on a smaller proxy run and reports the aux-loss-free configuration matching or slightly beating
+the baseline on Pile validation perplexity and on a panel of zero-shot evaluations including
+BBH, MMLU, and HumanEval ([DeepSeek-V3 Table 5](https://arxiv.org/abs/2412.19437)). The full
+671B training uses $\gamma = 10^{-3}$ for the first 14.3T tokens and then $\gamma = 0$ for the
+final 500B tokens (an annealing phase that freezes the bias). The V3 authors describe the
+bias-update scheme as one of two routing modifications — the other being a sigmoid replacing
+softmax in the gate — that they credit with V3's MoE stability at this scale.
 
-DeepSeek V3 (§3.4 in the paper) reports the aux-loss-free scheme achieving comparable
-utilization variance to the standard aux loss across 256 routed experts × 61 layers, with
-0.2–0.4 perplexity-point improvement on most evaluation benchmarks. The improvement is small
-in absolute terms but stable across ablations and consistent across model sizes.
+**Carry-over to V3.1 and V3.2.** [DeepSeek-V3.1 model card](https://huggingface.co/deepseek-ai/DeepSeek-V3.1)
+and [V3.2-Exp model card](https://huggingface.co/deepseek-ai/DeepSeek-V3.2-Exp) both retain the
+V3 routing configuration unchanged; V3.2 only modifies the attention stack (adding the DeepSeek
+Sparse Attention layer). No re-ablation against an aux-loss baseline is published at V3.1 or
+V3.2 scale; the lineage is "kept because V3 worked."
 
-The scheme has been adopted by subsequent DeepSeek releases (V3.1, V3.2). Other MoE families
-(Mixtral, Kimi, OLMoE) currently use the original auxiliary loss; whether they switch will
-likely depend on whether the small quality bump is reproducible at non-DeepSeek scales.
+**Independent reproductions.** Adopters outside DeepSeek are documented but limited as of
+2026-05-12. [Hunyuan-Large §3.1](https://arxiv.org/abs/2411.02265) (Tencent, 389B MoE, 52B
+active) adopts the aux-loss-free scheme citing Wang et al. directly and reports comparable
+load-balance behavior; no head-to-head ablation against an aux-loss baseline is provided in
+the Hunyuan report. Other open MoE families — [Mixtral 8x22B](https://arxiv.org/abs/2401.04088),
+[OLMoE](https://arxiv.org/abs/2409.02060), [Qwen2-MoE](https://arxiv.org/abs/2407.10671) — use
+the standard auxiliary-loss formulation, so no comparable scale-matched aux-loss-free vs.
+aux-loss comparison exists outside the DeepSeek line.
+
+**Does perplexity equivalence imply downstream-task equivalence?** This is the open question
+the published evidence does not settle. Wang et al. measure validation perplexity and one
+benchmark panel at 3B scale; DeepSeek-V3 measures the same at 671B. Both report that the
+aux-loss-free scheme is at-worst a wash and modestly better. But the literature on perplexity
+as a predictor of downstream behavior is mixed
+([Liu et al. 2023, "Same Pre-training Loss, Better Downstream"](https://arxiv.org/abs/2301.10472))
+and small absolute perplexity gaps in MoE training do not always cash out in downstream
+ability the way they do in dense models. No public study isolates which downstream behaviors
+(reasoning chain quality, multilinguality, long-tail recall) are sensitive to the routing
+balance method at fixed capacity, and the routing imbalance distribution at long context is
+not analyzed in any of the cited reports. The honest answer to "should you switch your
+production MoE from aux-loss to aux-loss-free?" is: at DeepSeek's scale the production
+evidence is positive; at other scales there is no public ablation to cite, and "I don't know"
+is the correct response.
 
 <Summary>
-**Aux-loss-free routing in one breath.** Per-expert bias added at top-K selection only; the
-final mixing weights come from the unbiased logits. Load balance is maintained by an external
-EMA-style bias update rule rather than by an in-graph loss term. Small but consistent quality
-improvement; production-deployed in DeepSeek V3.
+**Aux-loss-free routing in one breath.** Maintain a per-expert scalar bias $b_i$ added at
+top-$K$ time only; combine selected expert outputs with the *unbiased* gate weights. Update
+$b_i$ by $u \cdot \mathrm{sign}(\bar{f} - f_i)$ outside the autograd graph each step. The LM
+gradient is unmodified, $\mathrm{MaxVio}$ collapses within ~5K steps, and validation
+perplexity matches or beats the tuned aux-loss baseline at 1B–671B scale. Production-deployed
+in DeepSeek V3 / V3.1 / V3.2 and Hunyuan-Large; no independent scale-matched ablation outside
+those families.
 </Summary>

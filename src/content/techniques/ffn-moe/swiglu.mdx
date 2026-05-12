@@ -76,82 +76,213 @@ import SwiGluCurves from "~/components/figures/SwiGluCurves";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The vanilla FFN
+## Where the parameters live
 
-The transformer's feed-forward network has been the same since 2017: two linear layers with an
-elementwise nonlinearity between them.
+Half of a dense decoder-only transformer's parameters live in its feed-forward sub-layers. For a
+Llama-2 70B-class model the count is concrete: hidden width $d_{\text{model}} = 8192$,
+FFN inner width $d_{\text{ff}} = 28672$, $L = 80$ blocks. The attention sub-layer contributes
+$4 \cdot d_{\text{model}}^2 \approx 2.7 \times 10^8$ parameters per block (ignoring GQA savings);
+the FFN sub-layer contributes $3 \cdot d_{\text{model}} \cdot d_{\text{ff}} \approx 7.0 \times 10^8$
+with three projections, or $2 \cdot d_{\text{model}} \cdot d_{\text{ff}} \approx 4.7 \times 10^8$
+with the older two-projection variant. Either way, the FFN dominates per-block parameters by 2-3×
+and, at the long-context regime where attention does not yet bottleneck on KV cache, dominates
+per-token FLOPs at roughly the same ratio. A measurable quality move on the FFN compounds across
+$L$ layers and trillions of tokens.
 
-$$\mathrm{FFN}(\mathbf{x}) = W_2\,\phi(W_1\mathbf{x}),$$
+The activation inside that FFN has a short lineage. The original transformer used ReLU
+([Vaswani et al. 2017 §3.3](https://arxiv.org/abs/1706.03762)) — $\max(0, x)$, two projections,
+$d_{\text{ff}} = 4 \cdot d_{\text{model}}$. BERT and the GPT family switched to
+[GELU](https://arxiv.org/abs/1606.08415) ($x \cdot \Phi(x)$, where $\Phi$ is the standard normal
+CDF); the curve is smooth at zero and weights the input by its z-score under a Gaussian, recovering
+ReLU's behavior on the tails while reactivating gradient near zero. Swish was proposed shortly after
+by Ramachandran et al. ([1710.05941](https://arxiv.org/abs/1710.05941)) — $x \cdot \sigma(\beta x)$,
+where $\sigma$ is the logistic sigmoid and $\beta$ controls the sharpness — found by an automated
+activation-function search; at $\beta = 1$ it is sometimes called SiLU. None of these change the
+two-layer shape of the FFN; they only change the pointwise nonlinearity sandwiched between.
 
-where $\phi$ is ReLU in the original paper, GELU in BERT and later. The hidden dim is typically
-$4 \cdot d_{\text{model}}$ — most of a transformer's parameters live here.
+A separate thread of work attacked the shape itself. Dauphin et al. ([1612.08083](https://arxiv.org/abs/1612.08083))
+proposed the Gated Linear Unit (GLU) for convolutional language models: split a linear projection
+into two halves, push one half through a sigmoid, multiply elementwise. The gating half learns *what*
+to forward; the linear half learns *what value* to forward. Empirically GLU outperformed
+LSTM-equivalent gating on WikiText-103 perplexity at lower latency. The mechanism was never adopted
+inside the transformer FFN, because the transformer had its own ReLU/GELU activation working well
+enough.
 
-Two facts motivate replacing it:
+Shazeer's 2020 paper closes the gap. He swaps the sigmoid in GLU for Swish (and tries GELU, ReLU,
+bilinear, etc.) and drops the resulting gated two-path block into a T5 encoder-decoder's FFN.
+SwiGLU — the Swish variant — wins the ablation by 0.6-1.3 perplexity points at matched parameter
+count and is now the default FFN in every open frontier dense LLM.
 
-1. Gating mechanisms (LSTM, GLU) consistently outperform ungated versions in sequence tasks.
-2. The FFN does most of the model's parameter-bound work; even a small per-step quality bump
-   compounds.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From a two-projection FFN to a three-projection gated form
 
-<p class="section-eyebrow">§ 2 · The gate</p>
-## A bilinear, Swish-gated form
+Start from the vanilla transformer FFN. For a single token $\mathbf{x} \in \mathbb{R}^{d_{\text{model}}}$,
 
-GLU (Dauphin et al. 2017) replaces $\phi$ with an elementwise gate: split the projection into
-two halves, push one through a sigmoid, multiply. SwiGLU swaps the sigmoid for Swish (a.k.a.
-SiLU): $\mathrm{Swish}(z) = z \cdot \sigma(z)$.
+$$
+\mathrm{FFN}(\mathbf{x}) \;=\; \phi(\mathbf{x} W_1)\,W_2,
+$$
 
-$$\mathrm{SwiGLU}(\mathbf{x}) = \bigl(W\mathbf{x}\bigr) \odot \mathrm{Swish}\bigl(V\mathbf{x}\bigr),$$
+where $W_1 \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$ projects up to the inner width,
+$\phi : \mathbb{R} \to \mathbb{R}$ is the elementwise nonlinearity (ReLU or GELU), and
+$W_2 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$ projects back down. Biases have been
+dropped — every modern stack from Llama 1 onward omits them, following the
+[PaLM tech report](https://arxiv.org/abs/2204.02311) §2's stability finding. Parameter count
+is $2\,d_{\text{model}}\,d_{\text{ff}}$. The original transformer sets $d_{\text{ff}} = 4\,d_{\text{model}}$
+(Vaswani et al. 2017 Table 3), so the FFN is $\approx 8\,d_{\text{model}}^2$ parameters.
 
-then a third projection back to $d_{\text{model}}$:
+Dauphin et al.'s GLU replaces the $\phi$ on the bulk linear path with a multiplicative gate:
 
-$$\mathrm{FFN}_{\text{SwiGLU}}(\mathbf{x}) = W_2\bigl((W\mathbf{x}) \odot \mathrm{Swish}(V\mathbf{x})\bigr).$$
+$$
+\mathrm{GLU}(\mathbf{x}) \;=\; (\mathbf{x} W) \,\odot\, \sigma(\mathbf{x} V),
+$$
+
+with $W, V \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$, $\odot$ elementwise product,
+and $\sigma(z) = 1/(1 + e^{-z})$ the logistic sigmoid. The first path $\mathbf{x} W$ is purely
+linear; the second path $\sigma(\mathbf{x} V)$ produces a gate value in $(0, 1)$ per inner unit.
+The gate decides how much of each linear component to let through.
+
+Two facts to register about this form. First, it is *bilinear* in the input: each output coordinate
+is a product of two linear functions of $\mathbf{x}$, so the function class is strictly richer than
+the affine-then-pointwise-nonlinearity class of the vanilla FFN. Second, the gradient through the
+gate side is bounded because $\sigma$ saturates — at $|\mathbf{x} V| \gg 0$ the gate is locked open
+or closed and the gradient with respect to $V$ vanishes. The same saturation is what motivates
+swapping $\sigma$ for a non-saturating gate.
+
+Define the Swish activation ([Ramachandran et al. 2017](https://arxiv.org/abs/1710.05941),
+also called SiLU when $\beta = 1$):
+
+$$
+\mathrm{Swish}_\beta(z) \;=\; z \cdot \sigma(\beta z),
+\qquad
+\mathrm{Swish}_1(z) \;=\; z \cdot \sigma(z).
+$$
+
+Unlike $\sigma$, Swish is unbounded above (it is asymptotically linear for $z \to +\infty$) and
+has a small non-monotonic dip just below zero. Its gradient does not vanish on the positive
+tail. The Ramachandran paper found $\beta \approx 1$ via parameterized search; almost every
+production use fixes $\beta = 1$ and uses the SiLU name.
+
+Substituting Swish for $\sigma$ in GLU and tacking a down-projection on the end gives SwiGLU's
+FFN sub-layer in the form Shazeer reports:
+
+$$
+\mathrm{FFN}_{\text{SwiGLU}}(\mathbf{x}) \;=\; \bigl[\,(\mathbf{x} W_1)\,\odot\,\mathrm{Swish}_1(\mathbf{x} W_g)\,\bigr]\,W_2.
+$$
+
+Three named weight matrices: $W_1 \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$ for
+the linear value path, $W_g \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$ for the gate
+path (Shazeer calls it $V$; the Llama-1 reference implementation
+[meta-llama/llama](https://github.com/meta-llama/llama/blob/main/llama/model.py) names it
+`w3`/`w_gate`), $W_2 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$ for the down-projection.
+Total parameter count is $3\,d_{\text{model}}\,d_{\text{ff}}$ — one matrix more than the vanilla
+FFN at the same inner width.
+
+To hold parameter count constant across the substitution, shrink $d_{\text{ff}}$ by $2/3$:
+
+$$
+d_{\text{ff}}^{\text{SwiGLU}} \;=\; \tfrac{2}{3} \cdot d_{\text{ff}}^{\text{vanilla}}
+\;=\; \tfrac{2}{3} \cdot 4\,d_{\text{model}}
+\;=\; \tfrac{8}{3}\,d_{\text{model}}.
+$$
+
+That is the source of the $8/3$ convention now standard in Llama, DeepSeek, and OLMo. PaLM and
+Llama-2 round to a nearby hardware-friendly multiple (for Llama-2 70B, $\lceil 8/3 \cdot 8192 \rceil$
+rounded up to the nearest multiple of 256 = $28672$, per the
+[Llama 2 paper](https://arxiv.org/abs/2307.09288) Table 1). Gemma 1/2/3 use the same 2/3 shrink
+applied to GeGLU; see the [Gemma 3 tech report](https://arxiv.org/abs/2503.19786) §3.1.
+
+Why the gate is expected to help — three readings, none individually conclusive. *Expressivity:*
+the gated form is bilinear, so each layer can represent products of features that an ungated FFN
+cannot represent without depth. *Conditional computation:* the gate can drive units toward zero
+on inputs where they are not useful, acting as a per-token soft mixture over the inner
+$d_{\text{ff}}$ units. *Optimization:* Swish's unbounded positive tail keeps gradients alive in
+both branches, where a $\sigma$ gate would saturate. Shazeer states none of these as a theoretical
+claim. His paper's conclusion is famous for refusing to: "We offer no explanation as to why these
+architectures seem to work; we attribute their success, as all else, to divine benevolence." The
+evidence in § 4 is empirical, not derived.
+
+Per-token compute, accounting for the matched-parameter convention: vanilla FFN does
+$2 \cdot 2\,d_{\text{model}}\,d_{\text{ff}}^{\text{vanilla}} = 16\,d_{\text{model}}^2$ multiply-adds
+(two matmuls of size $d_{\text{model}} \times d_{\text{ff}}^{\text{vanilla}}$). SwiGLU does
+$2 \cdot 3\,d_{\text{model}}\,d_{\text{ff}}^{\text{SwiGLU}} = 16\,d_{\text{model}}^2$ multiply-adds
+(three matmuls of size $d_{\text{model}} \times d_{\text{ff}}^{\text{SwiGLU}}$). The matmul FLOPs
+are exactly matched. The deltas are: one extra elementwise Swish evaluation per inner unit, one
+extra elementwise multiply for the gate, and a third weight-matrix's worth of memory traffic on
+each pass — a constant-factor traffic increase that the smaller $d_{\text{ff}}$ partially offsets.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## The three-projection FFN block
 
 ```python
-def swiglu_ffn(x, W, V, W2):
-    # x: [..., d_model]
-    # W, V: [d_ff, d_model]
-    # W2: [d_model, d_ff]
-    return (x @ W.T) * silu(x @ V.T) @ W2.T
+def swiglu_ffn(x, W1, W_gate, W2):
+    # x:       [B, T, d_model]    one token activation per (batch, position)
+    # W1:      [d_model, d_ff]    linear value path
+    # W_gate:  [d_model, d_ff]    gate path
+    # W2:      [d_ff, d_model]    down-projection back to d_model
+    # No biases — Llama/PaLM/DeepSeek/OLMo all drop the FFN biases.
+
+    value = x @ W1               # [B, T, d_ff]      pre-gate linear projection
+    gate  = x @ W_gate           # [B, T, d_ff]      pre-Swish projection
+    h     = value * silu(gate)   # [B, T, d_ff]      bilinear Swish-gated activation
+    return h @ W2                # [B, T, d_model]   FFN output
 
 def silu(z):
+    # Swish with beta = 1: z * sigmoid(z).
     return z * z.sigmoid()
 ```
 
+Production fuses the two up-projections into a single `[d_model, 2 * d_ff]` matmul, splits along
+the last axis, then applies `silu` and the multiply in one kernel — Llama's released code in
+`llama/model.py` does this in the `FeedForward.forward` method. The sketch above does not fuse,
+and is illustrative only.
+
 <SwiGluCurves client:visible />
 
-<p class="section-eyebrow">§ 3 · Parameter accounting</p>
-## Why d_ff = 8/3 · d_model
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Ablations and reproductions
 
-Vanilla FFN has $2 \cdot d_{\text{model}} \cdot d_{\text{ff}}$ parameters. SwiGLU has three
-projections, so $3 \cdot d_{\text{model}} \cdot d_{\text{ff}}$. To keep parameter count matched
-across the substitution, modern stacks set
+Shazeer's Table 1 compares eight FFN variants on T5 v1.1 pre-training — vanilla ReLU/GELU/Swish
+FFNs plus their bilinear and gated counterparts (Bilinear, ReGLU, GEGLU, SwiGLU) — under matched
+parameter count via the $2/3$ shrink. Pre-training perplexity (C4 span-corruption objective,
+524 K steps, 16 K-token batches) is reported in the first column. SwiGLU posts the lowest
+log-perplexity (1.944) versus ReLU FFN (2.011); GEGLU and Bilinear are within $\approx 0.01$ of
+SwiGLU. The same Table 1 also reports downstream finetuning scores on GLUE, SuperGLUE, and SQuAD:
+SwiGLU and GEGLU lead on most cells. The headline 0.6-1.3 perplexity-point gap is the
+ReLU-to-SwiGLU delta translated back into perplexity units.
 
-$$d_{\text{ff}} = \tfrac{2}{3} \cdot 4 \cdot d_{\text{model}} = \tfrac{8}{3}\,d_{\text{model}}.$$
+The follow-on adoption rationale appears in the
+[Llama 1 paper](https://arxiv.org/abs/2302.13971) §2.2: SwiGLU is listed as one of three architecture
+changes from GPT-3, with the Shazeer paper cited and the $2/3$ shrink convention stated. The
+Llama paper does not run its own SwiGLU-vs-GELU ablation; Touvron et al. take Shazeer's T5 result
+as carrying. PaLM, released earlier in 2022, made the same choice citing the same paper
+([PaLM tech report](https://arxiv.org/abs/2204.02311) §2 "Model Architecture": "SwiGLU activation").
 
-Llama, PaLM, DeepSeek, and most descendants use this convention. (Some — Gemma — round to a
-nearby multiple of a hardware-friendly tile size.)
+Two independent open evaluations bear on whether the result transfers across modalities and
+scales. The [OLMo 2 technical report](https://arxiv.org/abs/2501.00656) §3 lists SwiGLU as part of
+the adopted architecture and notes (their Table 1) that the OLMo 2 architecture matches Llama-3 on
+this choice. OLMo's open ablation work does not re-test SwiGLU vs GELU at the 7B+ scale; the
+authors treat it as settled. The [DeepSeek-V3 tech report](https://arxiv.org/abs/2412.19437) §2
+specifies SwiGLU for both the dense FFN layer and the experts within DeepSeekMoE. Hunyuan-Large
+([2411.02265](https://arxiv.org/abs/2411.02265) Table 2) and Qwen 3
+([2505.09388](https://arxiv.org/abs/2505.09388) §2) make the same choice without re-ablating.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+The empirical regime where SwiGLU's win has been *re-measured* and not merely inherited is small.
+Narang et al.'s "Do Transformer Modifications Transfer Across Implementations and Applications?"
+([2102.11972](https://arxiv.org/abs/2102.11972) Table 2) re-runs Shazeer's gated-FFN family on a
+broader T5 evaluation harness; SwiGLU and GEGLU continue to lead, by a smaller margin than
+Shazeer reports, and Narang et al. flag SwiGLU/GEGLU as among the few modifications from their
+survey that survived their independent reimplementation. The caveat to hold onto is the right
+one: the absolute gain is small enough that experimental noise across implementations can swamp
+it, but the *sign* of the effect has been stable across re-runs.
 
-Shazeer (2020) reports SwiGLU beating ReLU FFN by 0.6–1.3 perplexity points on T5-scale pretraining
-at matched parameter count (Table 1). The same ordering holds for the related variants GeGLU
-(GELU gate) and ReGLU (ReLU gate); SwiGLU and GeGLU tend to lead with very small differences
-between them.
-
-Subsequent reports — PaLM, Llama 1, Llama 2, Llama 3 — all confirm SwiGLU as a net win at the
-relevant scales. The technique is now the consensus FFN choice for dense decoder-only LLMs.
-
-The cost: a third weight matrix in the FFN means slightly more weight-loading traffic per forward
-pass, partially offset by the smaller $d_{\text{ff}}$. In practice the wall-clock difference is
-negligible.
-
-<p class="section-eyebrow">§ 5 · Why Shazeer didn't explain it</p>
-## "We offer no explanation"
-
-The most quoted line from the SwiGLU paper appears in its conclusion: *"We offer no explanation
-as to why these architectures seem to work; we attribute their success, as all else, to divine
-benevolence."* The mechanism is empirically robust but theoretically opaque — a recurring pattern
-with FFN-side architecture choices.
+What is not in the public record is a strong theoretical justification. Shazeer's conclusion that
+the result is empirical and unexplained still stands. Subsequent work — including the
+[GLM expressivity paper](https://arxiv.org/abs/2103.10360) and other studies of the bilinear class
+— has formalized *what* the gated form represents (low-rank bilinear maps with $d_{\text{ff}}$
+inner units) without deriving *why* it consistently improves transformer language-model
+pre-training in particular. The honest characterization: SwiGLU is the consensus FFN choice
+because every careful re-run finds the same small positive delta and no compensating drawback,
+not because the mechanism is understood.
 
 <Summary>
 **SwiGLU in one breath.** Replace the FFN with a bilinear gated form using Swish on one half.

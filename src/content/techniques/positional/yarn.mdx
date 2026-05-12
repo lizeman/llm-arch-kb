@@ -48,100 +48,236 @@ import YarnBands from "~/components/figures/YarnBands";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## RoPE's extrapolation problem
+## RoPE's training-length boundary
 
-Rotary position embeddings rotate the $i$-th pair of Q and K coordinates by an angle that grows
-linearly with position:
+Rotary position embeddings ([Su et al., 2021](https://arxiv.org/abs/2104.09864)) rotate the $i$-th
+coordinate pair of every query and key by an angle proportional to the token's absolute position:
 
-$$\theta_i = b^{-2i/d_h},\quad \text{angle}(t, i) = t \cdot \theta_i,$$
+$$\theta_i = b^{-2i/d_h}, \qquad \text{angle}(t, i) = t \cdot \theta_i,$$
 
-with base $b = 10000$ typically. During pretraining, the model sees positions $0$ to $T-1$, so
-the *fast* dimensions (small $i$) rotate through the full unit circle many times, while the
-*slow* dimensions (large $i$) rotate by only a small amount.
+with base $b = 10000$ in the original RoPE recipe. The head dimension $d_h$ is partitioned into
+$d_h/2$ rotation rates that form a geometric ladder from $\theta_0 = 1$ (one radian per position)
+down to $\theta_{d_h/2-1} \approx b^{-(d_h-2)/d_h} \approx 10^{-4}$. During pretraining the model
+observes positions $0 \leq t < L$ for some fixed $L$ — 2048 for Llama 1, 4096 for Llama 2 and
+DeepSeek V1, 8192 for OLMo 3. The fast dimensions ($i$ near $0$) cycle through the unit circle
+many times across that window; the slow dimensions ($i$ near $d_h/2$) traverse only a small arc.
 
-When you ask the same model to process position $t = 10T$ at inference, the slow dimensions
-extrapolate far past anything they saw during training. The model has never observed a key with
-that rotational phase. Attention degrades.
+The naive way to extend the model to context $L_\text{new} = s \cdot L$ is to keep RoPE unchanged
+and let positions $t \geq L$ feed through directly. This fails for a frequency-specific reason
+that matters for the rest of the entry. The fast bands have already toured the full circle;
+rotating them further produces angles drawn from the same training distribution and they remain
+in-domain. The *slow* bands have only ever been rotated by small angles in $[0, L \theta_i]$;
+rotating to positions $t \approx 10 L$ feeds the model angles it has never seen, and the
+attention dot product between far-apart tokens collapses
+([Chen et al., 2023, §2](https://arxiv.org/abs/2306.15595);
+[Peng et al., 2023, §3](https://arxiv.org/abs/2309.00071)). The Position Interpolation paper
+attributes the failure to "high-frequency catastrophe" only in passing; the more careful YaRN
+analysis distinguishes it as a slow-band extrapolation problem with a fast-band *aliasing*
+problem layered on top once interpolation is applied.
 
-<p class="section-eyebrow">§ 2 · Earlier approaches</p>
-## PI and NTK-aware
+[Position Interpolation](/llm-arch-kb/positional/position-interpolation/) (Chen et al., June 2023)
+takes the simplest route: rescale every position by $1/s$ so that all rotation angles stay in the
+trained range. It works, but uniformly degrades the fast bands' positional acuity — adjacent
+tokens that previously differed by one full radian of rotation now differ by only $1/s$. The
+[NTK-aware](/llm-arch-kb/positional/ntk-aware-rope/) recipe (bloc97, July 2023; later formalized
+in the YaRN paper) corrects this by rescaling the *base* $b$ instead, which by the geometric
+ladder hits slow bands much harder than fast ones. NTK-aware works zero-shot up to $s \approx 8$
+but its band treatment is still tied to a single closed-form. YaRN's contribution is to make the
+band treatment explicit: classify each dimension by its *wavelength relative to the training
+window* and apply a different rescaling per class, then correct the softmax entropy drift that
+any positional rescaling at long context induces.
 
-Two extension techniques preceded YaRN:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## NTK-by-parts and the temperature ramp
 
-- **Position Interpolation** (Chen et al. 2023, "Extending Context Window of Large Language
-  Models via Positional Interpolation"): linearly squeeze new positions into the original range.
-  For a $4\times$ extension, position $t$ becomes $t/4$. Every dimension is rescaled equally.
-  Works, but loses precision on the fast dimensions because they no longer span the full
-  rotational range.
+**RoPE's frequency-band structure.** Each rotation rate $\theta_i$ has an associated *wavelength*
+$\lambda_i = 2\pi / \theta_i = 2\pi \, b^{2i/d_h}$ — the number of positions required for the
+$i$-th coordinate pair to complete one full rotation. For the canonical $b = 10000$, $d_h = 128$
+geometry, $\lambda_0 = 2\pi \approx 6.28$ positions at the fastest band and $\lambda_{63} = 2\pi
+\cdot 10000^{126/128} \approx 5.85 \times 10^4$ at the slowest. The *rotation count* over training
+window $L$ is
 
-- **NTK-aware scaling** (anonymized "u/bloc97" Reddit post, then formalized in NTK-LongRoPE):
-  scale the base $b$ upward rather than squeezing positions. For a $4\times$ extension, set
-  $b' = b \cdot 4^{d_h/(d_h-2)}$. The fast dimensions are nearly untouched (good — they already
-  span the unit circle); slow dimensions interpolate (good — they avoid extrapolation).
+$$r_i = \frac{L \, \theta_i}{2\pi} = \frac{L}{\lambda_i}.$$
 
-YaRN combines NTK-aware's frequency split with three refinements.
+A dimension with $r_i \gg 1$ has been "saturated" — it cycled through the unit circle many times
+and the model saw its full rotational support. A dimension with $r_i \ll 1$ has only ever swept a
+fraction of the circle. This distinction drives every later decision
+([Peng et al., 2023, §3.3](https://arxiv.org/abs/2309.00071)).
 
-<p class="section-eyebrow">§ 3 · The three bands</p>
-## NTK-by-parts
+**Step 1: Position Interpolation as uniform stretch.** PI rescales every angle by $1/s$:
 
-YaRN partitions RoPE dimensions into three regimes based on each dimension's *rotation count*
-over the original training context:
+$$\theta_i^{\text{PI}} = \frac{\theta_i}{s}, \qquad s = \frac{L_\text{new}}{L}.$$
 
-1. **Fast dimensions** that complete $\geq r_{\max}$ rotations over the original window: leave
-   their $\theta_i$ untouched. They already saw their full domain.
-2. **Slow dimensions** that complete $\leq r_{\min}$ rotations: linearly interpolate to the new
-   context length (PI on this band only).
-3. **Middle dimensions**: blend between the two regimes via a smooth ramp.
+Every band's wavelength stretches by $s$. The slow bands benefit (their new angles still fall in
+the trained range), but the fast bands lose precision: two adjacent positions that previously had
+phase difference $\theta_i \approx 1$ now differ by $\theta_i / s \approx 1/s$, well below the
+phase noise the model learned to handle. The model's short-range positional acuity drops, which
+is why PI needs fine-tuning even at modest $s$
+([Chen et al., 2023, Table 5](https://arxiv.org/abs/2306.15595)).
 
-Concretely, with extension factor $s = L_{\text{new}}/L_{\text{train}}$:
+**Step 2: NTK-aware as band-dependent stretch.** Replacing the base $b$ with $b' = b \cdot s^{d_h
+/ (d_h - 2)}$ produces
 
-$$\theta_i' = \theta_i \cdot \bigl(1 - h_i(s)\bigr) + \frac{\theta_i}{s} \cdot h_i(s),$$
+$$\theta_i^{\text{NTK}} = (b')^{-2i/d_h} = \theta_i \cdot s^{-2i/(d_h - 2)},$$
 
-where $h_i(s) \in [0, 1]$ is the ramp that depends on dimension $i$'s rotation count. Fast
-dimensions get $h_i = 0$; slow dimensions get $h_i = 1$; middle dimensions get a smooth blend.
+which equals $\theta_i$ at $i = 0$ (fastest dimension untouched) and $\theta_i / s$ at $i = d_h/2
+- 1$ (slowest dimension matches PI). The rescaling factor is a smooth geometric ramp in $i$. This
+is better than PI, but it conflates the *index* $i$ with the *rotation count* $r_i$ — geometry
+says nothing about whether band $i$ has actually saturated over the training window. A
+32-dimensional head with $b = 10000$ has very different saturation behavior than a 128-dimensional
+head with the same base; the NTK-aware rescaling treats them the same.
+
+**Step 3: NTK-by-parts.** Peng et al. propose classifying dimensions by their saturation $r_i$
+rather than their index $i$. Define two cutoffs $r_\min$ and $r_\max$ on the rotation count:
+
+- **Slow band** ($r_i \leq r_\min$): dimension has not saturated. Interpolate it (PI's recipe)
+  because extrapolating untrained angles is the failure mode.
+- **Fast band** ($r_i \geq r_\max$): dimension has saturated. Leave it untouched. Both
+  extrapolated and interpolated angles fall inside the trained support.
+- **Middle band** ($r_\min < r_i < r_\max$): smoothly blend. Define the ramp
+
+$$\gamma(r_i) = \begin{cases} 0 & r_i \geq r_\max \\ 1 & r_i \leq r_\min \\ \dfrac{r_\max - r_i}{r_\max - r_\min} & \text{otherwise}\end{cases}$$
+
+and apply
+
+$$\theta_i^{\text{YaRN}} = (1 - \gamma(r_i)) \, \theta_i + \gamma(r_i) \, \frac{\theta_i}{s}.$$
+
+At $\gamma = 0$ the original $\theta_i$ survives; at $\gamma = 1$ the band gets full PI rescaling;
+in between the band's effective rotation rate is a linear interpolation in $\theta_i$ between the
+two. The paper defaults to $r_\min = 1, r_\max = 32$ for Llama-2 7B/13B at $L = 4096$, which puts
+roughly the fastest dimension pairs in the untouched fast band, the slowest in the interpolated
+slow band, and the remainder in the smooth middle
+([Peng et al., 2023, §3.3 and Figure 2](https://arxiv.org/abs/2309.00071)).
+
+The "by-parts" naming makes the contrast with NTK-aware explicit: instead of a global geometric
+ramp tied to head index, YaRN applies a *piecewise* ramp tied to per-band saturation. The two
+schedules agree only by coincidence on specific architectures.
+
+**Step 4: Attention temperature.** A second effect surfaces independently of the rescaling
+choice. At inference with sequence length $T$, the attention softmax distributes mass over $T$
+keys per query; the entropy of the distribution grows roughly with $\log T$. The pretraining
+model was calibrated for entropy near $\log L$. Stretching the context to $T = sL$ without
+compensation leaves attention "flatter" than training — a phenomenon Peng et al. report as a
+measurable perplexity penalty independent of which rescaling scheme is chosen
+([Peng et al., 2023, §3.4 and Figure 3](https://arxiv.org/abs/2309.00071)).
+
+Their fix: divide attention logits by a temperature $t$ before the softmax, with $t$ chosen so
+the average per-query entropy matches the pretraining length. The empirically fit form is
+
+$$\frac{1}{\sqrt{t}} = 0.1 \, \ln s + 1, \qquad \text{equivalently} \qquad t = \frac{1}{(0.1 \ln s + 1)^2}.$$
+
+For $s = 16$ this gives $1/\sqrt{t} \approx 1.28$; for $s = 32$, $1/\sqrt{t} \approx 1.35$. The
+constants $0.1$ and $1$ were fit to Llama-1 7B and reused for Llama-2 7B/13B without per-model
+tuning. Because attention logits are computed as $\mathbf{q}^\top \mathbf{k} / \sqrt{d_h}$, the
+temperature can be folded into the existing $\sqrt{d_h}$ denominator: divide by $\sqrt{d_h \cdot
+t}$ at inference, equivalent to scaling the query (or key) by $1/\sqrt{t}$ before the dot product.
+This makes the temperature correction free at inference time, in contrast to the rescaling step
+which is also free but requires recomputing the cosine/sine tables.
+
+**Parameter count and compute.** YaRN adds zero parameters — it changes the precomputed
+$(\theta_i)_{i < d_h/2}$ table and a single scalar temperature. The cost at inference is the same
+as standard RoPE plus one multiplication per logit by $1/\sqrt{t}$. The training cost is the
+fine-tune itself: 400 steps at $L_\text{new}$ on $\sim 64$M tokens for Llama-2 7B/13B
+([Peng et al., 2023, §4.1](https://arxiv.org/abs/2309.00071)), roughly 0.1% of pretraining tokens.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
-def yarn_theta(theta_i, s, rot_count_i, r_min=1, r_max=32):
-    if rot_count_i >= r_max:
-        return theta_i               # fast band: untouched
-    if rot_count_i <= r_min:
-        return theta_i / s           # slow band: linearly interpolated
-    # middle band: smooth ramp
-    h = (rot_count_i - r_min) / (r_max - r_min)
-    return theta_i * (1 - h) + (theta_i / s) * h
+# Shapes: d_h head dim, T_train training context, s extension factor.
+# Frequencies and ramp computed once per layer at config time; applied per token.
+
+def yarn_frequencies(d_h, base=10000.0, T_train=4096,
+                     s=16.0, r_min=1.0, r_max=32.0):
+    i = arange(d_h // 2)                          # [d_h/2]
+    theta = base ** (-2 * i / d_h)                # [d_h/2]   original RoPE
+    wavelength = 2 * pi / theta                   # [d_h/2]   λ_i
+    rotations = T_train / wavelength              # [d_h/2]   r_i
+
+    # piecewise ramp γ(r_i): 0 = preserve, 1 = interpolate
+    gamma = clip((r_max - rotations) / (r_max - r_min), 0.0, 1.0)
+
+    theta_yarn = (1 - gamma) * theta + gamma * (theta / s)   # [d_h/2]
+    return theta_yarn
+
+def yarn_temperature(s):
+    # 1/sqrt(t) = 0.1 ln s + 1; fold into the sqrt(d_h) denominator at inference
+    return (0.1 * log(s) + 1.0) ** 2
+
+def yarn_attention(q, k, v, theta_yarn, pos, d_h, s):
+    # q, k, v: [B, T, H, d_h]; pos: [T]
+    angles = pos[:, None] * theta_yarn[None, :]   # [T, d_h/2]
+    cos, sin = angles.cos(), angles.sin()
+    q = apply_rotary(q, cos, sin)                 # standard RoPE rotation
+    k = apply_rotary(k, cos, sin)
+
+    t = yarn_temperature(s)                       # scalar
+    logits = einsum("bthd,bshd->bhts", q, k) / sqrt(d_h * t)   # [B, H, T, T]
+    return softmax(logits, dim=-1) @ v
 ```
 
 <YarnBands client:visible />
 
-<p class="section-eyebrow">§ 4 · Temperature scaling</p>
-## Adjust softmax sharpness
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Ablations and adoption
 
-A longer context means more keys for every query. The softmax distribution naturally flattens;
-attention loses sharpness. YaRN compensates by sharpening the logits before softmax — divide by
-a temperature $t$ with
+**Perplexity on PG19 and Proof-Pile.** Peng et al. fine-tune Llama-2 7B and 13B for 400 steps at
+$L_\text{new} \in \{64\text{K}, 128\text{K}\}$ from a 4K base. On PG19 at the 64K evaluation
+point, YaRN at $s = 16$ reaches lower perplexity than PI and the NTK-by-parts ablation (no
+temperature) at matched fine-tune budget; the temperature correction is the load-bearing
+difference between rows 4 and 5 of the paper's
+[Table 1](https://arxiv.org/abs/2309.00071). On Proof-Pile the gap widens — Peng et al. report
+YaRN beating PI and dynamic-NTK by roughly 0.1 perplexity points at 64K and more at 128K
+([Peng et al., 2023, Table 2](https://arxiv.org/abs/2309.00071)). The temperature term
+contributes a consistent improvement over NTK-by-parts alone: small per token, free at inference.
 
-$$\frac{1}{t} = \sqrt{1 + 0.1 \log s},$$
+**Passkey retrieval.** Table 3 of the paper reports near-perfect retrieval at depths through
+80-100K on the Llama-2 7B 64K and 128K models, with PI dropping substantially at the deepest
+probe and zero-shot NTK-aware dropping further still. The discrepancy between perplexity and
+passkey results is non-trivial — perplexity gaps are tenths of points, retrieval gaps are tens of
+percentage points. The paper does not resolve this: a model can score well on average next-token
+prediction while still missing the specific long-range copy operation that needle-in-a-haystack
+measures. Later analyses ([Liu et al., 2023, "Lost in the Middle"](https://arxiv.org/abs/2307.03172))
+confirm that retrieval-style probes are more sensitive to positional acuity than averaged
+perplexity, but the dissociation remains an open question for any RoPE extension scheme.
 
-so logits get multiplied by a factor $> 1$ that grows with the extension ratio. The constants
-were fit empirically; the form keeps attention entropy approximately matched to the pretraining
-context.
+**Adoption in production decoders.** DeepSeek-V2 reports YaRN as the chosen recipe for extending
+its 4K-trained base to 128K, citing sample efficiency over uniformly scaled base RoPE
+([DeepSeek-V2, §3.3](https://arxiv.org/abs/2405.04434)). DeepSeek-V3 keeps the same 4K → 128K
+YaRN extension across its 671B-parameter geometry
+([DeepSeek-V3, §3.4](https://arxiv.org/abs/2412.19437)). OLMo 3 32B applies YaRN with scaling
+factor 8 to extend from 8K to 64K during a dedicated long-context fine-tuning stage
+([OLMo 3 model card](https://huggingface.co/allenai/Olmo-3-1125-32B)). The Qwen 3 family uses
+YaRN combined with Dual Chunk Attention to extend beyond a 32K ABF-trained window
+([Qwen 3 technical report](https://arxiv.org/abs/2505.09388)); Qwen 3-Next reportedly pushes the
+262K native context to ~1M via YaRN
+([Qwen 3-Next model card](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct)). The
+[gpt-oss-120b release](https://huggingface.co/openai/gpt-oss-120b) documents YaRN scaling from a
+4K base to 131K with RoPE base 150K.
 
-<p class="section-eyebrow">§ 5 · Results</p>
-## Empirical evidence
+**Where YaRN is not used.** Llama 3.1 reaches 128K context without YaRN, using long continued
+pretraining over a much larger token budget with a uniformly scaled RoPE base
+([Llama 3.1 paper, §5](https://arxiv.org/abs/2407.21783)). The Meta team's note is that with
+sufficient training tokens, simpler base scaling matches YaRN's quality and removes the recipe
+complexity. This is consistent with the YaRN paper's own framing of the method as a
+*sample-efficient* extension, not a quality ceiling — at 0.1% of pretraining tokens YaRN beats the
+alternatives, but the gap narrows when continued pretraining is generous.
 
-Peng et al. (Table 1) report YaRN extending Llama-2 7B's context from 4K to 64K and 128K via a
-short 400-step fine-tune (~0.1% of pretraining tokens), with perplexity strictly below PI,
-NTK-aware, and dynamic NTK on PG-19 and Proof-Pile at all tested lengths.
-
-DeepSeek-V2 and V3 (Liu et al. 2024) report using YaRN for the 4K-to-128K extension, citing
-its sample efficiency vs continued pretraining with a uniformly scaled base.
-
-For models like Llama 3.1, the team went with a simpler scaled-base recipe (multiplying $b$ by
-a fixed factor) plus long continued pretraining, which works at the larger token budget but
-trades sample efficiency for simplicity.
+**Unresolved questions.** Three are worth flagging. First, no public study isolates the
+temperature term's contribution at very large $s$ (256+); the constants $0.1$ and $1$ were fit at
+moderate scales. Second, the perplexity-vs-retrieval divergence noted above means low PG19
+perplexity is not a sufficient proxy for long-context recall, but no replacement metric has
+become standard. Third, the choice of $r_\min, r_\max$ defaults is justified by visual inspection
+in the paper's Figure 2; whether other architectures need different cutoffs is not systematically
+studied. [LongRoPE](/llm-arch-kb/positional/longrope/) sidesteps the cutoff question by treating
+the per-dimension factors as a search variable, which empirically recovers non-monotone schedules
+YaRN cannot express — evidence that the closed-form ramp is good but not optimal at extreme
+extensions.
 
 <Summary>
-**YaRN in one breath.** Frequency-aware RoPE rescaling: preserve fast rotations, interpolate
-slow ones, smooth between. Add a small temperature correction to keep softmax sharpness
-constant. 32× context extension on Llama-2 in 400 steps; adopted by DeepSeek V2/V3 for 128K.
+**YaRN in one breath.** NTK-by-parts: classify each RoPE dimension by its training-window
+rotation count, preserve fast bands, interpolate slow bands, ramp smoothly in between, and
+rescale softmax temperature by $1/\sqrt{t} = 0.1 \ln s + 1$ to keep attention entropy calibrated.
+32× context extension on Llama-2 in 400 steps; adopted by DeepSeek V2/V3, OLMo 3, Qwen 3, and
+gpt-oss for context windows from 64K to ~1M.
 </Summary>

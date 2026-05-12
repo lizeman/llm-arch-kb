@@ -1,0 +1,123 @@
+---
+title: "Hyper-Connections"
+abbreviation: "HC"
+category: "residual"
+year: 2024
+month: 9
+introduced_by: "Defa Zhu et al. (ByteDance Doubao)"
+paper_title: "Hyper-Connections"
+arxiv_id: "2409.19606"
+paper_url: "https://arxiv.org/abs/2409.19606"
+status: "research"
+problem_solved: "Replace the single residual stream with a small bank of parallel streams plus learned read/write matrices, letting different sublayers route information through different channels."
+predecessors: []
+successors: []
+adopted_by: []
+summary: "Generalize the residual connection to n parallel streams. Each sublayer learns a depth-wise read/write matrix that mixes streams in and out. Recovers the standard residual at n=1 and gives a strict superset of expressivity above that."
+tags: ["residual", "research", "bytedance"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## The residual stream is a bottleneck
+
+Every transformer block reads from and writes to the *same* residual stream
+$\mathbf{x}_\ell \in \mathbb{R}^d$. Attention and FFN sublayers compete for the same vector
+space; useful information from layer 5 has to coexist with useful information from layer 50 in
+the same $d$ coordinates.
+
+Empirical studies of trained models suggest the residual stream is in fact
+information-saturated — many features are stored in approximately orthogonal subspaces, and
+some heads explicitly write to subspaces only to be overwritten by later layers. The
+single-stream design forces this superposition.
+
+Hyper-Connections (Zhu et al. 2024) ask: what if there were $n$ residual streams instead of
+one, with learnable mixing between them?
+
+<p class="section-eyebrow">§ 2 · The construction</p>
+## n streams, learned read/write
+
+A Hyper-Connection block maintains a stack of $n$ streams
+$\mathbf{X}_\ell \in \mathbb{R}^{n \times d}$. The sublayer $f$ reads from a learned linear
+combination of those streams, computes its update, and writes the update back as a learned
+linear combination:
+
+$$
+\begin{aligned}
+\mathbf{r}_\ell &= \mathbf{A}_\ell^{\!\top}\, \mathbf{X}_\ell \in \mathbb{R}^d & \text{(read)}\\
+\mathbf{u}_\ell &= f_\ell(\mathbf{r}_\ell) \in \mathbb{R}^d & \text{(sublayer compute)}\\
+\mathbf{X}_{\ell+1} &= \mathbf{X}_\ell + \mathbf{B}_\ell\, \mathbf{u}_\ell^{\!\top} & \text{(write)}
+\end{aligned}
+$$
+
+The matrices $\mathbf{A}_\ell \in \mathbb{R}^{n}$ and $\mathbf{B}_\ell \in \mathbb{R}^{n}$ are
+learned per-layer. At $n = 1$ with $\mathbf{A}_\ell = \mathbf{B}_\ell = 1$, the construction
+reduces to the standard residual connection. For $n > 1$, the architecture has strictly more
+expressivity: a sublayer can read from one stream and write to a different one, deferring
+information across many layers without contention.
+
+```python
+def hyper_connection_block(X, sublayer, A, B):
+    # X: (n, d) — the stack of n parallel residual streams
+    # A, B: (n,) — learned read and write coefficients for this layer
+    r = A @ X                    # (d,) read: mix streams into a single vector
+    u = sublayer(r)              # (d,) standard sublayer compute on the read vector
+    X = X + np.outer(B, u)       # (n, d) write: distribute the update across streams
+    return X
+```
+
+The parameter count cost is small: two $n$-vectors per layer instead of nothing for the
+standard residual. Memory is $n \times$ the residual stream size — for $n = 4$, that's a 4×
+KV-cache-equivalent overhead on the activation memory during training.
+
+<p class="section-eyebrow">§ 3 · Static vs dynamic</p>
+## Two variants
+
+The paper introduces two parameterizations:
+
+- **Static Hyper-Connections (SHC).** $\mathbf{A}_\ell$ and $\mathbf{B}_\ell$ are fixed
+  parameters learned per layer. Same shape across all tokens at that layer.
+- **Dynamic Hyper-Connections (DHC).** $\mathbf{A}_\ell$ and $\mathbf{B}_\ell$ are computed
+  *per-token* as a small projection of the current $\mathbf{r}_\ell$ — the layer learns to
+  route different tokens through different streams.
+
+DHC is more expressive (each token gets its own read/write pattern), at the cost of an extra
+projection per layer. SHC is simpler and benchmarks competitively in the paper's ablations on
+small to medium models.
+
+<p class="section-eyebrow">§ 4 · What the paper claims</p>
+## Reported results
+
+Zhu et al. report (Table 2) HC variants matching or beating Pre-Norm baselines on a 1.3B
+language modeling benchmark, with DHC giving the best loss at the same parameter count. The
+gap is small at small scale and grows modestly at larger scale within the paper's experimental
+range.
+
+The bigger claim is qualitative: HC stabilizes very deep training (the paper trains 96-layer
+models that the Pre-Norm baseline cannot match without spike-suppression tricks) and reduces
+the variance of training loss across runs. The mechanism the authors offer: with $n$ streams,
+no single block can disturb the global residual state — perturbations stay confined to whichever
+stream a layer chose to write into.
+
+<p class="section-eyebrow">§ 5 · Production status</p>
+## Where it stands
+
+As of May 2026, Hyper-Connections has not been confirmed in a publicly documented production
+release. The technique is plausible enough — and the parameter overhead small enough — that
+labs running their own architecture studies may be experimenting with it internally. Public
+adoption claims should wait for a tech report or model card.
+
+The conceptual lineage continues older threads: Highway Networks (Srivastava et al. 2015), the
+multi-head residual sketch in NormFormer (Shleifer et al. 2021,
+[entry](/llm-arch-kb/residual/normformer/)), and ReZero's per-branch scalar
+([entry](/llm-arch-kb/residual/rezero/)) all explored "what if the residual were richer than
+identity." Hyper-Connections is the most aggressive form so far.
+
+<Summary>
+**Hyper-Connections in one breath.** Replace one residual stream with $n$ parallel streams plus
+learned read/write matrices per layer. Static (per-layer) and Dynamic (per-token) variants.
+Recovers the standard residual at $n=1$. Reportedly stabilizes very deep training; no
+publicly-documented production adoption yet.
+</Summary>

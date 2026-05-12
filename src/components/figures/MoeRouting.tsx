@@ -2,20 +2,13 @@
 import { createMemo, createSignal, For } from "solid-js";
 
 /**
- * Top-K expert routing visualizer.
- *
- * Shows N tokens above and E routed experts below, with deterministic pseudo-random gating
- * scores. The user manipulates K (top-K) and E (expert count) and optionally enables a
- * persistent shared expert. The figure draws connection lines and a per-expert utilization
- * bar, matching the DeepSeekMoE routing math.
- *
- * Plan §11.4 contract: SVG viewBox, ≥44px touch targets, aria-valuetext on sliders,
- * prefers-reduced-motion via tokens.css, <=400 lines.
+ * Top-K expert routing visualizer: N tokens routed to top-K of E experts, with optional
+ * always-on shared expert (the "isolation" half of DeepSeekMoE).
  */
 
 const N_TOKENS = 12;
 
-// Deterministic pseudo-random gate logit: (tokenIdx, expertIdx) -> score in [0, 1).
+// Deterministic so the figure is reproducible across renders.
 function gateScore(t: number, e: number): number {
   const h = ((t + 1) * 2654435761) ^ ((e + 17) * 40503);
   return (h & 0xffff) / 0x10000;
@@ -26,12 +19,11 @@ export default function MoeRouting() {
   const [e, setE] = createSignal(8);
   const [hasShared, setHasShared] = createSignal(true);
 
-  const expertCount = () => e();
-  const k_clamped = () => Math.min(k(), expertCount());
+  const k_clamped = () => Math.min(k(), e());
 
   // Per-token: indices of top-K experts (descending by score)
   const routes = createMemo(() => {
-    const E = expertCount();
+    const E = e();
     const K = k_clamped();
     const out: number[][] = [];
     for (let t = 0; t < N_TOKENS; t++) {
@@ -43,7 +35,7 @@ export default function MoeRouting() {
   });
 
   const utilization = createMemo(() => {
-    const E = expertCount();
+    const E = e();
     const counts = new Array(E).fill(0);
     for (const row of routes()) for (const ei of row) counts[ei]++;
     return counts;
@@ -55,7 +47,7 @@ export default function MoeRouting() {
   const tokenLeft = 60;
   const tokenStride = (640 - 60) / (N_TOKENS - 1);
 
-  const expertStride = createMemo(() => (640 - 60) / Math.max(1, expertCount() - 1));
+  const expertStride = createMemo(() => (640 - 60) / Math.max(1, e() - 1));
   const expertX = (ei: number) => 60 + ei * expertStride();
 
   return (
@@ -65,7 +57,7 @@ export default function MoeRouting() {
 
         <text x={350} y={28} text-anchor="middle"
           font-family="var(--serif)" font-size="13" font-weight="600" fill="#1a1a1a">
-          {N_TOKENS} tokens · {expertCount()} routed experts · top-K = {k_clamped()}
+          {N_TOKENS} tokens · {e()} routed experts · top-K = {k_clamped()}
           {hasShared() ? " · 1 shared expert" : ""}
         </text>
 
@@ -99,7 +91,7 @@ export default function MoeRouting() {
         </For>
 
         {/* Routed experts */}
-        <For each={Array.from({ length: expertCount() }, (_, i) => i)}>
+        <For each={Array.from({ length: e() }, (_, i) => i)}>
           {(ei) => (
             <g>
               <rect
@@ -185,10 +177,10 @@ export default function MoeRouting() {
         <text x={60} y={420} font-family="var(--mono)" font-size="11" fill="#5a5a55">
           activated params per token: {k_clamped()} routed expert{k_clamped() === 1 ? "" : "s"}
           {hasShared() ? " + 1 shared" : ""}
-          &nbsp;of {expertCount()} routed total
+          &nbsp;of {e()} routed total
         </text>
         <text x={60} y={440} font-family="var(--mono)" font-size="11" fill="#5a5a55">
-          sparsity ratio: {((expertCount() - k_clamped()) / expertCount() * 100).toFixed(0)}% of routed FFN dormant per token
+          sparsity ratio: {((e() - k_clamped()) / e() * 100).toFixed(0)}% of routed FFN dormant per token
         </text>
       </svg>
 
@@ -199,7 +191,7 @@ export default function MoeRouting() {
             type="range"
             aria-label="top-K"
             min={1}
-            max={Math.max(1, expertCount())}
+            max={Math.max(1, e())}
             step={1}
             value={k_clamped()}
             onInput={(e) => setK(+e.currentTarget.value)}
@@ -215,11 +207,11 @@ export default function MoeRouting() {
             min={2}
             max={32}
             step={1}
-            value={expertCount()}
+            value={e()}
             onInput={(e2) => setE(+e2.currentTarget.value)}
-            aria-valuetext={`${expertCount()} routed experts total`}
+            aria-valuetext={`${e()} routed experts total`}
           />
-          <span class="value">{expertCount()}</span>
+          <span class="value">{e()}</span>
         </label>
         <label>
           <input
@@ -235,7 +227,7 @@ export default function MoeRouting() {
       </div>
 
       <figcaption>
-        Per token the gate picks <strong>K = {k_clamped()}</strong> of <strong>{expertCount()}</strong>
+        Per token the gate picks <strong>K = {k_clamped()}</strong> of <strong>{e()}</strong>
         {" "}routed experts (heavy line = top-1, lighter line = rank 2…K). With the shared expert
         on, every token also flows through the always-active expert at the far right — that's the
         "isolation" half of DeepSeekMoE.

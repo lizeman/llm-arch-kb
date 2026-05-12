@@ -2,7 +2,7 @@
 import BaseLayout from "~/layouts/BaseLayout.astro";
 import { getCollection } from "astro:content";
 import { compareByDate, groupByYear } from "~/utils/chronological-sort";
-import { BASE } from "~/utils/site";
+import { BASE, slugTail } from "~/utils/site";
 
 const techniques = await getCollection("techniques");
 
@@ -31,7 +31,7 @@ for (const t of techniques) {
     });
   }
   citationMap.get(arxiv)!.cites.push({
-    slug: t.slug.split("/").pop()!,
+    slug: slugTail(t.slug),
     title: t.data.title,
     abbr: t.data.abbreviation,
     category: t.data.category,

@@ -4,42 +4,31 @@ import { createMemo, createSignal, For } from "solid-js";
 /**
  * MHA → MQA → GQA → MLA: slider over group count G plus optional MLA latent dim d_c.
  * Shows KV cache size shrinking as we share K,V across heads or compress to a latent.
- *
- * No external animation libs (plan §11.4). SVG viewBox, pointer events implicit via input[type=range],
- * touch targets ≥44px, aria-valuetext on every control, prefers-reduced-motion respected via tokens.css.
  */
 
-const H = 16; // total heads
-const D_H = 128; // head dim
-const HEAD_DIM_VECTOR = H * D_H; // 2048
+const H = 16;
+const D_H = 128;
+const HEAD_DIM_VECTOR = H * D_H;
 
 export default function MhaMqaGqaMla() {
   const [g, setG] = createSignal(8);
   const [useMla, setUseMla] = createSignal(false);
   const [dc, setDc] = createSignal(512);
 
-  const groupCount = () => g();
-  const headsPerGroup = () => H / groupCount();
+  const headsPerGroup = () => H / g();
 
   const mhaCache = HEAD_DIM_VECTOR * 2;
   const cache = createMemo(() => {
-    if (useMla()) return dc() + 64; // latent + decoupled RoPE head
-    return groupCount() * D_H * 2;
+    // MLA: latent + decoupled RoPE head.
+    if (useMla()) return dc() + 64;
+    return g() * D_H * 2;
   });
   const ratio = createMemo(() => mhaCache / cache());
   const variant = createMemo(() => {
     if (useMla()) return "MLA";
-    if (groupCount() === H) return "MHA";
-    if (groupCount() === 1) return "MQA";
+    if (g() === H) return "MHA";
+    if (g() === 1) return "MQA";
     return "GQA";
-  });
-
-  // Compute groups: which heads share which K,V
-  const groups = createMemo(() => {
-    const arr: number[][] = [];
-    const per = headsPerGroup();
-    for (let q = 0; q < H; q++) arr.push([Math.floor(q / per)]);
-    return arr;
   });
 
   return (
@@ -49,7 +38,7 @@ export default function MhaMqaGqaMla() {
 
         <text x="360" y="22" text-anchor="middle"
           font-family="var(--serif)" font-size="14" font-weight="600" fill="#1a1a1a">
-          {variant()}: {H} query heads → {useMla() ? `latent d_c=${dc()}` : `${groupCount()} KV group${groupCount() === 1 ? "" : "s"}`}
+          {variant()}: {H} query heads → {useMla() ? `latent d_c=${dc()}` : `${g()} KV group${g() === 1 ? "" : "s"}`}
         </text>
 
         <text x="40" y="60" font-family="var(--mono)" font-size="11" fill="#5a5a55">Queries</text>
@@ -117,9 +106,9 @@ export default function MhaMqaGqaMla() {
             </For>
           </g>
         ) : (
-          <For each={Array.from({ length: groupCount() }, (_, i) => i)}>
+          <For each={Array.from({ length: g() }, (_, i) => i)}>
             {(gi) => {
-              const width = (H * 38 - 6) / groupCount();
+              const width = (H * 38 - 6) / g();
               const x = 40 + gi * width;
               return (
                 <g>
@@ -140,8 +129,8 @@ export default function MhaMqaGqaMla() {
                     font-family="var(--mono)"
                     font-size="11"
                     fill="#1a4f7a"
-                  >K,V{groupCount() === 1 ? "" : gi}</text>
-                  <For each={groups().map((_, qi) => qi).filter((qi) => groups()[qi]![0] === gi)}>
+                  >K,V{g() === 1 ? "" : gi}</text>
+                  <For each={Array.from({ length: H }, (_, qi) => qi).filter((qi) => Math.floor(qi / headsPerGroup()) === gi)}>
                     {(qi) => (
                       <line
                         x1={56 + qi * 38}

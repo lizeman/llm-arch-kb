@@ -2,18 +2,20 @@
 import { createMemo, createSignal, For } from "solid-js";
 
 /**
- * StreamingLLM attention-sinks visualization.
- *
- * Shows a sequence of N tokens with three regions: pinned "sink" tokens at the start,
- * the recent sliding window, and the evicted middle region. As the position slider moves,
- * the user sees how the cache layout shifts — sinks stay pinned, the window slides, the
- * middle is dropped.
- *
- * Plan §11.4 contract: SVG viewBox, ≥44px touch targets, aria-valuetext on sliders,
- * prefers-reduced-motion via tokens.css, <=400 lines.
+ * StreamingLLM attention-sinks visualization: pinned sinks + sliding window over a sequence,
+ * with the evicted middle region dropped.
  */
 
-const TOTAL = 32; // total tokens displayed
+const TOTAL = 32;
+
+type Region = "sink" | "window" | "evicted" | "future";
+
+const REGION_STYLE: Record<Region, { fill: string; stroke: string; text: string }> = {
+  sink: { fill: "#1a4f7a", stroke: "#1a4f7a", text: "white" },
+  window: { fill: "#e8eef4", stroke: "#1a4f7a", text: "#1a4f7a" },
+  evicted: { fill: "#f1f1ec", stroke: "#8a8a85", text: "#8a8a85" },
+  future: { fill: "#fafaf7", stroke: "#e3e3dc", text: "#e3e3dc" },
+};
 
 export default function AttentionSinks() {
   const [pos, setPos] = createSignal(20);
@@ -21,8 +23,8 @@ export default function AttentionSinks() {
   const [sinks, setSinks] = createSignal(4);
 
   const windowStart = createMemo(() => Math.max(sinks(), pos() - w() + 1));
+  // Rough StreamingLLM curve: with sinks PPL stays flat; without sinks it grows past the window.
   const ppl = () => {
-    // Approximate PPL behavior: with sinks, stays low; without sinks (s=0), grows once past window
     if (pos() < w()) return 1.0;
     if (sinks() === 0) return Math.min(100, 1.0 + (pos() - w()) * 5);
     return 1.0;
@@ -32,7 +34,7 @@ export default function AttentionSinks() {
   const left = 60;
   const top = 80;
 
-  function regionFor(t: number): "sink" | "window" | "evicted" | "future" {
+  function regionFor(t: number): Region {
     if (t > pos()) return "future";
     if (t < sinks()) return "sink";
     if (t >= windowStart()) return "window";
@@ -56,25 +58,7 @@ export default function AttentionSinks() {
         <For each={Array.from({ length: TOTAL }, (_, i) => i)}>
           {(t) => {
             const region = regionFor(t);
-            const fillMap = {
-              sink: "#1a4f7a",
-              window: "#e8eef4",
-              evicted: "#f1f1ec",
-              future: "#fafaf7",
-            };
-            const strokeMap = {
-              sink: "#1a4f7a",
-              window: "#1a4f7a",
-              evicted: "#8a8a85",
-              future: "#e3e3dc",
-            };
-            const textMap = {
-              sink: "white",
-              window: "#1a4f7a",
-              evicted: "#8a8a85",
-              future: "#e3e3dc",
-            };
-            const isEvictedFlag = region === "evicted";
+            const style = REGION_STYLE[region];
             return (
               <g>
                 <rect
@@ -82,11 +66,11 @@ export default function AttentionSinks() {
                   y={top}
                   width={cellSize - 1}
                   height={cellSize - 1}
-                  fill={fillMap[region]}
-                  stroke={strokeMap[region]}
+                  fill={style.fill}
+                  stroke={style.stroke}
                   stroke-width="1"
                   opacity={region === "future" ? 0.5 : 1}
-                  stroke-dasharray={isEvictedFlag ? "2 2" : undefined}
+                  stroke-dasharray={region === "evicted" ? "2 2" : undefined}
                 />
                 <text
                   x={left + t * cellSize + (cellSize - 1) / 2}
@@ -94,7 +78,7 @@ export default function AttentionSinks() {
                   text-anchor="middle"
                   font-family="var(--mono)"
                   font-size="7"
-                  fill={textMap[region]}
+                  fill={style.text}
                 >{t}</text>
               </g>
             );

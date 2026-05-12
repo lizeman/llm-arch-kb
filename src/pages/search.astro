@@ -1,9 +1,9 @@
 ---
 import BaseLayout from "~/layouts/BaseLayout.astro";
+import { BASE } from "~/utils/site";
 
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
-const pagefindBundle = `${base}/pagefind/pagefind-ui.js`;
-const pagefindStyles = `${base}/pagefind/pagefind-ui.css`;
+const pagefindBundle = `${BASE}/pagefind/pagefind-ui.js`;
+const pagefindStyles = `${BASE}/pagefind/pagefind-ui.css`;
 ---
 
 <BaseLayout
@@ -25,12 +25,10 @@ const pagefindStyles = `${base}/pagefind/pagefind-ui.css`;
 
     <script is:inline define:vars={{ bundle: pagefindBundle }}>
       window.addEventListener("DOMContentLoaded", () => {
-        const initialize = () => {
-          if (typeof window.PagefindUI !== "function") {
-            // Pagefind UI script not yet evaluated; retry shortly.
-            setTimeout(initialize, 50);
-            return;
-          }
+        const tag = document.createElement("script");
+        tag.src = bundle;
+        tag.async = true;
+        tag.addEventListener("load", () => {
           /* eslint-disable no-new */
           new window.PagefindUI({
             element: "#search",
@@ -38,19 +36,15 @@ const pagefindStyles = `${base}/pagefind/pagefind-ui.css`;
             pageSize: 8,
             resetStyles: false,
           });
-        };
-        const tag = document.createElement("script");
-        tag.src = bundle;
-        tag.async = true;
-        tag.addEventListener("load", initialize);
+        });
         document.head.appendChild(tag);
       });
     </script>
 
     <noscript>
       <p class="noscript-note">
-        Search requires JavaScript. Browse via the <a href={`${base}/timeline/`}>timeline</a>,
-        the <a href={`${base}/compare/`}>compare matrix</a>, or any category page in the top nav.
+        Search requires JavaScript. Browse via the <a href={`${BASE}/timeline/`}>timeline</a>,
+        the <a href={`${BASE}/compare/`}>compare matrix</a>, or any category page in the top nav.
       </p>
     </noscript>
   </article>

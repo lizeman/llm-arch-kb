@@ -2,22 +2,15 @@
 import { createMemo, createSignal } from "solid-js";
 
 /**
- * RoPE position-dependent rotation visualizer.
- *
- * Shows how the angle applied to a single (2i, 2i+1) pair of Q coordinates depends on the
- * rotation rate θ_i = b^{-2i/d_h} and on the absolute position t. The user manipulates the
- * dimension index i and the position t and watches the resulting rotation.
- *
- * Plan §11.4 contract: SVG viewBox, ≥44px touch targets, aria-valuetext on sliders,
- * prefers-reduced-motion via tokens.css, <=400 lines.
+ * RoPE rotation visualizer: angle on a (2i, 2i+1) Q-coordinate pair as a function of the
+ * rotation rate θ_i = b^{-2i/d_h} and the absolute position t.
  */
 
-const D_H = 128; // head dim
+const D_H = 128;
 const BASE = 10000;
 const MAX_POS = 8192;
 
 function thetaForDim(i: number): number {
-  // θ_i = base^{-2i/d_h}; clamp to first half (pair index).
   return Math.pow(BASE, (-2 * i) / D_H);
 }
 

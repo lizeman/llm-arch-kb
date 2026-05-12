@@ -2,20 +2,11 @@
 import { createMemo, createSignal, For } from "solid-js";
 
 /**
- * Sliding window attention visualization.
- *
- * Shows the causal × windowed attention mask as a grid of queries (rows) and keys (columns).
- * Cells light up if the query at row t attends to the key at column s, i.e. iff
- *    s <= t  AND  t - s < W.
- *
- * The slider controls W. Edge effects (first W positions seeing the full prefix) are made
- * explicit by the visualization.
- *
- * Plan §11.4 contract: SVG viewBox, ≥44px touch targets, aria-valuetext on slider,
- * prefers-reduced-motion via tokens.css, <=400 lines.
+ * Sliding window attention visualization: causal × windowed mask. A cell (t, s) lights up iff
+ * s ≤ t AND t - s < W.
  */
 
-const N = 16; // sequence length to display
+const N = 16;
 
 export default function SlidingWindow() {
   const [w, setW] = createSignal(4);

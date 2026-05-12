@@ -9,18 +9,12 @@ interface Props {
 
 const { paper_title, introduced_by, year, arxiv_id, paper_url } = Astro.props;
 
-// Build a BibTeX key from arxiv_id (replaces dots with underscores for valid LaTeX keys).
+// Dots in arxiv IDs aren't valid in LaTeX bibkeys.
 const bibKey = `arxiv${arxiv_id.replace(/\./g, "_")}`;
-
-// Author field: take everything before " et al." or the first comma; flip to "Last, First" if a space is present.
-function bibAuthor(intro: string): string {
-  // We just emit the lab/group name as-is since intro is normally short — BibTeX accepts text.
-  return intro.replace(" et al.", " and others");
-}
 
 const bib = `@article{${bibKey},
   title  = {${paper_title}},
-  author = {${bibAuthor(introduced_by)}},
+  author = {${introduced_by.replace(" et al.", " and others")}},
   year   = {${year}},
   eprint = {${arxiv_id}},
   archivePrefix = {arXiv},

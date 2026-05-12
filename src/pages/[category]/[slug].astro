@@ -1,16 +1,14 @@
 ---
 import { getCollection } from "astro:content";
 import TechniqueLayout from "~/layouts/TechniqueLayout.astro";
+import { slugTail } from "~/utils/site";
 
 export async function getStaticPaths() {
   const all = await getCollection("techniques");
-  return all.map((entry) => {
-    const slugLast = entry.slug.split("/").pop()!;
-    return {
-      params: { category: entry.data.category, slug: slugLast },
-      props: { entry },
-    };
-  });
+  return all.map((entry) => ({
+    params: { category: entry.data.category, slug: slugTail(entry.slug) },
+    props: { entry },
+  }));
 }
 
 type Props = { entry: Awaited<ReturnType<typeof getCollection<"techniques">>>[number] };

@@ -108,12 +108,14 @@ export default function YarnBands() {
 
         <polyline points={polylineRamp()} fill="none" stroke="#1a4f7a" stroke-width="2" />
 
-        {/* Band annotations */}
+        {/* Band annotations.
+            h = 1 at the top of the panel and corresponds to the slow band (apply θ/s);
+            h = 0 at the bottom corresponds to the fast band (keep θ unchanged). */}
         <text x={X0 + 8} y={Y0 + 16} font-family="var(--mono)" font-size="10" fill="#5a5a55">
-          fast band: keep θ
+          slow band: interpolate to θ/s
         </text>
         <text x={X0 + 8} y={Y0 + H - 8} font-family="var(--mono)" font-size="10" fill="#5a5a55">
-          slow band: interpolate to θ/s
+          fast band: keep θ
         </text>
         <text x={X0 + W - 8} y={Y0 + H / 2} text-anchor="end" font-family="var(--mono)" font-size="10" fill="#5a5a55">
           mid: smooth blend

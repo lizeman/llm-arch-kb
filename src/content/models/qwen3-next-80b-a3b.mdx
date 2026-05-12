@@ -1,0 +1,59 @@
+---
+name: "Qwen3-Next 80B-A3B"
+organization: "Alibaba (Qwen Team)"
+release_date: "2025-09-12"
+parameters_total: "80B"
+parameters_active: "3B"
+context_length: 262144
+open_weights: true
+model_card_url: "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct"
+disclosure_level: "documented"
+architecture:
+  positional: "RoPE on Gated Attention layers (head-dim 64); no positional encoding on Gated DeltaNet layers"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "Zero-centered, weight-decayed RMSNorm"
+  qk_norm: null
+  activation: "SwiGLU"
+  attention: "Hybrid: 3 Gated DeltaNet (linear) layers per 1 Gated Attention (full) layer, repeated 12× = 48 layers total. Gated Attention: 16 Q heads / 2 KV heads, head-dim 256."
+  moe: "Sparse MoE — 512 experts, top-10 routing, 1 shared expert"
+  other:
+    - "Hybrid linear + full attention at a 3:1 layer ratio"
+    - "Multi-Token Prediction (MTP) head for speculative decoding"
+    - "262K native context; up to ~1M with YaRN"
+    - "Apache 2.0 license"
+source_urls:
+  - "https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct"
+  - "https://blog.vllm.ai/2025/09/11/qwen3-next.html"
+notes: "Architecture details drawn from the Hugging Face model card (config.json + README) and the vLLM integration writeup. The hybrid layout — 12 × (3 × DeltaNet → 1 × Gated Attention) — and the MoE shape (512 experts, top-10, 1 shared expert) are stated in those sources. Activation function (SwiGLU) is in the config; QK-norm is not surfaced explicitly in the public materials and is left null rather than guessed."
+---
+
+Qwen3-Next 80B-A3B (September 2025) is Alibaba's first production hybrid linear-attention
+decoder: 80B total parameters, 3B active per token, 48 layers arranged as 12 repetitions of
+**3 Gated DeltaNet layers followed by 1 Gated Attention layer**.
+
+- **Gated DeltaNet** is a linear-attention variant in the
+  [linear-attention](/llm-arch-kb/attention/linear-attention/) family. It provides
+  $O(L)$ scaling and small KV cost; 75% of Qwen3-Next's layers use it.
+- **Gated Attention** is a standard full-attention layer with 16 query heads sharing 2 KV
+  heads (head-dim 256) and a 64-dim [RoPE](/llm-arch-kb/positional/rope/) head. 25% of
+  layers — every fourth — use it, providing the high-fidelity reasoning anchor that the
+  linear layers alone underperform on.
+
+The MoE shape is unusually wide: **512 experts with top-10 routing plus one always-on
+shared expert**, intermediate dim 512 per expert. The wide pool, with the shared expert,
+puts Qwen3-Next closer to the DeepSeek-MoE / Kimi-K2 line than to the no-shared-expert
+[Qwen3 flagship](/llm-arch-kb/models/qwen3-235b-a22b/).
+
+Other distinguishing choices in the public materials:
+
+- **Zero-centered, weight-decayed RMSNorm** as the normalization. The model card and vLLM
+  writeup describe this as a stability tweak over standard RMSNorm; weight decay is applied
+  to the gain parameter.
+- **Multi-Token Prediction (MTP) head** for speculative decoding at inference time.
+- **262K native context** with YaRN extension to ~1M reported by the team.
+
+Quality and efficiency are framed in the team's writeup as a 10× lower training cost and
+~10× higher long-context throughput than [Qwen3 32B](/llm-arch-kb/models/qwen3-32b/) at
+comparable downstream task quality. Per the [citation policy](/llm-arch-kb/about/), exact
+ablation deltas are taken from the team's writeups and Hugging Face materials; details not
+surfaced in those sources (e.g. QK-norm presence) are left out rather than guessed.

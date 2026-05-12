@@ -1,0 +1,40 @@
+---
+name: "Llama 2 70B"
+organization: "Meta"
+release_date: "2023-07-18"
+parameters_total: "70B"
+context_length: 4096
+open_weights: true
+paper_url: "https://arxiv.org/abs/2307.09288"
+model_card_url: "https://huggingface.co/meta-llama/Llama-2-70b"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10000)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA (8 KV heads, 64 query heads)"
+  moe: null
+  other:
+    - "80 layers"
+    - "First Llama to ship GQA — established the consensus stack"
+    - "Llama 2 license (commercial use permitted with restrictions)"
+source_urls:
+  - "https://arxiv.org/abs/2307.09288"
+  - "https://huggingface.co/meta-llama/Llama-2-70b"
+notes: "The model that established Pre-Norm RMSNorm + RoPE + GQA + SwiGLU as the consensus open-weights stack. Llama 3 and 3.1 keep this stack essentially unchanged."
+---
+
+Llama 2 70B (July 2023) is the model that established the Pre-Norm RMSNorm + RoPE + GQA +
+SwiGLU stack as the consensus choice for open-weights dense decoders. Llama 1 had used MHA
+at 65B; Llama 2 was the first in the family to ship [GQA](/llm-arch-kb/attention/gqa/), using
+the GQA paper's uptraining recipe to convert an MHA-pretrained checkpoint to GQA at modest
+additional compute (~5% of original training).
+
+The 70B configuration: 80 transformer layers, 8 KV heads shared across 64 query heads, head
+dim 128. Base context 4K. RoPE base 10000 (standard, no scaling).
+
+For the current Llama frontier with 128K context, see [Llama 3.1 70B](/llm-arch-kb/models/llama-3-1-70b/).
+The dense architecture is essentially identical; the context extension and tokenizer changes
+are the main 2.x → 3.x deltas.

@@ -13,6 +13,9 @@ problem_solved: "Get most of Multi-Query Attention's KV-cache savings without th
 predecessors: ["mha", "mqa"]
 successors: ["mla"]
 adopted_by:
+  - model: "llama-2-70b"
+    source_url: "https://arxiv.org/abs/2307.09288"
+    notes: "First production decoder to ship GQA; uptrained from an MHA checkpoint at 5% original-training compute."
   - model: "llama-3-1-70b"
     source_url: "https://arxiv.org/abs/2407.21783"
     notes: "8 key-value heads share 64 query heads (G = 8)."

@@ -2,6 +2,7 @@
 import BaseLayout from "./BaseLayout.astro";
 import AdoptionList from "~/components/AdoptionList.astro";
 import Lineage from "~/components/Lineage.astro";
+import RelatedTechniques from "~/components/RelatedTechniques.astro";
 import Cite from "~/components/Cite.astro";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
 import { monthName } from "~/utils/chronological-sort";
@@ -31,6 +32,7 @@ interface Props {
 const { frontmatter } = Astro.props;
 const month = monthName(frontmatter.month, "long");
 const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
+const routeSlug = (Astro.params as { slug?: string }).slug ?? "";
 ---
 
 <BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary}>
@@ -52,6 +54,8 @@ const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
     <slot />
 
     <AdoptionList adopted_by={frontmatter.adopted_by} />
+
+    <RelatedTechniques slug={routeSlug} category={frontmatter.category} />
 
     <Lineage
       predecessors={frontmatter.predecessors ?? []}

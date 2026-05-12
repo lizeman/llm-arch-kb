@@ -1,0 +1,235 @@
+---
+import BaseLayout from "~/layouts/BaseLayout.astro";
+
+type Entry = { term: string; definition: string };
+
+const entries: Entry[] = [
+  {
+    term: "Attention pattern",
+    definition:
+      "The matrix of which queries look at which keys. Full, causal, sliding-window, sparse, and linear-attention all differ in this pattern.",
+  },
+  {
+    term: "Decode",
+    definition:
+      "The autoregressive phase of generation: one token at a time, attending to the cached prefill via the KV cache. Memory-bandwidth bound on modern accelerators.",
+  },
+  {
+    term: "Embedding",
+    definition:
+      "The lookup that turns a discrete token id into a vector in the residual stream's d_model space. Often weight-tied to the output unembedding.",
+  },
+  {
+    term: "Expert",
+    definition:
+      "In a mixture-of-experts FFN, one of N parallel sub-MLPs. A router chooses a small subset per token, leaving the rest idle for that token.",
+  },
+  {
+    term: "FFN",
+    definition:
+      "Feed-forward network. The pointwise sub-layer of a transformer block — usually a two-layer MLP (or a gated variant like SwiGLU) applied to each position independently.",
+  },
+  {
+    term: "Gate",
+    definition:
+      "A learned scalar (or vector) that multiplies a signal, controlling how much of it passes. Central to GLU-family activations and to MoE routing.",
+  },
+  {
+    term: "GeGLU",
+    definition:
+      "GLU activation variant using GELU as the gate's nonlinearity. Used in some FFN designs prior to SwiGLU's dominance.",
+  },
+  {
+    term: "GQA",
+    definition:
+      "Grouped-query attention. Heads share key/value projections in groups (between MHA and MQA), shrinking the KV cache while keeping most of MHA's quality.",
+  },
+  {
+    term: "Group",
+    definition:
+      "In GQA, a cluster of query heads that all read from the same shared key/value pair.",
+  },
+  {
+    term: "Head",
+    definition:
+      "One of the H parallel attention computations inside a multi-head attention layer; each head projects Q/K/V into a lower-rank subspace.",
+  },
+  {
+    term: "KV cache",
+    definition:
+      "Per-token key/value tensors saved during prefill so each subsequent decode step can reuse them. Size grows linearly with context and dominates memory at long sequences.",
+  },
+  {
+    term: "LayerNorm",
+    definition:
+      "Mean-and-variance normalization applied across the d_model dimension at each position, followed by a learned gain and bias.",
+  },
+  {
+    term: "Load-balancing loss",
+    definition:
+      "An auxiliary MoE loss that pushes the router to spread tokens across experts evenly, preventing collapse to a few favorites.",
+  },
+  {
+    term: "Logits",
+    definition:
+      "The pre-softmax scores produced by the model's output projection — one per vocabulary token at each position.",
+  },
+  {
+    term: "MHA",
+    definition:
+      "Multi-head attention: the original Vaswani-et-al. formulation with H independent heads, each with its own Q, K, and V projections.",
+  },
+  {
+    term: "MLA",
+    definition:
+      "Multi-head latent attention: DeepSeek's KV-compression scheme that projects K/V to a low-rank latent and decompresses on the fly, shrinking the cache further than GQA.",
+  },
+  {
+    term: "MLP",
+    definition:
+      "Multi-layer perceptron. In transformer context, a synonym for the FFN sub-layer's two linear projections separated by a nonlinearity.",
+  },
+  {
+    term: "MoE",
+    definition:
+      "Mixture-of-experts. The FFN is replaced with N parallel experts plus a router that activates only k of them per token, decoupling parameter count from FLOPs.",
+  },
+  {
+    term: "MQA",
+    definition:
+      "Multi-query attention. All heads share a single key/value pair, maximally shrinking the KV cache at some quality cost. The endpoint of the MHA→GQA→MQA spectrum.",
+  },
+  {
+    term: "Perplexity",
+    definition:
+      "Exponentiated average negative log-likelihood per token on a held-out corpus. Lower is better; the standard intrinsic LM metric.",
+  },
+  {
+    term: "Prefill",
+    definition:
+      "The first generation phase: process the prompt in parallel and populate the KV cache. Compute-bound on modern accelerators.",
+  },
+  {
+    term: "Projection matrix",
+    definition:
+      "A learned linear map. In attention, the W_Q, W_K, W_V, and W_O matrices; in FFN, the up- and down-projections.",
+  },
+  {
+    term: "Residual stream",
+    definition:
+      "The shared d_model-wide vector that flows through the block, read from and written to by each sub-layer. The standard mental model for transformer internals.",
+  },
+  {
+    term: "RMSNorm",
+    definition:
+      "Root-mean-square normalization. Drops LayerNorm's mean-centering and bias, keeping just a learned scale. Cheaper and the default in modern frontier decoders.",
+  },
+  {
+    term: "RoPE",
+    definition:
+      "Rotary positional embedding. Encodes position by rotating pairs of Q and K coordinates by a frequency-dependent angle.",
+  },
+  {
+    term: "Router",
+    definition:
+      "In MoE, the small gating network that scores experts per token and selects the top-k to activate.",
+  },
+  {
+    term: "Sink token",
+    definition:
+      "An attention sink: the first few tokens (often BOS) which receive disproportionate attention mass. Streaming-LLM keeps them in the cache to stabilize long-context decoding.",
+  },
+  {
+    term: "Sliding window",
+    definition:
+      "An attention mask that restricts each query to a local window of recent keys, capping per-token cost at the window size rather than the full context.",
+  },
+  {
+    term: "Softmax",
+    definition:
+      "The exponentiate-and-normalize operation that turns a vector of scores into a probability distribution. Used inside attention and at the output head.",
+  },
+  {
+    term: "SwiGLU",
+    definition:
+      "GLU activation variant using Swish (SiLU) as the gate. The dominant modern FFN activation in frontier dense decoders.",
+  },
+  {
+    term: "Token",
+    definition:
+      "The discrete unit of input — typically a sub-word piece from a learned BPE/Unigram vocabulary. The model's context length is measured in tokens.",
+  },
+  {
+    term: "Top-k routing",
+    definition:
+      "The MoE rule: for each token, route it to only its top-k highest-scoring experts. k is usually 1 (Switch) or 2 (most modern MoEs).",
+  },
+];
+
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+const sorted = [...entries].sort((a, b) => a.term.toLowerCase().localeCompare(b.term.toLowerCase()));
+---
+
+<BaseLayout
+  title="Glossary"
+  description="One- or two-sentence definitions for the recurring vocabulary of the knowledge base — KV cache, prefill, decode, expert, router, and the rest."
+>
+  <article class="prose">
+    <header class="glossary-header">
+      <p class="section-eyebrow">Reference</p>
+      <h1>Glossary</h1>
+      <p class="lede">
+        Quick definitions for the recurring vocabulary used across entries. Each term links to
+        itself for easy citation. For the full treatment, follow the term into its technique page.
+      </p>
+    </header>
+
+    <dl class="glossary">
+      {sorted.map((e) => {
+        const id = slugify(e.term);
+        return (
+          <div class="row" id={id}>
+            <dt><a href={`#${id}`}>{e.term}</a></dt>
+            <dd>{e.definition}</dd>
+          </div>
+        );
+      })}
+    </dl>
+  </article>
+</BaseLayout>
+
+<style>
+  .glossary-header { margin: 48px 0 40px; }
+  .glossary-header h1 { margin: 8px 0 24px; }
+  .lede {
+    font-size: 1.125rem;
+    color: var(--text-soft);
+    line-height: 1.6;
+  }
+  .glossary {
+    margin: 0;
+    border-top: 1px solid var(--border);
+  }
+  .glossary .row {
+    padding: 18px 0;
+    border-bottom: 1px solid var(--border);
+    scroll-margin-top: 80px;
+  }
+  .glossary dt {
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .glossary dt a {
+    color: var(--text);
+    text-decoration: none;
+  }
+  .glossary dt a:hover { color: var(--accent); }
+  .glossary dd {
+    margin: 0;
+    color: var(--text-soft);
+    line-height: 1.6;
+  }
+</style>

@@ -1,0 +1,135 @@
+---
+import { getCollection } from "astro:content";
+import BaseLayout from "~/layouts/BaseLayout.astro";
+import { FACETS, FACET_LABELS, FACET_DESCRIPTIONS, type Facet } from "~/utils/facets";
+import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+import { sortChronological, isoMonth } from "~/utils/chronological-sort";
+import { BASE, slugTail } from "~/utils/site";
+import { TECHNIQUE_CATEGORIES } from "~/content/config";
+
+export async function getStaticPaths() {
+  return FACETS.map((facet) => ({ params: { facet } }));
+}
+
+const { facet } = Astro.params as { facet: Facet };
+const all = await getCollection("techniques");
+type TechniqueEntry = (typeof all)[number];
+const matching = all.filter((t) => ((t.data.facets ?? []) as readonly string[]).includes(facet));
+
+const grouped = TECHNIQUE_CATEGORIES.map((cat) => {
+  const items = sortChronological(
+    matching.filter((t) => t.data.category === cat) as unknown as TechniqueEntry[],
+  );
+  return { cat, label: CATEGORY_LABELS[cat] ?? cat, items };
+}).filter((g) => g.items.length > 0);
+---
+
+<BaseLayout
+  title={`${FACET_LABELS[facet]} · Facet`}
+  description={FACET_DESCRIPTIONS[facet]}
+>
+  <article class="prose">
+    <header class="facet-header">
+      <p class="section-eyebrow">
+        <a href={`${BASE}/facets/`}>Facets</a>
+      </p>
+      <h1>{FACET_LABELS[facet]}</h1>
+      <p class="lede">{FACET_DESCRIPTIONS[facet]}</p>
+      <p class="count-line">
+        {matching.length} {matching.length === 1 ? "technique" : "techniques"} tagged with this facet.
+      </p>
+    </header>
+
+    {grouped.length === 0 ? (
+      <p class="empty">No entries currently carry this facet.</p>
+    ) : (
+      grouped.map((g) => (
+        <section class="facet-group">
+          <h2>{g.label}</h2>
+          <ul class="entry-list">
+            {g.items.map((e) => (
+              <li>
+                <a href={`${BASE}/${g.cat}/${slugTail(e.slug)}/`}>
+                  <div class="entry-list__title">
+                    <strong>{e.data.title}</strong>
+                    <span class="abbr">{e.data.abbreviation}</span>
+                  </div>
+                  <div class="entry-list__meta">
+                    <span>{isoMonth(e.data.year, e.data.month)}</span>
+                    <span class="entry-list__summary">{e.data.summary}</span>
+                  </div>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))
+    )}
+  </article>
+</BaseLayout>
+
+<style>
+  .facet-header { margin: 48px 0 40px; }
+  .facet-header h1 { margin: 8px 0 16px; }
+  .lede {
+    font-size: 1.125rem;
+    color: var(--text-soft);
+    line-height: 1.6;
+  }
+  .count-line {
+    color: var(--text-faint);
+    font-size: var(--t-small);
+    margin-top: 16px;
+  }
+  .facet-group {
+    margin: 40px 0;
+  }
+  .facet-group h2 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    margin: 0 0 8px;
+  }
+  .empty {
+    color: var(--text-soft);
+    font-style: italic;
+    padding: 32px 0;
+  }
+  .entry-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .entry-list li { border-bottom: 1px solid var(--border); }
+  .entry-list li:last-child { border-bottom: none; }
+  .entry-list a {
+    display: block;
+    padding: 16px 0;
+    color: var(--text);
+    text-decoration: none;
+  }
+  .entry-list a:hover .entry-list__title strong { color: var(--accent); }
+  .entry-list__title {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 4px;
+  }
+  .entry-list__title strong { font-size: 1.0625rem; font-weight: 600; }
+  .abbr {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    letter-spacing: 0.04em;
+  }
+  .entry-list__meta {
+    color: var(--text-soft);
+    font-size: var(--t-small);
+    display: flex;
+    gap: 16px;
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .entry-list__summary { line-height: 1.55; }
+</style>

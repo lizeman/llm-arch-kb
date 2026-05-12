@@ -48,6 +48,7 @@ last_verified: "2026-05-11"
 ---
 
 import RopeRotor from "~/components/figures/RopeRotor";
+import RopeBaseSweep from "~/components/figures/RopeBaseSweep";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
@@ -116,6 +117,8 @@ Low-index dimensions encode *short-range* relative position (any nearby token ha
 phase). High-index dimensions encode *long-range* (the phase only differs at scales of thousands
 of tokens). This is the frequency-ladder structure that the figure above shows; it is also what
 YaRN exploits to extend the context window — see the [YaRN entry](/llm-arch-kb/positional/yarn/).
+
+<RopeBaseSweep client:visible />
 
 <p class="section-eyebrow">§ 5 · Why it won</p>
 ## Empirical evidence and adoption

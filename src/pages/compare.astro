@@ -9,6 +9,10 @@ import { TECHNIQUE_CATEGORIES } from "~/content/config";
 import ArchMatrix, { type ArchRow } from "~/components/compare/ArchMatrix";
 import HeatmapMatrix from "~/components/compare/HeatmapMatrix";
 import TechniqueMatrix from "~/components/compare/TechniqueMatrix";
+import HeadToHeadCompare, {
+  type ModelProfile,
+  type CategoryGroup,
+} from "~/components/compare/HeadToHeadCompare";
 import "~/components/compare/compare.css";
 
 const models = (await getCollection("models")).sort((a, b) =>
@@ -94,6 +98,58 @@ const techStatusOptions = Array.from(new Set(techRows.map((t) => t.status)))
   .map((s) => ({ key: s, label: s }));
 const techYears = techRows.map((t) => t.year);
 const techYearBounds = { min: Math.min(...techYears), max: Math.max(...techYears) };
+
+// ----- Head-to-head profiles --------------------------------------------
+// For each model, walk every technique's adopted_by list and group the hits
+// by category in the technique-list display order.
+const profiles: ModelProfile[] = models.map((m) => {
+  const adopted: Record<string, { slug: string; title: string; abbreviation: string; href: string }[]> = {};
+  for (const cat of TECHNIQUE_CATEGORIES) adopted[cat] = [];
+  for (const t of sortedTechniques) {
+    const isAdopter = (t.data.adopted_by ?? []).some((a) => a.model === m.slug);
+    if (!isAdopter) continue;
+    adopted[t.data.category].push({
+      slug: slugTail(t.slug),
+      title: t.data.title,
+      abbreviation: t.data.abbreviation,
+      href: `${BASE}/${t.data.category}/${slugTail(t.slug)}/`,
+    });
+  }
+  const adoptedByCategory: CategoryGroup[] = TECHNIQUE_CATEGORIES
+    .filter((c) => adopted[c].length > 0)
+    .map((c) => ({
+      category: c,
+      categoryLabel: CATEGORY_LABELS[c] ?? c,
+      techniques: adopted[c],
+    }));
+
+  const arch: Record<string, string> = {};
+  for (const s of ARCH_SLOTS) {
+    arch[s.key] = displayArch(m.data.architecture[s.key as ArchKey] as string | boolean | null);
+  }
+
+  return {
+    slug: m.slug,
+    name: m.data.name,
+    organization: m.data.organization,
+    releaseDate: m.data.release_date,
+    yearLabel: m.data.release_date.length >= 7 ? m.data.release_date.slice(0, 7) : m.data.release_date,
+    parametersTotal: m.data.parameters_total,
+    parametersActive: m.data.parameters_active ?? null,
+    contextLength: m.data.context_length,
+    disclosure: m.data.disclosure_level,
+    href: `${BASE}/models/${m.slug}/`,
+    architecture: arch,
+    adoptedByCategory,
+  };
+});
+
+// Default focus: 3 widely-cited recent dense/MoE frontier models from different orgs,
+// chosen to illustrate consensus stack vs MLA divergence. Falls back gracefully if any
+// of the preferred slugs aren't in the corpus.
+const PREFERRED_DEFAULT_FOCUS = ["deepseek-v3", "llama-3-1-70b", "gemma-3-27b"];
+const knownSlugs = new Set(models.map((m) => m.slug));
+const defaultFocus = PREFERRED_DEFAULT_FOCUS.filter((s) => knownSlugs.has(s));
 ---
 
 <BaseLayout
@@ -105,56 +161,72 @@ const techYearBounds = { min: Math.min(...techYears), max: Math.max(...techYears
       <p class="section-eyebrow">Browse</p>
       <h1>Compare</h1>
       <p class="lede">
-        Architecture slot by architecture slot, every documented model in the knowledge base.
+        Pick up to three models to see their architecture and adopted techniques side by side.
         Empty cells (—) mean the choice was not publicly disclosed, per the
         <a href={`${BASE}/about/`}>citation policy</a>.
       </p>
     </header>
 
-    <h2>Model adoption matrix</h2>
-    <p class="table-lede">
-      Each row is a production model with public architecture documentation. Each column is a
-      design slot. Click a column header to sort; chips above filter by organization, disclosure
-      level, or release-year range.
-    </p>
-
-    <ArchMatrix
+    <HeadToHeadCompare
       client:visible
-      rows={archRows}
-      slots={[...ARCH_SLOTS]}
-      organizations={archOrgs}
-      disclosures={archDisclosures}
-      yearBounds={archYearBounds}
+      profiles={profiles}
+      archSlots={[...ARCH_SLOTS]}
+      defaultFocus={defaultFocus}
+      maxFocus={3}
     />
 
-    <h2 class="mt-section">Model × technique adoption matrix</h2>
-    <p class="table-lede">
-      Rows are models, columns are techniques grouped by category. A filled marker means the
-      model's spec sheet cites that technique. Hover a cell to highlight its row and column.
-      Select 2–6 models below to compare them side-by-side.
-    </p>
+    <details class="cmp-fullgrid">
+      <summary>
+        <span class="cmp-fullgrid-label">All-models grid view</span>
+        <span class="cmp-fullgrid-hint">— sortable matrices across every model and technique</span>
+      </summary>
 
-    <HeatmapMatrix
-      client:visible
-      models={heatmapModels}
-      columns={heatmapColumns}
-      categoryOptions={heatmapCategoryOptions}
-      organizationOptions={heatmapOrgOptions}
-    />
+      <div class="cmp-fullgrid-body">
+        <h2>Model architecture matrix</h2>
+        <p class="table-lede">
+          Each row is a production model with public architecture documentation. Each column is a
+          design slot. Click a column header to sort; chips above filter by organization,
+          disclosure level, or release-year range.
+        </p>
 
-    <h2 class="mt-section">Technique matrix</h2>
-    <p class="table-lede">
-      Each row is a documented technique. The "adopters" column counts how many of our
-      spec-sheet'd models cite the technique. Click any column header to sort.
-    </p>
+        <ArchMatrix
+          client:visible
+          rows={archRows}
+          slots={[...ARCH_SLOTS]}
+          organizations={archOrgs}
+          disclosures={archDisclosures}
+          yearBounds={archYearBounds}
+        />
 
-    <TechniqueMatrix
-      client:visible
-      rows={techRows}
-      categories={techCategoryOptions}
-      statuses={techStatusOptions}
-      yearBounds={techYearBounds}
-    />
+        <h2 class="mt-section">Model × technique adoption matrix</h2>
+        <p class="table-lede">
+          Rows are models, columns are techniques grouped by category. A filled marker means the
+          model's spec sheet cites that technique. Hover a cell to highlight its row and column.
+        </p>
+
+        <HeatmapMatrix
+          client:visible
+          models={heatmapModels}
+          columns={heatmapColumns}
+          categoryOptions={heatmapCategoryOptions}
+          organizationOptions={heatmapOrgOptions}
+        />
+
+        <h2 class="mt-section">Technique matrix</h2>
+        <p class="table-lede">
+          Each row is a documented technique. The "adopters" column counts how many of our
+          spec-sheet'd models cite the technique. Click any column header to sort.
+        </p>
+
+        <TechniqueMatrix
+          client:visible
+          rows={techRows}
+          categories={techCategoryOptions}
+          statuses={techStatusOptions}
+          yearBounds={techYearBounds}
+        />
+      </div>
+    </details>
 
     <h2 class="mt-section">Coverage notes</h2>
     <p>

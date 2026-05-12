@@ -46,8 +46,9 @@ export default function LandmarkAttention() {
     <figure class="figure" data-testid="landmark-attention">
       <svg viewBox="0 0 700 300" role="img" aria-label="Landmark Attention two-stage selection">
         <title>
-          Landmark Attention: each chunk has a landmark token (red); queries first attend to all
-          landmarks, pick top-K chunks, then attend within those chunks only.
+          Landmark Attention: each chunk has a landmark token (dark blue tick at the chunk's
+          right edge); queries first attend to all landmarks, pick top-K chunks, then attend
+          within those chunks only.
         </title>
 
         <text

@@ -1,0 +1,106 @@
+---
+title: "Gemma 3 Norm-Everywhere"
+abbreviation: "Norm-Everywhere"
+category: "normalization"
+year: 2025
+month: 3
+introduced_by: "Google DeepMind (Gemma 3 team)"
+paper_title: "Gemma 3 Technical Report"
+arxiv_id: "2503.19786"
+paper_url: "https://arxiv.org/abs/2503.19786"
+status: "production-adopted"
+problem_solved: "Take Sandwich-LN to its maximal form by applying it to both the attention and FFN sublayers — every signal entering or leaving any sublayer's compute graph passes through a norm."
+predecessors: ["sandwich-ln"]
+successors: []
+adopted_by:
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "Norm-everywhere applied across the entire 27B family (and the 1B/4B/12B variants), with QK-Norm on top."
+summary: "Sandwich-LN applied to BOTH the attention and FFN sublayers — four RMSNorms per block. Combined with QK-Norm and interleaved local/global attention, it stabilizes the entire Gemma 3 size family from a single recipe."
+tags: ["normalization", "gemma", "stability"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## Sandwich-LN, taken to its limit
+
+[Sandwich-LN](/llm-arch-kb/normalization/sandwich-ln/) wraps each sublayer with two RMSNorms —
+one before, one after — both inside the residual branch. Gemma 2 introduced this for the
+attention sublayer specifically, leaving the FFN sublayer in plain Pre-Norm. Gemma 3 (March
+2025) extends Sandwich placement to the FFN as well: every sublayer in every block is
+sandwiched.
+
+The result is **four RMSNorms per block** instead of the conventional two:
+
+$$
+\begin{aligned}
+\mathbf{x}_{\ell+1/2} &= \mathbf{x}_\ell + \mathrm{Norm}_2\bigl(\mathrm{Attn}\bigl(\mathrm{Norm}_1(\mathbf{x}_\ell)\bigr)\bigr)\\
+\mathbf{x}_{\ell+1}   &= \mathbf{x}_{\ell+1/2} + \mathrm{Norm}_4\bigl(\mathrm{FFN}\bigl(\mathrm{Norm}_3(\mathbf{x}_{\ell+1/2})\bigr)\bigr)
+\end{aligned}
+$$
+
+Every signal that enters or leaves either sublayer passes through a norm. The identity path
+$\mathbf{x}_\ell \to \mathbf{x}_{\ell+1}$ is untouched (gradients flow as cleanly as Pre-Norm),
+but each block's contribution to the residual stream is bounded twice — once entering, once
+leaving — by the sandwich.
+
+<p class="section-eyebrow">§ 2 · Why both halves</p>
+## What the FFN sandwich adds
+
+Gemma 2's attention-only Sandwich already bounded the attention sublayer's contribution to the
+residual. Gemma 3's tech report (§4) reports that adding the FFN sandwich tightens the
+distribution of FFN outputs at every layer — reducing the rare-but-real spikes where a single
+SwiGLU activation would produce an outlier coordinate that propagated through the residual.
+
+The cost is two extra RMSNorm calls per block. With RMSNorm's single-reduction implementation,
+this is modest in wall-clock terms (RMSNorm's compute is dominated by the matrix products in
+the surrounding sublayer); the team reports the per-step training overhead as "low single
+digits" of percent.
+
+```python
+# Gemma 3 norm-everywhere block
+def block_norm_everywhere(x, attn, ffn, n1, n2, n3, n4):
+    x = x + n2(attn(n1(x)))   # sandwich on attention
+    x = x + n4(ffn(n3(x)))    # sandwich on FFN
+    return x
+```
+
+<p class="section-eyebrow">§ 3 · The supporting cast</p>
+## Norm-everywhere lives inside a stability package
+
+Gemma 3 doesn't ship norm-everywhere alone. The training-stability story in the tech report
+combines several choices, each pulling in the same direction:
+
+- **[QK-Norm](/llm-arch-kb/normalization/qk-norm/)** on Q and K before the attention dot
+  product, capping the attention-logit magnitude.
+- **Interleaved 5:1 local [SWA](/llm-arch-kb/attention/sliding-window/) + global attention**,
+  with the local layers at RoPE base 10K and the global layers at base 1M.
+- **Soft attention logit capping** (tanh clamp), independent of QK-Norm, as belt-and-suspenders
+  protection against attention-side spikes.
+- **GeGLU** FFN throughout, consistent with the broader Gemma family.
+
+This combination scales unchanged across the Gemma 3 family — 1B, 4B, 12B, and 27B variants
+all use the same block-level recipe. The team's claim is that the consistency of training loss
+curves across that scale range was the main motivation for accepting the extra norm cost.
+
+<p class="section-eyebrow">§ 4 · Where it sits</p>
+## Minority but coherent
+
+Norm-everywhere is the most aggressive normalization placement in any current open frontier
+model. Most peers (Llama, DeepSeek, Qwen, Mistral) stay with plain Pre-Norm. AI2's
+[OLMo 2 Post-Norm](/llm-arch-kb/normalization/olmo2-post-norm/) is an adjacent but different
+choice — also bounded-perturbation, but one-sided. Gemma 3's choice is two-sided on every
+sublayer.
+
+For the rest of Gemma 3's stack — interleaved SWA + global, QK-Norm, soft logit cap — see the
+[Gemma 3 27B model entry](/llm-arch-kb/models/gemma-3-27b/).
+
+<Summary>
+**Norm-everywhere in one breath.** Sandwich-LN applied to both the attention and the FFN
+sublayer of every block — four RMSNorms per block. Identity path stays clean, each sublayer's
+contribution to the residual is bounded twice. Combined with QK-Norm, soft logit cap, and
+interleaved local/global SWA, it stabilizes the entire Gemma 3 1B–27B size family from a
+single training recipe.
+</Summary>

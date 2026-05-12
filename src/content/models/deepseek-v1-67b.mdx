@@ -1,0 +1,52 @@
+---
+name: "DeepSeek LLM 67B"
+organization: "DeepSeek-AI"
+release_date: "2024-01-05"
+parameters_total: "67B"
+context_length: 4096
+open_weights: true
+paper_url: "https://arxiv.org/abs/2401.02954"
+model_card_url: "https://huggingface.co/deepseek-ai/deepseek-llm-67b-base"
+disclosure_level: "open"
+architecture:
+  positional: "RoPE (base 10000)"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA (64 query heads, 8 KV heads)"
+  moe: null
+  other:
+    - "95 layers"
+    - "Llama-2-style dense decoder, no MoE — a deliberate baseline before V2's MLA + DeepSeekMoE jump"
+    - "Trained on 2T tokens; bilingual Chinese/English"
+source_urls:
+  - "https://arxiv.org/abs/2401.02954"
+  - "https://huggingface.co/deepseek-ai/deepseek-llm-67b-base"
+  - "https://github.com/deepseek-ai/DeepSeek-LLM"
+notes: "The dense V1 of the DeepSeek family. Same Pre-Norm + RMSNorm + RoPE + SwiGLU + GQA stack as Llama 2; the architectural divergence came with V2 (MLA, DeepSeekMoE) and V3 (aux-loss-free routing)."
+---
+
+DeepSeek LLM 67B (January 2024) is the dense V1 of the DeepSeek family — the deliberate
+baseline against which V2's architectural jump was measured. The architecture is the
+consensus open-weights stack of early 2024:
+
+- **Pre-Norm RMSNorm** placement.
+- **RoPE** with base 10000 and a 4K context window.
+- **SwiGLU** FFN at standard 8/3 hidden ratio.
+- **GQA** with 64 query heads grouped into 8 KV heads — the first DeepSeek model to use GQA
+  (V1's smaller 7B variant uses MHA).
+
+There is no MLA, no MoE, no decoupled-RoPE head, no aux-loss-free routing — all those choices
+arrived with V2 (May 2024) and V3 (December 2024). The V1 paper's contribution is empirical:
+disciplined scaling-law studies on bilingual data, with the architecture held constant at the
+2024 consensus.
+
+Reading the V1 paper alongside V2 makes the V2 architectural delta legible — V2's
+[MLA](/llm-arch-kb/attention/mla/) replaces V1's GQA, V2's
+[DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) replaces the dense FFN, and V2's
+[YaRN](/llm-arch-kb/positional/yarn/) extension replaces the fixed 4K context. Everything else
+(Pre-Norm, RMSNorm, SwiGLU base, RoPE base) carries over unchanged.
+
+For later DeepSeek releases see [DeepSeek V2](/llm-arch-kb/models/deepseek-v2/) and
+[DeepSeek V3](/llm-arch-kb/models/deepseek-v3/).

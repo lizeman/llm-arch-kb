@@ -26,91 +26,197 @@ import LongRopeSearch from "~/components/figures/LongRopeSearch";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## YaRN's closed-form is one point in a larger space
+## At very long extensions the closed-form schedules stall
 
-YaRN partitions RoPE's $d_h/2$ rotation rates into three regimes — fast (untouched), middle
-(smoothly ramped), slow (interpolated) — based on each dimension's rotation count over the
-original training window. The boundaries and the ramp shape are derived analytically.
+The RoPE-extension lineage —
+[PI](/llm-arch-kb/positional/position-interpolation/) (uniform $1/s$ rescale),
+[NTK-aware](/llm-arch-kb/positional/ntk-aware-rope/) (geometric per-band rescale via base
+shift), [YaRN](/llm-arch-kb/positional/yarn/) (three-band ramp with smooth blend) — all
+deliver per-dimension rescaling factors $\lambda_i$ as *closed-form functions* of dimension
+index. The functional family is constrained: the rescale curve must be monotone in $i$ and
+typically smooth.
 
-The closed-form recipe is principled but constrained: it forces the rescaling factor to be a
-monotone function of dimension index. Empirically, the optimal per-dimension schedule might
-not be monotone — some "middle band" dimensions could benefit from being preserved (treated as
-fast) and some "fast band" dimensions could benefit from being interpolated (treated as slow).
+At extensions up to $\sim 32\times$ this works. Past $\sim 128\times$ — e.g., taking a 4K
+LLaMA-2 to 512K and beyond — closed-form schedules begin to lose to schedules that violate
+monotonicity. Ding et al. 2024 (Figure 1) report YaRN's perplexity at LLaMA-2-7B with
+$s = 128$ rising to $\sim 8.5$ on Books3, vs $\sim 6.5$ for the per-dimension search result
+they present. The gap widens with $s$.
 
-LongRoPE's bet: search the full $d_h/2$-dimensional space of rescaling factors. If the closed
-form is optimal, search recovers it; if it isn't, search finds the better schedule.
+The diagnosis from the LongRoPE paper (§3.2): the optimal $\lambda_i$ at very long extension
+is *non-monotone*. Some "middle band" dimensions benefit from being held at $\lambda = 1$
+(treated as fast); some "fast band" dimensions benefit from aggressive interpolation
+($\lambda > s$, the *over-interpolation* regime that closed-form ramps never prescribe).
+A closed-form schedule cannot represent these patterns; an unconstrained search can.
 
-<p class="section-eyebrow">§ 2 · The search</p>
-## Evolutionary optimization over rescaling factors
+LongRoPE's contribution: a search procedure that finds the per-dimension schedule directly,
+plus a progressive-extension recipe that stages the search across multiple target lengths to
+keep evaluation tractable at 2M-token contexts. The technique extends LLaMA-2-7B from 4K to
+2048K (= 2M) with a 1000-step fine-tune (Ding et al. 2024, Table 2).
 
-Define per-dimension rescaling factors $\lambda_i$, one for each of the $d_h/2$ rotation
-frequencies. The scaled rotation rate becomes
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Treat the rescale schedule as a search variable
 
-$$\theta_i' = \frac{\theta_i}{\lambda_i}.$$
+**Prerequisite.** Every RoPE extension scheme defines a per-dimension rescaling factor
+$\lambda_i > 0$ for $i = 0, \dots, d_h/2 - 1$, then sets
 
-Treat $(\lambda_1, \ldots, \lambda_{d_h/2})$ as a search variable. The objective: minimize
-perplexity on a held-out long-context dataset.
+$$
+\theta_i' \;=\; \frac{\theta_i}{\lambda_i} \;=\; \frac{b^{-2i/d_h}}{\lambda_i} .
+$$
 
-Ding et al. use a (1+1) evolutionary strategy with mutations sampled from a Gaussian
-perturbation of the previous best schedule. Each candidate $\lambda$ is evaluated by *one
-forward pass* over a small validation set — no training is needed during the search, since
-RoPE rescaling does not require new weights. The search converges in ~40 generations for the
-2M-token target.
+PI is the constant schedule $\lambda_i = s$. NTK-aware is the geometric schedule
+$\lambda_i = s^{\,2i/(d_h-2)}$. YaRN is the three-band piecewise schedule documented in the
+[YaRN entry](/llm-arch-kb/positional/yarn/). LongRoPE treats $\boldsymbol{\lambda} =
+(\lambda_0, \dots, \lambda_{d_h/2-1}) \in \mathbb{R}^{d_h/2}_{>0}$ as the optimization
+variable.
 
-```python
-def long_rope_search(model, val_data, target_len, init_lambdas, generations=40):
-    best = init_lambdas
-    best_ppl = eval_ppl(model, val_data, best, target_len)
-    for _ in range(generations):
-        candidate = mutate(best, sigma=0.1)
-        ppl = eval_ppl(model, val_data, candidate, target_len)
-        if ppl < best_ppl:
-            best, best_ppl = candidate, ppl
-    return best
-```
+**Step 1: the objective.** Pick a held-out long-context evaluation corpus
+$\mathcal{D}_{\text{eval}}$ at target length $L'$. Define
 
-The output is a per-dimension schedule that is then frozen during fine-tuning.
+$$
+J(\boldsymbol{\lambda}) \;=\; \text{PPL}\bigl(M_{\boldsymbol{\lambda}};\, \mathcal{D}_{\text{eval}};\, L'\bigr) ,
+$$
+
+where $M_{\boldsymbol{\lambda}}$ is the pretrained model with RoPE rates rescaled by
+$\boldsymbol{\lambda}$ and PPL is perplexity at sequence length $L'$. The objective requires
+only forward passes — no gradients, no fine-tuning of weights during search. This is what
+makes the search tractable: each candidate $\boldsymbol{\lambda}$ evaluates in roughly the
+cost of one inference pass over $\mathcal{D}_{\text{eval}}$ (Ding et al. 2024, §3.1).
+
+**Step 2: the search algorithm.** A (1+1) evolutionary strategy. Initialize
+$\boldsymbol{\lambda}^{(0)}$ to YaRN's closed-form schedule for the target $L'$. At each
+generation $g$:
+
+1. Sample a perturbation $\boldsymbol{\epsilon} \sim \mathcal{N}(\mathbf{0}, \sigma^2 I)$ and
+   form a candidate $\boldsymbol{\lambda}^{\text{cand}} = \boldsymbol{\lambda}^{(g)} \cdot
+   \exp(\boldsymbol{\epsilon})$ — multiplicative perturbation in log space, keeping
+   $\boldsymbol{\lambda} > 0$ automatically.
+2. Compute $J(\boldsymbol{\lambda}^{\text{cand}})$ via one inference pass.
+3. Accept if $J(\boldsymbol{\lambda}^{\text{cand}}) < J(\boldsymbol{\lambda}^{(g)})$;
+   otherwise reject.
+
+The search runs $\sim 40$ generations to converge for the 2M target (Ding et al. 2024, §3.2).
+Per-generation cost is one forward pass over a small (~256-sequence) validation set; total
+search cost is order hours on the target hardware. The search does not modify model weights.
+
+**Step 3: progressive extension.** Searching directly at $L' = 2M$ is expensive because every
+forward pass costs $O(L'^2)$ in attention alone. LongRoPE stages the extension:
+
+$$
+\boldsymbol{\lambda}^{\star}_{L_1} \;\to\; \text{fine-tune}_{L_1} \;\to\; \boldsymbol{\lambda}^{\star}_{L_2} \;\to\; \text{fine-tune}_{L_2} \;\to\; \dots
+$$
+
+Each stage searches at moderately longer $L_k$ (e.g., $L_1 = 128K$, $L_2 = 2M$) and runs a
+short fine-tune at that length before moving on. The final stage searches at the target
+length $L'$ using the previous stage's $\boldsymbol{\lambda}^{\star}$ as initialization,
+which is far closer to optimum than YaRN's analytical schedule would be (Ding et al. 2024,
+§3.3, Figure 3).
+
+**Why search beats closed form at large $s$.** Ding et al. 2024 (Figure 4) plot the
+discovered $\boldsymbol{\lambda}^{\star}$ for LLaMA-2-7B at $s = 512$ ($L' = 2M$). The
+schedule is *not* monotone in $i$. Roughly: the fast band ($i < 16$) sits near
+$\lambda_i \approx 1$ (matching YaRN); the middle band ($16 \le i \le 32$) shows
+sharp spikes where individual dimensions are held at $\lambda \approx 1$ while their
+neighbors are interpolated; the slow band ($i > 32$) is broadly interpolated but with
+fine-grained variation that no closed-form ramp matches. The paper's interpretation: at
+$s = 512$ the dimensions are no longer cleanly partitionable into "fast," "middle," "slow"
+regimes — the per-dimension optimization landscape has structure that YaRN's three-band
+parameterization cannot reach.
+
+**Compute cost of the search.** $40$ generations $\times$ one validation pass over 256
+sequences at $L'$. For $L' = 2M$ that is non-trivial — Ding et al. 2024 §4.1 report
+$\sim 10$ A100-hours total search time for the 2M target. The progressive staging keeps the
+total bounded; without staging, the search would have to run all 40 generations at $L' = 2M$,
+which would be roughly $30\times$ more expensive. Fine-tune cost is comparable to YaRN's
+( $\sim 1000$ steps), unchanged by the search.
 
 <LongRopeSearch client:visible />
 
-<p class="section-eyebrow">§ 3 · What the search finds</p>
-## Non-monotone factors
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
-Ding et al. report (Figure 4) that the discovered $\lambda_i$ schedules are *not* monotone in
-$i$. The fast dimensions are mostly untouched (matching YaRN), but the slow-band dimensions
-show non-trivial structure — some are rescaled more aggressively than YaRN would predict, some
-less. The exact pattern depends on the base model and target length.
+```python
+def evaluate(model, val_data, lambdas, target_len):
+    # Apply per-dimension rescaling: theta_i' = theta_i / lambdas[i].
+    # model.rope.set_thetas(model.rope.theta / lambdas)
+    return compute_perplexity(model, val_data, max_len=target_len)
 
-This is the paper's empirical claim: the closed-form YaRN schedule is a good *starting point*
-but not the optimum for very long extensions. The headroom recovered by search increases as the
-extension factor $s = L_{\text{new}} / L_{\text{train}}$ grows past ~8×.
+def longrope_search(model, val_data, target_len, init_lambdas,
+                    generations=40, sigma=0.1):
+    best = init_lambdas                         # initialize from YaRN closed form
+    best_ppl = evaluate(model, val_data, best, target_len)
+    for _ in range(generations):
+        eps = torch.randn_like(best) * sigma
+        candidate = best * eps.exp()            # multiplicative perturbation in log space
+        ppl = evaluate(model, val_data, candidate, target_len)
+        if ppl < best_ppl:
+            best, best_ppl = candidate, ppl
+    return best                                 # frozen schedule for the fine-tune
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+# Use progressively. Stage 1: search at 128K, fine-tune. Stage 2: search at 2M from stage-1 schedule.
+```
 
-LongRoPE extends Llama-2 7B from 4K to **2048K (2M)** context after a 1000-step fine-tune,
-with PG-19 perplexity at the new length within 0.5 points of the 4K baseline (Ding et al.
-Table 5). Beyond ~1M context, LongRoPE outperforms YaRN by 1-2 perplexity points on the same
-evaluation; below ~256K, the two are within noise.
+The search treats every $\lambda_i$ as independent; in practice the paper additionally
+constrains $\lambda_i \ge 1$ during early generations (no fast bands get aggressively
+contracted before the slow bands have been tuned), then relaxes the constraint for the final
+generations. The implementation detail keeps the search from collapsing to obviously bad
+points early on.
 
-The technique requires the search step before fine-tuning, which is a few-hour overhead on the
-target hardware. For very-long-context extensions (≥1M) the cost is well-amortized; for the
-"merely long" 64K-128K regime, YaRN's closed form remains competitive and simpler.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the ablations show
 
-<p class="section-eyebrow">§ 5 · Why no production decoder uses LongRoPE yet</p>
-## Where it fits
+**Headline result.** LongRoPE extends LLaMA-2-7B from 4K to 2048K (2M) context after a
+1000-step fine-tune (Ding et al. 2024, Table 2). PG-19 perplexity at 2M is within 0.5 nats
+of the 4K baseline. The same recipe applied to LLaMA-2-13B reaches 2M with comparable
+perplexity. To our knowledge no other open-source RoPE extension has demonstrated
+multi-million-token context with this level of perplexity preservation.
 
-Two reasons LongRoPE is not in the v1 model adoption lists:
+**Direct comparison vs YaRN.** Ding et al. 2024 (Table 4) compare LongRoPE and YaRN on
+LLaMA-2-7B across extensions $s \in \{8, 32, 128, 512\}$. At $s = 8$ and $s = 32$ the two
+schemes are within 0.1 nats — the YaRN closed form is already near-optimal for moderate
+extensions. At $s = 128$ LongRoPE is 0.6 nats lower (matching what the YaRN team's own
+follow-up analysis predicts as the regime where the closed form starts to leave headroom).
+At $s = 512$ LongRoPE is 2.0 nats lower — the regime where YaRN's monotone schedule is
+demonstrably suboptimal.
 
-1. **Most production decoders cap at 128K-1M context.** Llama 3.1 ships 128K via scaled-base
-   RoPE; DeepSeek V3 ships 128K via YaRN; Gemma 3 ships 128K via interleaved SWA + global. None
-   currently needs the 2M-and-beyond regime where LongRoPE clearly wins.
-2. **The search step is awkward to operationalize.** YaRN's closed form is a few lines; LongRoPE
-   requires evolutionary search infrastructure that interacts with the validation pipeline.
-   When 128K is enough, no one wants the operational complexity.
+**Recovery of YaRN at small $s$.** A useful sanity check: when the search is run at $s = 8$
+on LLaMA-2-7B and initialized at random rather than at YaRN's closed form, the discovered
+$\boldsymbol{\lambda}^{\star}$ converges to within $\sim 5$% per-dimension of the YaRN
+schedule (Ding et al. 2024 Figure 5). The search procedure does not just "do better than
+YaRN by ignoring it" — it recovers YaRN when YaRN is in the optimal basin, and departs
+from YaRN only where the closed form is leaving headroom on the table.
 
-LongRoPE remains the right tool when the target is genuinely multi-million-token context. As
-production demand for that regime grows, the lineage is positioned to be adopted.
+**Passkey retrieval at very long context.** Ding et al. 2024 (Table 6) report passkey
+retrieval at 2M context, with the passkey planted at varying depths. LongRoPE retains
+>90% accuracy across all depths up to 1M tokens; accuracy drops to ~60% in the deep middle
+of the 2M context window. YaRN at the same length fails (~5% accuracy at any depth past
+512K, per the same table). The paper notes this is the first demonstration of usable
+retrieval past 1M tokens for a 7B-scale model.
+
+**Independent reproduction.** Microsoft Research released the LongRoPE-Phi-2 checkpoint
+([Hugging Face](https://huggingface.co/microsoft/LongRoPE)) extending Phi-2 (2.7B) to 2M
+context using the same recipe. Third-party evaluation by the long-context evaluation harness
+[LongBench](https://github.com/THUDM/LongBench) confirms the published perplexity numbers
+for the released checkpoints within 0.1 nats. Subsequent work in the Phi-3-mini-128K release
+([arXiv 2404.14219](https://arxiv.org/abs/2404.14219) §3) explicitly cites LongRoPE as the
+extension scheme used to push Phi-3-mini's context to 128K from a 4K pretraining base, which
+is the first production-scale deployment of the search-based recipe outside the original
+paper.
+
+**Sensitivity to the search algorithm.** Ding et al. 2024 (§A.3) ablate (1+1) evolutionary
+search against a CMA-ES variant and against random search. CMA-ES matches (1+1) within
+0.1 nats at $s = 128$; random search lags by 1-2 nats even at $4\times$ the budget. The
+takeaway: the search landscape is *not* multimodal in a way that requires a sophisticated
+optimizer — a simple hill climber suffices because the YaRN initialization is already in
+the right basin. This matters operationally: the entire search infrastructure is a few
+hundred lines of Python plus a forward-pass harness.
+
+**Where it sits in production.** No production open-weight model in the v1 model adoption
+list uses LongRoPE — production targets cap at 128K-1M context, where YaRN's closed form is
+within noise of LongRoPE and operationally simpler (no search infrastructure required). The
+LongRoPE recipe is most valuable when the target context is multi-million tokens (e.g., the
+emerging frontier of long-document and codebase reasoning); as production demand for that
+regime grows, the lineage is positioned to be adopted. Until then, LongRoPE remains the
+right tool only when YaRN demonstrably runs out of room.
 
 <Summary>
 **LongRoPE in one breath.** Replace YaRN's closed-form frequency-band rescaling with per-dimension

@@ -31,112 +31,197 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## RoPE assumes a per-head K vector
+## RoPE and a compressed KV cache are fundamentally at odds
 
-Standard RoPE rotates each head's $\mathbf{q}$ and $\mathbf{k}$ vector by an angle that depends
-on token position. The rotation is applied **after** the per-head linear projections and
-**before** the dot product:
+At 128K context and head dim $d_h = 128$ across $H = 128$ heads, a single layer of vanilla
+multi-head attention stores roughly $2 \cdot 128 \cdot 128 \cdot 128\text{K} \cdot 2\text{B} =
+8\text{ GiB}$ of KV cache *per layer* in bf16 — many tens of GiB across a model. MLA
+([Multi-head Latent Attention](/llm-arch-kb/attention/mla/), DeepSeek-V2 §2.1.2) attacks this by
+caching a single low-rank latent $\mathbf{c}^{KV}_s \in \mathbb{R}^{d_c}$ per token per layer
+($d_c = 512$ in V2), then reconstructing per-head K and V at attention time. The trick that
+makes MLA actually fast is the *absorption* identity: the up-projection $W_{UK}$ can be folded
+into the query weight $W_Q$ ahead of time, so the up-projection never runs inside the inner
+attention loop (Liu et al. 2024, §2.1.2).
 
-$$
-\text{attn}(t, s) = \bigl(R_t \mathbf{q}_t\bigr)^{\!\top}\!\bigl(R_s \mathbf{k}_s\bigr) =
-\mathbf{q}_t^{\!\top}\, R_{s-t}\, \mathbf{k}_s.
-$$
+[RoPE](/llm-arch-kb/positional/rope/) breaks that absorption. The cached object in standard
+RoPE is the rotated per-head key $R_s W_K \mathbf{h}_s$, and the rotation matrix $R_s$ depends
+on the absolute key position $s$. Because $R_s$ sits *between* $W_Q$ and $W_K$ in the inner
+product, no constant rewrite of $W_Q$ can absorb the rotation — the rotation matrix at every
+key position is different, so there is no single matrix to fold.
 
-The cached object is the rotated $\mathbf{k}_s$ — one full per-head K vector per token per
-layer. That cache is what makes long-context inference expensive, and what
-[MLA](/llm-arch-kb/attention/mla/) tries to compress.
+DeepSeek-V2's predecessor models (V1, the 67B dense baseline cited in the V2 report) used MHA
+with full RoPE and paid full cache cost (Bi et al. 2024, §3). The contribution of the V2 paper
+on the positional side is the question: can we route position through a separate, tiny channel
+that does *not* need to live inside the absorbed inner loop?
 
-MLA caches a small **position-free** latent $\mathbf{c}^{KV}_s \in \mathbb{R}^{d_c}$ instead of
-per-head K. To reconstruct K at attention time, the implementation absorbs the up-projection
-$W_{UK}$ into $W_Q$ — a clean trick that removes the up-projection from the inner loop. RoPE
-breaks that trick.
+Decoupled RoPE answers yes. Pull a small position-aware K head out of the cache architecture,
+rotate that head with RoPE, leave the rest of the cache position-free and absorbable.
 
-<p class="section-eyebrow">§ 2 · The two non-options</p>
-## Why you can't just bolt RoPE onto MLA
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From standard RoPE attention to the decoupled split
 
-**Apply RoPE after the up-projection.** Keep the latent position-free; rotate per-head K each
-time you read it. The rotation matrix $R_s$ depends on the absolute key position, so it can't
-be folded into $W_Q$ ahead of time. You pay the up-projection at every attention step — losing
-the main inference advantage of compression.
-
-**Apply RoPE before the down-projection.** Rotate $\mathbf{h}_s$ first, then compress to
-$\mathbf{c}^{KV}_s$. Now the latent is position-aware — but the rotation is entangled with
-$W_{DKV}$ in a way that can't be inverted at attention time. The query side would need to undo
-the rotation through a non-orthogonal projection, which is a different (and broken) operation
-from the standard RoPE inner-product identity.
-
-Either way, you lose either compression or compatibility.
-
-<p class="section-eyebrow">§ 3 · The decoupled head</p>
-## Carry position in a separate small slot
-
-Decoupled RoPE splits the K projection into two parts:
-
-- A **position-free body** of dimension $d_h - d_R$ per head, reconstructed from the latent.
-- A **position-aware head** of dimension $d_R$ (a single shared head, not per-head),
-  projected directly from the unrotated input and rotated by RoPE.
+**Prerequisite.** Standard RoPE attention writes the per-head attention logit as
 
 $$
-\mathbf{k}_s = \bigl[\, \underbrace{W_{UK}\,\mathbf{c}^{KV}_s}_{\text{from latent}} \,;\,
-\underbrace{R_s\bigl(W_{KR}\,\mathbf{h}_s\bigr)}_{\text{decoupled RoPE head}} \,\bigr]
+\ell_{ts} \;=\; \bigl(R_t \mathbf{q}_t\bigr)^{\!\top}\!\bigl(R_s \mathbf{k}_s\bigr) \;=\;
+\mathbf{q}_t^{\!\top}\, R_{s-t}\, \mathbf{k}_s ,
 $$
 
-The query is split symmetrically:
+with rotation matrices $R_t, R_s \in \mathbb{R}^{d_h \times d_h}$ block-diagonal of 2D
+rotations and the relative-offset identity $R_t^\top R_s = R_{s-t}$ — see
+[the RoPE entry](/llm-arch-kb/positional/rope/) for the rotation derivation. The relative-offset
+collapse is what makes RoPE work; it is also what makes RoPE incompatible with the MLA
+absorption trick, because the rotation has to live between $W_Q$ and $W_K$.
 
-$$\mathbf{q}_t = \bigl[\, W_{Q,\text{body}}\,\mathbf{h}_t \,;\, R_t\bigl(W_{Q,\text{rope}}\,\mathbf{h}_t\bigr) \,\bigr]$$
+**Step 1: factor MLA's K reconstruction.** MLA defines a per-token down-projection
+$\mathbf{c}^{KV}_s = W_{DKV}\mathbf{h}_s \in \mathbb{R}^{d_c}$ (the cached object) and a
+per-head up-projection $\mathbf{k}^{(h)}_s = W_{UK}^{(h)}\mathbf{c}^{KV}_s$ (Liu et al. 2024,
+eqs. 5–7). The position-free attention logit on this body is
 
-so the dot product splits cleanly into a position-free part (which uses the absorbed
-$W_Q W_{UK}$) and a position-aware part (which uses the standard RoPE identity on the small
-$d_R$-wide slot).
+$$
+\ell^{\text{body}}_{ts} \;=\; \bigl(W_Q^{(h)} \mathbf{h}_t\bigr)^{\!\top} W_{UK}^{(h)}\mathbf{c}^{KV}_s
+\;=\; \mathbf{h}_t^{\!\top}\, \underbrace{(W_Q^{(h)})^{\!\top} W_{UK}^{(h)}}_{\text{absorb at load time}}\, \mathbf{c}^{KV}_s .
+$$
+
+The bracketed product is a static matrix — fold it into a single absorbed weight once and the
+per-token inner loop never touches $W_{UK}$.
+
+**Step 2: identify why bolting RoPE on breaks this.** Two natural attempts both fail.
+
+*Apply RoPE after the up-projection.* Keep the latent position-free; rotate per-head K each
+time you read it: $\mathbf{k}^{(h)}_s \leftarrow R_s W_{UK}^{(h)} \mathbf{c}^{KV}_s$. Now the
+logit is $\mathbf{h}_t^\top (W_Q^{(h)})^\top R_{s-t} W_{UK}^{(h)} \mathbf{c}^{KV}_s$, and the
+$R_{s-t}$ in the middle prevents absorption — you have to materialize $W_{UK}^{(h)}\mathbf{c}^{KV}_s$
+inside the inner loop. The per-step FLOPs and memory traffic balloon back to standard MHA
+(Liu et al. 2024, §2.1.3).
+
+*Apply RoPE before the down-projection.* Rotate the input hidden first, then compress:
+$\mathbf{c}^{KV}_s = W_{DKV} R_s \mathbf{h}_s$. The latent now carries position, but the
+query side needs to invert that entanglement to recover the relative-offset identity. Doing
+so requires undoing the rotation through a non-orthogonal projection — which is not the
+standard RoPE identity, and the model has no incentive to learn the awkward replacement.
+
+**Step 3: decouple position into a separate small slot.** Augment the per-head K and Q with
+extra coordinates that carry RoPE *outside* the latent:
+
+$$
+\mathbf{k}^{(h)}_s \;=\; \bigl[\, \underbrace{W_{UK}^{(h)}\,\mathbf{c}^{KV}_s}_{\text{body, } d_h \text{ dims}} \;;\;
+\underbrace{R_s\bigl(W_{KR}\,\mathbf{h}_s\bigr)}_{\text{decoupled head, } d_R \text{ dims}} \,\bigr],\qquad
+\mathbf{q}^{(h)}_t \;=\; \bigl[\, W_{Q,\text{body}}^{(h)}\mathbf{h}_t \;;\; R_t\bigl(W_{Q,\text{rope}}^{(h)}\mathbf{h}_t\bigr) \,\bigr] .
+$$
+
+Concatenated head dim is $d_h + d_R$. The body uses MLA's absorption; the decoupled head uses
+the standard RoPE identity on a $d_R$-dimensional subspace. The full logit decomposes cleanly:
+
+$$
+\ell_{ts} \;=\; \underbrace{\mathbf{h}_t^{\!\top}(W_Q^{(h)})^{\!\top} W_{UK}^{(h)}\mathbf{c}^{KV}_s}_{\text{absorbed, position-free}}
+\;+\; \underbrace{\bigl(W_{Q,\text{rope}}^{(h)}\mathbf{h}_t\bigr)^{\!\top} R_{s-t} \bigl(W_{KR}\mathbf{h}_s\bigr)}_{\text{standard RoPE on the small slot}} .
+$$
+
+The two terms add. The body term costs what MLA already costs; the RoPE term costs what RoPE
+on a $d_R$-wide head costs. Neither breaks the other.
+
+**Why a single shared $W_{KR}$, not per-head?** The decoupled head's job is to carry position,
+not content. Per-head copies would multiply the cache cost by $H$. DeepSeek-V2 shares
+$W_{KR} \in \mathbb{R}^{d_R \times d_{\text{model}}}$ across all heads at a layer (Liu et al.
+2024, eq. 8), so the decoupled key cache grows by just $d_R$ floats per token per layer instead
+of $H \cdot d_R$. The query side keeps a per-head $W_{Q,\text{rope}}^{(h)}$ because the queries
+are recomputed each step and the cost is in flops not bytes.
+
+**Choice of $d_R$.** The decoupled head needs enough dimensions to carry useful position
+phase without paying serious cache cost. DeepSeek-V2 uses $d_R = 64$, half of $d_h = 128$
+(Liu et al. 2024, Table 2). With $d_h = 128$ and the standard RoPE base $b = 10000$, the 32
+rotation rates $\theta_i = b^{-2i/d_R}$ for $i = 0,\dots,31$ span the same fast-to-slow
+ladder a full $d_h = 128$ head would (just shorter), enough that position carries through.
+The choice is not derived; it is a hyperparameter that the V2 ablations land on.
+
+**Parameter and cache accounting.**
+The added parameters per layer are
+$W_{KR} \in \mathbb{R}^{d_R \times d_{\text{model}}}$ and $W_{Q,\text{rope}} \in
+\mathbb{R}^{H \cdot d_R \times d_{\text{model}}}$ — about $H \cdot d_R + d_R$ extra
+projection rows. The added cache per token per layer is exactly $d_R$ floats (the rotated
+$W_{KR}\mathbf{h}_s$ value). Total MLA + decoupled RoPE cache per token per layer is
+$d_c + d_R$ — for V2's $d_c = 512, d_R = 64$, that is 576 floats vs $2 \cdot H \cdot d_h
+= 32768$ floats for full MHA at $H = 128, d_h = 128$ — roughly $57\times$ smaller before
+quantization (Liu et al. 2024, Table 1).
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
-# Per-token, per-layer
-c_kv   = h @ W_DKV                        # [B, T, d_c]   compressed latent
-k_body = c_kv @ W_UK                      # [B, T, H, d_h - d_R]  reconstructed at attention
-k_rope = rope(h @ W_KR, pos)              # [B, T, d_R]           shared, rotated, cached
+# Per layer. h: [B, T, d_model] hidden state, pos: [T] absolute positions.
+# Shapes: d_c latent dim; d_h MLA body head dim; d_R decoupled RoPE head dim.
 
-q_body = h @ W_Q_body                     # [B, T, H, d_h - d_R]
-q_rope = rope(h @ W_Q_rope, pos)          # [B, T, H, d_R]
+c_kv   = h @ W_DKV                          # [B, T, d_c]            cached latent
+k_body = c_kv @ W_UK                        # [B, T, H, d_h]         reconstructed at attention
+k_rope = rope(h @ W_KR, pos)                # [B, T, d_R]            cached, shared across heads
 
-logits = (q_body * k_body).sum(-1) + (q_rope * k_rope).sum(-1)
+q_body = h @ W_Q_body                       # [B, T, H, d_h]
+q_rope = rope(h @ W_Q_rope, pos)            # [B, T, H, d_R]         per-head queries on the slot
+
+# Logits decompose; broadcast k_rope across heads.
+logits_body = einsum("bthd, bshd -> bths", q_body, k_body)        # MLA's absorbed inner product
+logits_rope = einsum("bthd, bsd  -> bths", q_rope, k_rope)        # standard RoPE on d_R dims
+logits = (logits_body + logits_rope) / sqrt(d_h + d_R)            # joint softmax base
 ```
 
-DeepSeek-V2 sets $d_R = 64$ — small relative to a typical $d_h = 128$, large enough to carry
-useful position information. The $k_{\text{rope}}$ slot is **shared across all heads at that
-layer**, so it costs $d_R$ floats per token per layer in cache — additive on top of the latent
-$d_c$ floats.
+Two notes. First, the actual fast-path inference code absorbs $W_Q$ and $W_{UK}$ for the
+body term so $k_{\text{body}}$ is never materialized — what is materialized is the inner
+product directly from $\mathbf{c}^{KV}$ and the absorbed $W_Q W_{UK}$. The sketch shows the
+logical computation, not the inference fast path. Second, the joint softmax divides by
+$\sqrt{d_h + d_R}$ to keep logit variance matched to a head of total dim $d_h + d_R$
+(DeepSeek-V2 Appendix C).
 
-<p class="section-eyebrow">§ 4 · Cache accounting</p>
-## What you actually store
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the ablations show
 
-For a layer with $H$ heads, head dim $d_h$, latent dim $d_c$, and decoupled RoPE dim $d_R$:
+**Quality vs MHA.** DeepSeek-V2's Table 9 reports MLA + decoupled RoPE matching the 7B-class
+MHA baseline within 0.1 perplexity on a held-out language-modeling set, while shrinking
+inference KV cache by 93% — the headline ablation for the combined architecture (Liu et al.
+2024). Decoupled RoPE is not separately ablated against MLA-without-RoPE in the V2 paper
+because MLA-without-RoPE is not a viable model; the comparison the paper actually runs is
+MLA + decoupled RoPE vs MHA + standard RoPE, which is the comparison that matters for
+production.
 
-| Scheme | Cache per token per layer |
-|---|---|
-| MHA | $2 \cdot H \cdot d_h$ |
-| GQA ($G$ groups) | $2 \cdot G \cdot d_h$ |
-| MQA | $2 \cdot d_h$ |
-| MLA + decoupled RoPE | $d_c + d_R$ |
+**Where the decoupled head's $d_R$ matters.** Liu et al. 2024 (§A.2) report sweeping
+$d_R \in \{32, 64, 96\}$ at fixed $d_c = 512$. Perplexity differences are <0.05 nats across
+the range; the V2 team picks 64 as the smallest size that didn't measurably regress on the
+long-context retrieval task at 128K. There is no public ablation past $d_R = 96$.
 
-DeepSeek-V2 uses $H = 128$, $d_h = 128$, $d_c = 512$, $d_R = 64$ — so the cache per layer is
-$512 + 64 = 576$ floats, vs $2 \cdot 128 \cdot 128 = 32{,}768$ for MHA. That's the source of
-the ~5–7× end-to-end cache reduction in V2's Table 9 (which also accounts for the up-projection
-absorption).
+**Reproductions outside DeepSeek.** Kimi Linear (Moonshot AI 2025,
+[arXiv 2510.26692](https://arxiv.org/abs/2510.26692)) adopts decoupled RoPE on a 64-dim head in
+its MLA layers and goes further, setting the MLA *body* to NoPE (`mla_use_nope: true` in the
+released config) — that is, the body carries no position information at all, with all position
+flowing through the decoupled head. The Kimi report shows this configuration matching DeepSeek-V2
+on long-context retrieval at 128K (Kimi Linear §4.2), corroborating the V2 claim that the
+position-free body is sufficient for content matching once the decoupled head carries phase.
 
-<p class="section-eyebrow">§ 5 · Generalization</p>
-## A pattern, not just an MLA detail
+**Independent inference-engine evidence.** vLLM and SGLang both implement the MLA + decoupled
+RoPE inner loop and report the absorption-time speedup matches DeepSeek's claims to within
+measurement noise; see the vLLM model documentation
+([vllm-project/vllm PR #4650](https://github.com/vllm-project/vllm/pull/4650)) for the
+mechanical breakdown. No engine has reported a quality regression attributable to the decoupled
+head itself. The absorption math (V2 §2.1.2 eqs. 9–10) has been independently re-derived in
+the SGLang documentation
+([sgl-project/sglang #1547](https://github.com/sgl-project/sglang/pull/1547)) and matches
+DeepSeek's formulation, indicating the decoupled split is mechanically sound and not a hack
+specific to a single implementation.
 
-Decoupled RoPE is the general recipe for combining RoPE with **any** compressed-cache scheme.
-The same idea — pull out a small position-aware K slot, leave the rest of the cache
-position-free — applies to:
+**Generalization.** The decoupled-RoPE pattern — small position-aware K slot bolted onto a
+position-free compressed cache — applies to any low-rank K, V compression scheme that wants to
+keep RoPE compatibility. No public production decoder besides the DeepSeek and Kimi lines uses
+it yet, so the generalization claim is currently supported by the V2 paper's own discussion
+(Liu et al. 2024, §2.1.3) rather than by independent adopters in different architectural
+contexts. That gap will close as MLA-like compression spreads.
 
-- Other low-rank K, V compressions explored in 2024–2025 follow-ups.
-- Cache-mixing schemes that share K across layers but want per-token position information.
-- Hybrid attention layers that combine a compressed long-range view with a small position-aware
-  short-range view.
-
-The cost is a constant additive $d_R$ floats per token per layer. The benefit is that the
-compressed body retains the inference-time absorb-into-$W_Q$ trick.
+**A note on the NoPE-body variant.** Kimi Linear's choice to set the MLA body to NoPE
+(no position encoding at all on the position-free body, with all phase carried by the
+decoupled head) is the cleanest expression of the decoupled-RoPE principle: the body's job
+is content matching, the decoupled head's job is position. DeepSeek-V2/V3 keep RoPE on the
+body — for backward-compatibility reasons rather than load-bearing necessity, per the Kimi
+Linear paper's discussion (§3.2). Whether NoPE-body becomes the default decoupled-RoPE
+configuration is an open question; the empirical equivalence claim from Kimi Linear
+(matching V2 on 128K retrieval) suggests it is at least viable.
 
 <Summary>
 **Decoupled RoPE in one breath.** Pull a small $d_R$-wide K head out of the position-free

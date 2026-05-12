@@ -32,102 +32,200 @@ import Summary from "~/components/Summary.astro";
 <p class="section-eyebrow">§ 1 · Premise</p>
 ## Why anyone would revisit Post-Norm in 2024
 
-The 2020-era settlement (see [norm-placement](/llm-arch-kb/normalization/norm-placement/))
-was: Pre-Norm everywhere, because Post-Norm transformers diverge past depth 12 without warmup.
-Five years of frontier training have made that picture more nuanced.
+The 2020-era settlement
+(see [norm-placement entry](/llm-arch-kb/normalization/norm-placement/)) was Pre-Norm
+everywhere: keep the residual stream clean of normalization, and the gradient through depth
+collapses to nearly $\mathbf{I}$ instead of the $\Theta(\sqrt{L})$ growth that Post-Norm
+exhibited (Xiong et al. [arXiv 2002.04745](https://arxiv.org/abs/2002.04745) Theorem 1).
+Every open dense LLM from Llama 1 through Llama 3, DeepSeek V3, and Qwen 3 was Pre-Norm.
 
-Pre-Norm trains stably but lets the residual-stream norm grow without bound across depth. At
-the 60–120 layer scale where modern frontier models live, this residual growth interacts with
-several other production failure modes — attention-logit blow-up, FFN gating saturation,
-gradient spikes during learning-rate warmup. Pre-Norm doesn't *cause* these failures, but it
-removes a useful constraint that would have mitigated them.
+Five years of frontier training have surfaced a *second* failure mode that Pre-Norm
+trades into. Because no normalization touches the residual stream itself, the L2 norm of
+$\mathbf{x}_\ell$ grows monotonically across depth: each sublayer adds a perturbation of
+bounded variance, so $\mathbb{E}[\|\mathbf{x}_\ell\|_2^2] \approx \|\mathbf{x}_0\|_2^2 + \ell\,\sigma^2_\text{block}$,
+and $\|\mathbf{x}_\ell\|_2 \sim \sqrt{\ell}$. At depths of 60–120 layers this growth is
+observable and interacts badly with three concrete production failure modes:
 
-OLMo 2 (Walsh et al. 2024) asks: at modern scale, with modern stability tools (QK-Norm,
-careful init, Z-loss), can a Post-Norm-flavored layout actually train more reliably?
+1. **Attention logit blow-up.** Q and K projections of an unboundedly-growing residual
+   stream produce vectors with unboundedly-growing norms, which dominate the attention
+   softmax (the
+   [QK-Norm entry](/llm-arch-kb/normalization/qk-norm/) is the proximate fix for this).
+2. **FFN gating saturation.** SwiGLU and GeGLU FFNs gate by $\sigma$ or GELU; large
+   inputs saturate the gate and stall the gradient through the FFN's down-projection.
+3. **Periodic loss spikes during long training runs.** OLMo 1 (the Pre-Norm predecessor)
+   reported these spikes in its training writeup ([arXiv 2402.00838](https://arxiv.org/abs/2402.00838)
+   §3.3) — sudden order-of-magnitude jumps in loss that required restarting from earlier
+   checkpoints. The OLMo 1 team attributed the spikes to interactions between residual
+   growth and the AdamW optimizer's second-moment estimate.
 
-<p class="section-eyebrow">§ 2 · The reordering</p>
-## RMSNorms inside, after the sublayer
+OLMo 2 ([arXiv 2501.00656](https://arxiv.org/abs/2501.00656)) asks: at frontier scale, with
+modern stabilizers (QK-Norm, Z-loss, careful init), can a Post-Norm-flavored layout actually
+train more reliably than Pre-Norm? The answer, per the paper's 5T-token training-stability
+study (§3.1), is yes — provided the placement change is paired with the rest of the
+stability package.
 
-OLMo 2's block, in the convention of the paper:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## RMSNorm after each sublayer, inside the residual
+
+OLMo 2's block, in the convention of the paper (§3.1, Eq. 1):
 
 $$
 \begin{aligned}
-\mathbf{x}_{\ell+1/2} &= \mathbf{x}_\ell + \mathrm{RMSNorm}\bigl(\mathrm{Attn}(\mathbf{x}_\ell)\bigr)\\
-\mathbf{x}_{\ell+1}   &= \mathbf{x}_{\ell+1/2} + \mathrm{RMSNorm}\bigl(\mathrm{FFN}(\mathbf{x}_{\ell+1/2})\bigr)
+\mathbf{h}_\ell      &= \mathbf{x}_\ell + \mathrm{RMSNorm}\bigl(\mathrm{Attn}(\mathbf{x}_\ell)\bigr) \\
+\mathbf{x}_{\ell+1}  &= \mathbf{h}_\ell + \mathrm{RMSNorm}\bigl(\mathrm{FFN}(\mathbf{h}_\ell)\bigr)
 \end{aligned}
 $$
 
 Compare to standard Pre-Norm:
 
-$$\mathbf{x}_{\ell+1/2} = \mathbf{x}_\ell + \mathrm{Attn}\bigl(\mathrm{RMSNorm}(\mathbf{x}_\ell)\bigr)$$
+$$
+\begin{aligned}
+\mathbf{h}_\ell      &= \mathbf{x}_\ell + \mathrm{Attn}\bigl(\mathrm{RMSNorm}(\mathbf{x}_\ell)\bigr) \\
+\mathbf{x}_{\ell+1}  &= \mathbf{h}_\ell + \mathrm{FFN}\bigl(\mathrm{RMSNorm}(\mathbf{h}_\ell)\bigr)
+\end{aligned}
+$$
 
-The norm has moved from before the sublayer's input to after its output, but **stays inside the
-residual branch**. The identity path $\mathbf{x}_\ell \to \mathbf{x}_{\ell+1}$ is still
-unnormalized, so gradients still flow with the dominant identity term. What changes is that
-each block contributes a *bounded-norm* perturbation to the residual — the
-$\mathrm{RMSNorm}$ on the sublayer's output explicitly scales it to unit RMS.
+The RMSNorm has moved from the sublayer's *input* to the sublayer's *output*, but stays
+*inside the residual branch*. The identity path $\mathbf{x}_\ell \to \mathbf{x}_{\ell+1}$ —
+the residual connection itself — remains unnormalized.
+
+**Why this preserves Pre-Norm's gradient flow.** The forward identity term is the
+same: $\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + (\text{stuff})$ with no normalization on
+$\mathbf{x}_\ell$ itself. The backward Jacobian inherits the dominant identity:
+
+$$\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = \mathbf{I} + \mathbf{J}_{\mathrm{RMSNorm}}\bigl(\mathrm{FFN}(\mathbf{h}_\ell)\bigr)\, \mathbf{J}_{\mathrm{FFN}}(\mathbf{h}_\ell)\, \frac{\partial \mathbf{h}_\ell}{\partial \mathbf{x}_\ell},$$
+
+with $\partial \mathbf{h}_\ell / \partial \mathbf{x}_\ell = \mathbf{I} + \mathbf{J}_{\mathrm{RMSNorm}}(\mathrm{Attn}(\mathbf{x}_\ell))\, \mathbf{J}_{\mathrm{Attn}}(\mathbf{x}_\ell)$
+having the same identity-plus-correction shape. The depth product collapses to nearly
+$\mathbf{I}$ at initialization for the same reason Pre-Norm's does — random sublayer
+initialization makes the correction term small, and the $\mathrm{RMSNorm}$ Jacobian is
+$O(1)$ rather than the $O(1/\sqrt{L})$-suppressing factor that classical Post-Norm pays.
+
+**What the placement *changes* about the forward pass.** The sublayer output
+$\mathrm{Attn}(\mathbf{x}_\ell)$ is now explicitly rescaled to unit RMS *before* being added
+to the residual. Each block contributes a perturbation of fixed RMS magnitude, regardless
+of what the sublayer learned to output. The residual stream norm grows as $\sqrt{\ell}$
+exactly, with a constant set by the RMSNorm's learnable gain, instead of with the
+unbounded constant that Pre-Norm allows. Empirically, this caps the activation magnitudes
+that downstream attention and FFN sublayers see.
+
+**Relation to Sandwich-LN.** Sandwich-LN (see
+[Sandwich-LN entry](/llm-arch-kb/normalization/sandwich-ln/)) places norms *both* before
+and after each sublayer (two norms per sublayer, four per block). OLMo 2's variant drops the
+input norm (one norm per sublayer, two per block). Algebraically:
+
+$$\text{Sandwich:}\; \mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \mathrm{Norm}_\text{post}\bigl(f_\ell(\mathrm{Norm}_\text{pre}(\mathbf{x}_\ell))\bigr), \qquad \text{OLMo 2:}\; \mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \mathrm{Norm}\bigl(f_\ell(\mathbf{x}_\ell)\bigr).$$
+
+Both put a norm on the sublayer *output* — that is the load-bearing piece for bounding the
+residual contribution. OLMo 2's choice trades the redundant input normalization (the
+sublayer projections already produce an output whose statistics are controlled by their
+weight init, and Pre-Norm-style input normalization was about gradient flow, which OLMo 2's
+identity-path residual already provides) for half the normalization compute. Both choices
+live in the same bounded-perturbation design space; the empirical decision between them
+has not been ablated in public.
+
+**Why the bare placement change alone is insufficient.** Reordered Post-Norm at 13B
+without other interventions would still hit the failure modes Pre-Norm was originally
+chosen to avoid. The OLMo 2 tech report (§3.1) is explicit that the placement is part of
+a package, not a standalone improvement. The supporting cast:
+
+- **QK-Norm** (per-head RMSNorm on Q and K before the attention dot product) caps the
+  attention-logit magnitude regardless of residual-stream growth. Detailed in the
+  [QK-Norm entry](/llm-arch-kb/normalization/qk-norm/). The Henry et al. 2020 paper
+  ([arXiv 2010.04245](https://arxiv.org/abs/2010.04245)) is the original; OLMo 2 uses the
+  RMSNorm variant.
+- **Output Z-loss** — an auxiliary loss penalizing $(\log Z)^2$ where $Z = \sum_v e^{z_v}$
+  is the softmax partition function over the vocabulary. Keeps the unembedding logits from
+  drifting toward extreme scales, which would compound any residual-stream growth at the
+  network's top.
+- **Conservative init** — truncated normal at $\sigma_\text{init} = 0.02$ tuned for the
+  specific block layout, so the initial per-block gradient magnitude matches what a
+  Pre-Norm baseline at the same depth would produce.
+
+**Parameter and FLOP cost.** Identical to Pre-Norm: two RMSNorms per block, $2 L d$
+extra parameters total, $O(L T d)$ extra FLOPs per forward pass. The placement change is
+free in compute; the cost is paid in coordinating the three-stabilizer package.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Reference implementation
 
 ```python
-# OLMo 2 reordered Post-Norm
+# OLMo 2 reordered Post-Norm block.
 def block_olmo2(x, attn, ffn, n1, n2):
-    x = x + n1(attn(x))         # norm AFTER attention, inside residual
-    x = x + n2(ffn(x))          # norm AFTER ffn, inside residual
+    # x: [B, T, d]
+    # n1, n2: RMSNorm modules with learnable gain [d]
+    x = x + n1(attn(x))         # RMSNorm AFTER attention, inside residual
+    x = x + n2(ffn(x))          # RMSNorm AFTER ffn, inside residual
     return x
 
-# Compare to standard Pre-Norm
-def block_pre(x, attn, ffn, n1, n2):
-    x = x + attn(n1(x))         # norm BEFORE attention input
-    x = x + ffn(n2(x))
-    return x
+# QK-Norm sits inside the attention sublayer itself.
+def attn_with_qk_norm(x, w_qkv, w_o, qn, kn, n_heads, head_dim):
+    B, T, d = x.shape
+    qkv = x @ w_qkv
+    q, k, v = qkv.split(d, dim=-1)
+    q = q.view(B, T, n_heads, head_dim).transpose(1, 2)  # [B, H, T, d_h]
+    k = k.view(B, T, n_heads, head_dim).transpose(1, 2)
+    v = v.view(B, T, n_heads, head_dim).transpose(1, 2)
+    q = qn(q); k = kn(k)        # per-head RMSNorm — see qk-norm entry
+    logits = (q @ k.transpose(-2, -1)) / (head_dim ** 0.5)
+    return (logits.softmax(-1) @ v).transpose(1, 2).reshape(B, T, d) @ w_o
 ```
 
-The result is geometrically related to [Sandwich-LN](/llm-arch-kb/normalization/sandwich-ln/) —
-both put a norm on the sublayer output. Sandwich keeps the *input* norm too (two norms per
-sublayer); OLMo 2 drops it (one norm per sublayer). Both are valid points in the same
-"bounded-perturbation" design space.
+The two changes vs Pre-Norm are mechanical: the RMSNorm calls migrate from the input of
+each sublayer to its output, inside the residual addition. The Z-loss term is added to the
+training objective, not to the block's forward pass; it does not appear in this sketch.
 
-<p class="section-eyebrow">§ 3 · The supporting cast</p>
-## Post-Norm character with modern stabilizers
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Empirical evidence
 
-A bare reordered Post-Norm at 13B would still hit issues — the original Post-Norm gradient
-problem is real, just less catastrophic at modern scale. OLMo 2 pairs it with three other
-choices documented in the tech report:
+**The OLMo 2 stability study (Walsh et al. 2024, §3.1).** The most complete public ablation
+of the placement choice at LLM scale. OLMo 2 trains 7B and 13B variants comparing four
+configurations: (a) OLMo 1's Pre-Norm baseline, (b) Pre-Norm + QK-Norm, (c) reordered
+Post-Norm without QK-Norm, (d) full OLMo 2 stack (reordered Post-Norm + QK-Norm + Z-loss).
+Figure 4 reports loss spike counts per 1000 training steps over a 5T-token run; the full
+stack reduces spikes to roughly 1/10 of OLMo 1 baseline frequency, while (b) and (c)
+each give a partial reduction. The paper is careful to note that *no individual* component
+of the package fully recovers stability — the placement change alone (configuration c)
+still spikes; QK-Norm alone (configuration b) still spikes; only the full package matches
+the spike-free regime.
 
-- **QK-Norm** (RMSNorm on Q and K projections inside attention) caps the dot-product magnitude
-  before the softmax, killing the attention-logit blow-up that historically hurt Post-Norm.
-  See the [QK-Norm entry](/llm-arch-kb/normalization/qk-norm/).
-- **Z-loss** on the output logits — an auxiliary loss term penalizing $(\log Z)^2$ where $Z$ is
-  the softmax partition function — keeps the final unembedding from drifting toward extreme
-  scales during long training runs.
-- **Conservative init** (truncated normal, std-dev tuned for the specific block layout) so the
-  initial gradient through a Post-Norm-flavored stack matches the magnitude a Pre-Norm baseline
-  would see.
+**OLMo 1 baseline failures.** The OLMo 1 paper
+([arXiv 2402.00838](https://arxiv.org/abs/2402.00838), §3.3) documents the Pre-Norm
+failure mode that motivated the OLMo 2 redesign: periodic loss spikes during the OLMo
+1B and 7B training runs, attributed to interactions between residual-stream growth and
+AdamW's second-moment estimate. The cumulative engineering cost of these spikes — restarts
+from checkpoints, lost compute — was substantial enough to motivate a top-to-bottom
+architecture review for OLMo 2.
 
-Each piece is independently mild. Together they make the reordered Post-Norm choice viable at
-production scale and through long pretraining horizons.
+**Carryover to OLMo 3 (AI2, 2025).** The OLMo 3 release
+([arXiv 2512.13961](https://arxiv.org/abs/2512.13961)) inherits the reordered Post-Norm,
+QK-Norm, and Z-loss package without modification for the 32B dense flagship. The OLMo 3
+team's choice not to revisit the placement is a soft signal that the OLMo 2 setup
+generalizes to the 64-layer / 32B regime; the OLMo 3 paper does not present a fresh
+ablation against Pre-Norm at the 32B size.
 
-<p class="section-eyebrow">§ 4 · Reported outcome</p>
-## What AI2 saw at training time
+**Cross-team adoption.** No other open-weight LLM family in this knowledge base has
+adopted OLMo 2's specific layout. The Gemma 2/3 family uses
+[Sandwich-LN](/llm-arch-kb/normalization/sandwich-ln/) (the two-norm variant), which lives
+in the same bounded-perturbation design space but is a different point in it.
+DeepNet ([arXiv 2203.00555](https://arxiv.org/abs/2203.00555)) demonstrates a related
+modified-Post-Norm approach for deep encoder-decoders but with different scaling
+choices and has not been picked up by any production open dense LLM either. Llama,
+DeepSeek, Qwen, Mistral, Hunyuan, Kimi, and MiniMax all continue with plain Pre-Norm. The
+honest reading is that the OLMo 2 choice is empirically defensible at the 13B/32B scale
+where AI2 trains it, but the broader open frontier has not converged on it — possibly
+because the three-component stability package is harder to port than a single architectural
+swap.
 
-The OLMo 2 tech report (§3.1, Figures 4 and 5) reports that OLMo 1's Pre-Norm 7B baseline showed
-periodic loss spikes during long pretraining, and that the OLMo 2 architecture — combining the
-reordered Post-Norm, QK-Norm, and Z-loss — eliminated those spikes across a 5T-token training
-run on the 13B model.
-
-The team is careful to attribute the stability to the *combination*; ablating any one piece
-recovers some instability. This makes OLMo 2 Post-Norm hard to justify as a standalone change —
-it's part of a coordinated training-stability package.
-
-For the broader open-frontier stack, OLMo 2's choice remains a minority view. Llama, DeepSeek,
-Qwen, and Mistral families continue to use Pre-Norm. Gemma 2/3 chose
-[Sandwich-LN](/llm-arch-kb/normalization/sandwich-ln/) (also bounded-perturbation, but
-two-sided). OLMo 2 is the most fully-documented contemporary case for the one-sided
-reordered-Post-Norm point in this design space.
+**No public cross-team head-to-head.** No paper has published a fixed-budget, fixed-data
+comparison of OLMo 2 reordered Post-Norm vs Pre-Norm vs Sandwich-LN at constant
+parameter count. The strongest case for the OLMo 2 layout is the AI2 internal ablation
+in Figure 4; the strongest case against it is its non-adoption outside AI2.
 
 <Summary>
-**OLMo 2 Post-Norm in one breath.** Move the RMSNorm from sublayer input to sublayer output,
-keeping it inside the residual branch. Each block contributes a bounded-RMS perturbation; the
-identity path stays unnormalized so gradients still flow. Trains stably at 13B when combined
-with QK-Norm, Z-loss, and conservative init. AI2's distinctive choice; minority view in the
-broader open stack.
+**OLMo 2 Post-Norm in one breath.** Move the RMSNorm from sublayer input to sublayer
+output, keeping it inside the residual branch. Each block contributes a bounded-RMS
+perturbation while the identity path stays unnormalized, so gradients flow as in Pre-Norm.
+Trains stably at 13B and 32B when paired with QK-Norm and Z-loss; AI2's distinctive
+choice and a minority view in the broader open stack.
 </Summary>

@@ -26,86 +26,231 @@ import Summary from "~/components/Summary.astro";
 <p class="section-eyebrow">§ 1 · Premise</p>
 ## Normalization as a structural property
 
-Standard transformers normalize at a few specific places (Pre-Norm before attention, Pre-Norm
-before FFN, final norm before unembedding). Between those normalizations, activation norms
-drift — sometimes growing across depth, sometimes shrinking — and the model is asked to learn
-weights that produce well-conditioned next-block inputs from poorly-conditioned previous-block
-outputs.
+Standard transformers normalize at three specific places per block: a Pre-Norm before
+attention, a Pre-Norm before the FFN, and a final norm before unembedding. Between those
+normalizations, activation norms drift — sometimes growing across depth, sometimes
+shrinking. The model is asked to learn weights that produce well-conditioned next-block
+inputs from poorly-conditioned previous-block outputs, and the per-row norms of the
+projection matrices $W_q, W_k, W_v, W_o, W_u, W_v$ are themselves unconstrained.
 
-Loshchilov et al.'s 2024 proposal: don't ask the model to manage activation norms at all.
-Constrain *every* vector in the network — token embeddings, attention K/Q/V projections,
-attention output, FFN intermediate, FFN output — to lie on the unit hypersphere. The model
-operates entirely on unit vectors; activation norms cannot drift because they are always 1.
+Loshchilov et al.'s 2024 proposal (NVIDIA; ICLR 2025) treats the unbounded vector norms as
+the source of the problem and the introduced LayerNorm/RMSNorm modules as the symptomatic
+patch. Their inversion: constrain *every* vector in the network — token embeddings,
+attention K/Q/V projections, attention output, FFN intermediate, FFN output, even the rows
+of every weight matrix — to lie on the unit hypersphere $S^{d-1} \subset \mathbb{R}^d$.
+The model operates entirely on unit vectors. Norms cannot drift because they are always
+$1$ by construction.
 
-<p class="section-eyebrow">§ 2 · The construction</p>
-## Project after every operation
+Two structural consequences follow immediately. First, the residual update can no longer
+be a plain addition (the sum of two unit vectors leaves the sphere), so the block update
+is rewritten as a step along the sphere with a learnable step size. Second, every
+inner product $W \mathbf{x}$ is a cosine similarity rather than an arbitrary dot product
+— bounded in $[-1, 1]$ — which removes the need for a $1/\sqrt{d_k}$ softmax temperature
+and replaces it with a learnable scale.
 
-Every linear map is followed by an L2 normalization. The block becomes:
+The Section 1 framing in the paper places nGPT in a lineage with prior work on
+representation learning on the hypersphere ([Wang and Isola, ICML 2020](https://arxiv.org/abs/2005.10242))
+and with the observation by Xiong et al. that aggressive normalization placement —
+[Pre-Norm](/llm-arch-kb/normalization/norm-placement/) — was already moving in this
+direction. nGPT extrapolates the trajectory to its limit: not "where do we normalize" but
+"is normalization the only invariant the architecture should carry".
 
-$$\mathrm{Norm}(\mathbf{x}) = \frac{\mathbf{x}}{\|\mathbf{x}\|},\qquad \mathrm{Block}(\mathbf{x}) = \mathrm{Norm}\bigl(\mathbf{x} + \alpha_a \cdot (\mathrm{Norm}(\mathrm{Attn}(\mathbf{x})) - \mathbf{x})\bigr),$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## The hypersphere update, step by step
 
-where $\alpha_a$ is a per-layer learnable scalar controlling how far the residual stream moves
-toward the (normalized) attention output. The same construction wraps the FFN sub-layer.
+Start from a baseline Pre-Norm transformer block. Let $\mathbf{h} \in \mathbb{R}^{d_{\text{model}}}$
+denote the residual-stream state at the input to a block. The Pre-Norm update (Eq. 4 and 5
+of the paper) is:
 
-Geometrically: each block defines a target unit vector (the normalized attention output) and
-the residual moves a fraction $\alpha$ of the way from the current state toward the target,
-then renormalizes back to the sphere. The model lives on the unit sphere and never leaves it.
+$$
+\mathbf{h} \leftarrow \mathbf{h} + \mathrm{Attn}\!\bigl(\mathrm{RMSNorm}(\mathbf{h})\bigr), \qquad
+\mathbf{h} \leftarrow \mathbf{h} + \mathrm{MLP}\!\bigl(\mathrm{RMSNorm}(\mathbf{h})\bigr).
+$$
 
-Weight matrices are also normalized: each row of $W$ is constrained to unit norm, so $W\mathbf{x}$
-produces outputs whose components are bounded cosine similarities rather than arbitrary inner
-products.
+The attention and MLP sublayers produce vectors of unconstrained magnitude that are added
+into the residual.
+
+**The sphere update.** Loshchilov et al. (§ 2.2.2) observe that on the sphere the natural
+analogue of linear interpolation between two unit vectors is *spherical* linear
+interpolation (SLERP, Shoemake 1985; Eq. 6 in the paper):
+
+$$
+\mathrm{SLERP}(\mathbf{a}, \mathbf{b}; \alpha) \;=\; \frac{\sin\bigl((1-\alpha)\theta\bigr)}{\sin\theta}\,\mathbf{a} \;+\; \frac{\sin(\alpha\theta)}{\sin\theta}\,\mathbf{b},
+$$
+
+where $\theta = \arccos(\mathbf{a} \cdot \mathbf{b})$. For small $\alpha$ (small steps),
+SLERP is well-approximated by ordinary linear interpolation followed by retraction onto the
+sphere. Writing $\mathbf{a} \leftarrow \mathbf{a} + \alpha (\mathbf{b} - \mathbf{a})$ and
+generalizing $\alpha$ from a scalar step size to a per-coordinate learnable vector
+$\boldsymbol{\alpha} \in \mathbb{R}^{d_{\text{model}}}_{\geq 0}$ (Eq. 8, Eq. 9 in the
+paper), the nGPT block update becomes (Eq. 10, Eq. 11):
+
+$$
+\mathbf{h} \leftarrow \mathrm{Norm}\bigl(\mathbf{h} + \boldsymbol{\alpha}_A \odot (\mathbf{h}_A - \mathbf{h})\bigr), \qquad
+\mathbf{h} \leftarrow \mathrm{Norm}\bigl(\mathbf{h} + \boldsymbol{\alpha}_M \odot (\mathbf{h}_M - \mathbf{h})\bigr),
+$$
+
+where $\mathbf{h}_A = \mathrm{Norm}(\mathrm{Attn}(\mathbf{h}))$,
+$\mathbf{h}_M = \mathrm{Norm}(\mathrm{MLP}(\mathbf{h}))$, and $\mathrm{Norm}(\cdot)$ is
+plain L2 normalization with no learned gain. Each block moves the residual state a learned
+fraction $\boldsymbol{\alpha}$ toward the (unit-normalized) sublayer suggestion and then
+retracts back to the sphere. The authors call $\boldsymbol{\alpha}_A, \boldsymbol{\alpha}_M$
+**eigen learning rates** — the diagonal of a variable-metric optimizer acting in the
+embedding space (paper § 2.2.2 and Appendix A.2). $\boldsymbol{\alpha}_A$ is initialized to
+$0.05$ on the order of $1/n_{\text{layers}}$ with scale $1/\sqrt{d_{\text{model}}}$.
+
+**Weight-row normalization.** Each weight matrix $W \in \mathbb{R}^{d_{\text{out}} \times d_{\text{in}}}$
+has its rows projected to unit norm along the input dimension after every gradient step
+(paper § 2.6, step 2). Concretely, this applies to the input embedding $E_{\text{input}}$,
+output embedding $E_{\text{output}}$, attention projections $W_q, W_k, W_v, W_o$, and MLP
+projections $W_u, W_v, W_{oMLP}$. After normalization, each row of $W$ is a unit vector in
+the input space, so the matrix-vector product $W \mathbf{x}$ for unit-norm $\mathbf{x}$
+returns a vector whose $i$th component is the cosine similarity between row $i$ of $W$
+and $\mathbf{x}$ — bounded in $[-1, 1]$.
+
+**Attention with cosine-similarity logits.** Because Q and K rows of unit norm produce
+bounded dot products, the softmax temperature changes. The baseline scales by
+$1/\sqrt{d_k}$ to keep the pre-softmax variance constant for unit-variance Gaussian
+queries and keys; for unit-norm Q and K the dot product variance is instead $1/d_k$, so
+the correct scale to restore variance-one is $\sqrt{d_k}$. The paper introduces a
+per-head learnable vector $\mathbf{s}_{qk} \in \mathbb{R}^{d_k}$ (Eq. 15, 16) that
+re-normalizes Q and K after the projection, with initialization equivalent to softmax
+scale $d_k^{1/4}$:
+
+$$
+\mathbf{q} \leftarrow \mathrm{Norm}(\mathbf{q}) \odot \mathbf{s}_{qk}, \qquad
+\mathbf{k} \leftarrow \mathrm{Norm}(\mathbf{k}) \odot \mathbf{s}_{qk}, \qquad
+\mathrm{Attention} \leftarrow \mathrm{softmax}\!\left(\frac{\mathbf{q}\mathbf{k}^\top}{\sqrt{d_k}/d_k} + M\right)\mathbf{v}.
+$$
+
+RoPE is still applied to Q and K before this normalization (§ 2.3.1), preserving the
+relative-position signal.
+
+**MLP rescaling.** The SwiGLU intermediates $\mathbf{u}$ and $\boldsymbol{\nu}$ get their
+own per-coordinate scaling vectors $\mathbf{s}_u, \mathbf{s}_\nu \in \mathbb{R}^{d_{\text{MLP}}}$
+(Eq. 20, 21). The rescaling of $\boldsymbol{\nu}$ by $\sqrt{d_{\text{model}}}$ is necessary
+"to benefit from the non-linearity of SiLU" — without it the gate input would sit in the
+near-linear regime of SiLU around the origin, collapsing the activation function.
+
+**Logit temperature.** The output logits $\mathbf{z} = E_{\text{output}} \mathbf{h}$ are
+also bounded in $[-1, 1]$ per coordinate after unit normalization. A learnable
+per-vocabulary scale $\mathbf{s}_z \in \mathbb{R}^V$ (Eq. 3) restores the temperature of
+the cross-entropy softmax.
+
+**The full conversion recipe.** Section 2.6 enumerates the seven changes from baseline
+GPT to nGPT: remove all RMSNorm modules; normalize all weight matrices and embeddings
+along their embedding dimension after each step; replace the residual update with the
+SLERP-style update on the sphere (Eq. 10, 11); switch the attention softmax scale from
+$1/\sqrt{d_k}$ to $\sqrt{d_k}$ and rescale Q,K via $\mathbf{s}_{qk}$; rescale MLP
+intermediates via $\mathbf{s}_u, \mathbf{s}_\nu$; rescale logits via $\mathbf{s}_z$;
+remove weight decay and learning-rate warmup. The seventh point is non-trivial — the
+sphere constraint plays the role of weight decay, and the bounded-magnitude initialization
+removes the need for warmup.
+
+**Parameter accounting.** RMSNorm modules deleted: $\sim 2 d_{\text{model}} L$ parameters
+removed. Added: per-block $\boldsymbol{\alpha}_A, \boldsymbol{\alpha}_M$ each in
+$\mathbb{R}^{d_{\text{model}}}$, per-head $\mathbf{s}_{qk}$ in $\mathbb{R}^{d_k}$, per-MLP
+$\mathbf{s}_u, \mathbf{s}_\nu$ in $\mathbb{R}^{d_{\text{MLP}}}$, and one global
+$\mathbf{s}_z$ in $\mathbb{R}^V$. Net change is small — the architecture has *fewer*
+multiplicative scales overall, since the per-row matrix scales (the "magnitude" half of
+weight = direction × magnitude) are removed by the unit-norm constraint.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## A normalized block, sketched
 
 ```python
-def n_block_attn(x, attn, alpha):
-    # x is unit-norm on the hypersphere
-    a = attn(x)
-    a_unit = a / a.norm(-1, keepdim=True)
-    update = a_unit - x
-    return (x + alpha * update).renormalize_unit()
+def n_block(h, attn, mlp, alpha_A, alpha_M):
+    # h: [B, T, d]  — unit-norm on the hypersphere
+    # alpha_A, alpha_M: learnable per-coord eigen learning rates in R^d_{>=0}
+
+    h_A = norm(attn(h))                          # attention output, unit norm
+    h   = norm(h + alpha_A * (h_A - h))          # LERP toward h_A + retract to sphere
+
+    h_M = norm(mlp(h))                           # MLP output, unit norm
+    h   = norm(h + alpha_M * (h_M - h))          # LERP toward h_M + retract
+    return h
+
+def n_attention(h, Wq, Wk, Wv, Wo, s_qk):
+    # h is unit-norm. After projection q, k, v are NOT unit-norm; we re-normalize.
+    q, k, v = h @ Wq, h @ Wk, h @ Wv             # [B, T, H, d_k]
+    q, k = rope(q, k)                            # positional info before re-norm
+    q = norm(q) * s_qk                           # learnable QK scale
+    k = norm(k) * s_qk
+    logits = (q @ k.transpose(-2, -1)) * sqrt(d_k)  # NB: scale is sqrt(d_k), not 1/sqrt
+    return (softmax(logits + causal_mask) @ v) @ Wo
 ```
 
-<p class="section-eyebrow">§ 3 · What it replaces</p>
-## No LayerNorm, no RMSNorm
+After each gradient step, every row of every weight matrix is renormalized to unit length
+in the input dimension. The forward pass relies on that invariant: all dot products are
+bounded cosine similarities, and the sphere-update equations are exact only when the
+inputs are unit vectors.
 
-The standard normalization sub-layers (Pre-Norm RMSNorm before attention/FFN) become
-unnecessary — every vector is already unit-norm by construction. nGPT removes them entirely.
-The architecture has fewer learnable parameters than baseline GPT at matched parameter count
-(or equivalently, more "capacity-relevant" parameters at matched total parameter count).
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the paper measured, and what it did not
 
-Cosine similarity replaces dot product in attention: $\mathbf{q}\mathbf{k}^\top / \sqrt{d}$
-becomes $\cos(\mathbf{q}, \mathbf{k}) \cdot s$ for a learnable temperature $s$, since both
-vectors are unit-norm and their dot product *is* their cosine similarity.
+**Headline speedup.** Figure 1 of the paper plots validation loss vs. training step for 1B
+parameter GPT and nGPT models at 4K context on OpenWebText
+([Gokaslan & Cohen 2019](https://skylion007.github.io/OpenWebTextCorpus/)). nGPT reaches
+the same loss at 20K steps that the baseline reaches at 200K — a ~10× step reduction.
+Figure 2 extends this across 0.5B and 1B models at context lengths 1K, 4K, 8K. The reported
+acceleration factor in steps-to-fixed-validation-loss is approximately 4× at 1K context,
+10× at 4K, and 20× at 8K. The trend (speedup grows with context length) is consistent across
+both model sizes.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**Wall-clock caveat.** The paper is explicit that per-step time is *higher* for nGPT than
+for the baseline — 80% slower per step at 4K context and 60% slower at 8K (footnote 3 in
+§ 3.1), before kernel optimization. The 10–20× step speedup therefore translates to a
+roughly 5–10× wall-clock speedup with unoptimized kernels. The footnote claims this
+overhead can be reduced; no kernel-optimized comparison is reported in the paper.
 
-The headline (Table 1 in the paper): **nGPT-1B trains to a target perplexity in 4-20× fewer
-steps than equally-sized baseline GPT** across context lengths from 1K to 16K. The speedup is
-largest at long contexts; at 1K context the advantage is closer to 4×, while at 16K it is
-nearly 20×. The cause the authors propose: the hypersphere constraint regularizes the
-optimization landscape, so the loss surface is closer to convex over the operating regime than
-the standard architecture's.
+**Downstream tasks.** Figure 3 shows the speedup carries over from validation loss to
+downstream accuracy on five tasks: ARC-Easy, HellaSwag, WinoGrande, WSC273, LAMBADA-OpenAI
+seqlen 1024. At equal token budget, nGPT 1B at 4K context achieves higher accuracy on each
+task than GPT 1B; at equal accuracy, nGPT reaches the target at 4–10× fewer training
+tokens.
 
-The paper is research-stage as of late 2024; no production model has yet shipped using the full
-nGPT recipe. The mechanistic claim — that constraining vectors to the sphere makes optimization
-easier — is theoretically clean enough to attract follow-up work, and the construction is
-mechanically simple.
+**Diagnostics of the sphere constraint.** Figure 4 inspects what unconstrained GPT
+embeddings look like at the end of training and confirms they are far from norm-uniform:
+the input-embedding norms in 1B GPT span roughly 0.7 to 1.7, with a heavy-tailed eigenvalue
+spectrum, while nGPT's are pinned to 1 by construction. Figure 5 plots condition numbers
+of Q, K, V, and the three MLP matrices across layers; GPT's attention matrices show
+condition numbers in the $10^2$–$10^4$ range with high variance, while nGPT's stay below
+$10^1$ with no obvious depth trend. The authors interpret this (§ 3.2) as evidence that
+the sphere constraint prevents the rank-deficiency that GPT's attention matrices drift
+toward during training.
 
-<p class="section-eyebrow">§ 5 · What might keep it research-only</p>
-## The kernel question
+**Ablations.** Section 3.3 and Appendix A.9 report that fixing
+$\mathbf{s}_{qk}, \mathbf{s}_u, \mathbf{s}_\nu$ as non-learnable and using a single global
+$\mathbf{s}_z$ gives only "slight degradation in accuracy" — the general per-coordinate
+form is not strictly necessary. Appendix A.9 also tests omitting the explicit Q,K
+normalization (since the rows of $W_q, W_k$ are already unit-norm, $\mathbf{q}, \mathbf{k}$
+have bounded norm in expectation); this gives a 12% compute saving with "only a minor
+performance degradation" at training-context length, though it hurts on long-context
+extrapolation (Appendix A.8).
 
-The largest practical obstacle is kernel-level: standard GEMM kernels do not natively support
-the per-row weight normalization or the per-step output normalization that nGPT requires. A
-production implementation needs custom kernels (or careful fusion of existing primitives) to
-avoid leaving the speedup on the table. Until that infrastructure exists at the same maturity
-as FlashAttention-3, nGPT's training-step speedup may not translate to wall-clock or dollar
-speedup.
+**What is not in the paper.** No 7B+ run; no production-scale training. No comparison with
+non-Adam optimizers. No analysis of how the unit-norm-after-each-step constraint interacts
+with mixed-precision training or with fully sharded data parallelism. The headline 4–20×
+speedup is observed on a single dataset (OpenWebText) at two model sizes (0.5B, 1B); the
+authors note in § 3.1 that "we observe some saturation for the longest runs of nGPT,
+suggesting that the model capacity is nearly reached for this number of trainable model
+parameters" — implying the gap may narrow at scale.
 
-Worth tracking. Worth not committing to yet.
+**Independent reproductions.** As of mid-2026, no production open-weight model has shipped
+the full nGPT recipe. The geometric framing has attracted theoretical follow-up
+(representation-on-sphere arguments by [Wang & Isola, ICML 2020](https://arxiv.org/abs/2005.10242)
+predate the work and provide motivation), but a public end-to-end reproduction at the 7B
+scale or larger does not exist. The kernel question remains: standard GEMM kernels do not
+natively support per-row weight normalization at every step, and the wall-clock speedup
+depends on whether fused implementations can close the per-step overhead the paper
+acknowledges. **Verdict: clean construction, strong small-scale evidence, no public scale-up
+demonstration.**
 
 <Summary>
-**nGPT in one breath.** Constrain every vector to the unit hypersphere; cosine similarity
-replaces inner product everywhere; LayerNorm/RMSNorm are deleted as structurally redundant.
-4-20× faster training convergence at matched parameter count. Research-stage; production
-adoption gated on custom-kernel maturity rather than on the architecture's correctness.
+**nGPT in one breath.** Constrain every vector to the unit hypersphere; replace residual
+addition with a per-coordinate-gated step on the sphere (LERP + retraction); make every
+dot product a bounded cosine similarity. LayerNorm/RMSNorm are deleted as structurally
+redundant. 4–20× faster training convergence in steps at matched parameter count on
+OpenWebText 0.5B–1B; ~50–80% per-step overhead before kernel work. No scale-up
+reproduction yet.
 </Summary>

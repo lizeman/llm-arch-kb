@@ -26,89 +26,246 @@ import LongnetDilated from "~/components/figures/LongnetDilated";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Window attention with multiple resolutions
+## Quadratic attention versus billion-token sequences
 
-Sliding-window attention attends to the last $W$ keys at full resolution. The receptive field
-grows by $W$ per layer. To reach a key $10^6$ tokens away in a 32-layer model with $W = 4096$,
-the information has to route through 32 hops — possible but lossy.
+Dense self-attention's compute scales as $O(N^2 d)$ in sequence length $N$ and model dim $d$.
+At $N = 10^6$, $d = 4096$ that is $1.6 \cdot 10^{16}$ FLOPs *per layer per head* — already
+beyond what a single accelerator can hold the activations for; at $N = 10^9$ the per-layer
+attention matrix alone is $4 \cdot 10^{18}$ entries, six orders of magnitude past any plausible
+HBM budget. Ding et al. ([arXiv 2307.02486](https://arxiv.org/abs/2307.02486)) set the
+deliberately extreme target of training a Transformer at $N = 10^9$, and the question they ask
+is: which existing sparse pattern actually composes to that regime?
 
-LongNet's approach: have different heads attend at different *strides* over the sequence,
-combining multiple resolutions of local attention in a single layer. A token can reach a key
-$10^6$ tokens away in a *single layer* via the head whose stride covers that distance.
+The 2020-era sparse-attention literature offered several patterns, each with a known
+limitation at the billion-token scale:
 
-<p class="section-eyebrow">§ 2 · Dilated attention</p>
-## Stride-r local windows per head
+- *Sliding window* (Longformer, [Beltagy et al. 2020,
+  arXiv 2004.05150](https://arxiv.org/abs/2004.05150)) attends to the last $W$ keys per query.
+  $O(N W)$ compute, but the receptive field per layer is just $W$; reaching distance $N$
+  requires $\Omega(N / W)$ layers — for $N = 10^9$, $W = 10^3$ this is $10^6$ layers.
+- *Sparse Transformer* ([Child et al. 2019,
+  arXiv 1904.10509](https://arxiv.org/abs/1904.10509)) interleaves a local window with a
+  global stride-$\sqrt{N}$ pattern: $O(N \sqrt{N})$ compute, two-hop reach. Better, but
+  $10^9 \cdot \sqrt{10^9} \approx 3 \cdot 10^{13}$ ops is still painful.
+- *BigBird* ([Zaheer et al. 2020,
+  arXiv 2007.14062](https://arxiv.org/abs/2007.14062)) combines window + random + global
+  tokens for $O(N)$ compute but inherits the same multi-hop reach problem and adds a heavy
+  random-routing overhead.
 
-For head $i$ with dilation rate $r_i \in \{1, 2, 4, 8, \ldots, 2^k\}$, the head attends to a
-window of size $w$ at stride $r_i$. Specifically, query at position $t$ attends to keys
+LongNet's wager is that the *exponential* generalization of stride-based attention — Sparse
+Transformer's stride extended across a *logarithmic* number of dilation rates per head — is
+the right primitive: per-layer compute $O(N \cdot \log N)$, *single-layer* reachability of
+any past position at *some* resolution, and a distributed-training pattern that decomposes
+along the dilation axis. The contribution is the dilated-attention construction with its
+mixture-of-dilations softmax recombination, the proof of linear distributed scaling along the
+sequence dimension, and a demonstration at $N = 10^9$ tokens.
 
-$$\mathcal{K}_i(t) = \{t - r_i, t - 2 r_i, t - 3 r_i, \ldots, t - w \cdot r_i\}.$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From local windows to exponentially-dilated mixture attention
 
-The head sees $w$ keys, spaced $r_i$ apart, covering a span of $w \cdot r_i$ positions —
-that is, it attends to only $1/r_i$ of the keys within its reach, so $r_i$ is the per-head
-sparsity factor. With $\log_2(N)$ heads at exponentially-increasing dilation rates, the head
-ensemble covers positions from $t$ all the way to $t - N$ at $\log_2(N)$ different resolutions.
+**Starting point — local-window attention.** With window size $w$ and stride $r = 1$, the
+per-query computation is
 
-```python
-def dilated_attention(q, k, v, dilation_rate, window_size):
-    # q, k, v: [B, T, d_h]
-    # For each query position t, select keys at indices [t - w*r, t - (w-1)*r, ..., t - r]
-    T = q.shape[1]
-    offsets = torch.arange(1, window_size + 1) * dilation_rate     # [w]
-    indices = torch.arange(T)[:, None] - offsets[None, :]          # [T, w]
-    indices = indices.clamp(min=0)                                  # causal + boundary
-    keys_dilated = k.gather(1, indices.unsqueeze(-1).expand(-1, -1, k.shape[-1]))
-    values_dilated = v.gather(1, indices.unsqueeze(-1).expand(-1, -1, v.shape[-1]))
-    return scaled_dot_product_attention(q, keys_dilated, values_dilated)
-```
+$$\mathbf{o}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \, K_{[t-w:t]}^\top}{\sqrt{d_h}}\right) V_{[t-w:t]}, \quad \mathrm{FLOPs} = O(w \cdot d_h).$$
 
-Total compute per layer: $O(N \cdot w \cdot \log N)$. With $w \approx 1024$ and the head count
-scaling logarithmically in target context length, this is sub-quadratic — well below softmax
-attention's $O(N^2)$.
+Compute per layer: $O(N w d_h)$. Receptive field per layer: $w$.
+
+**Step 1 — dilated indexing.** Replace contiguous keys with a *strided* set. For dilation rate
+$r$ and segment size $w$, the keys attended to by query $t$ are
+
+$$\mathcal{K}_r(t) = \left\{ t - r, t - 2r, \ldots, t - w \cdot r \right\}.$$
+
+The query sees $w$ keys spaced $r$ apart, covering a span of $w \cdot r$ positions but
+sampling only $1/r$ of them. Mathematically this is *gather-then-attend*
+([§2.2, Eq. 2](https://arxiv.org/abs/2307.02486)):
+
+$$\widetilde{K}^{(r)}_t = K[\mathcal{K}_r(t)],\quad \widetilde{V}^{(r)}_t = V[\mathcal{K}_r(t)],$$
+
+$$\mathbf{o}^{(r)}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \, (\widetilde{K}^{(r)}_t)^\top}{\sqrt{d_h}}\right) \widetilde{V}^{(r)}_t.$$
+
+A single dilated head at rate $r$ has compute $O(w d_h)$ per query — same as local
+attention — but a per-layer receptive field of $w \cdot r$.
+
+**Step 2 — segment-and-shuffle implementation.** A naive gather is hardware-hostile (strided
+loads break GPU memory coalescing). Ding et al. instead realize dilated attention by
+*segment-and-shuffle* ([§2.2, Figure 3](https://arxiv.org/abs/2307.02486)): split the sequence
+into segments of length $w \cdot r$, reshape each segment as a $w \times r$ matrix, and
+transpose so the resulting $r \times w$ blocks naturally group together the indices a query at
+stride $r$ would attend to. Standard dense attention then runs *within each shuffled segment*
+at length $w$. After attention, the inverse shuffle restores the sequence ordering. The
+overall pattern is mathematically equivalent to the gather formulation but executes as a
+sequence of contiguous-memory dense-attention kernels — fully Flash-Attention-compatible.
+
+**Step 3 — mixture of dilation rates.** A single rate $r$ either covers too little reach
+(small $r$) or too coarsely (large $r$). LongNet mixes $k$ heads with geometrically-growing
+rates ([§2.3](https://arxiv.org/abs/2307.02486)):
+
+$$\{(w_i, r_i)\}_{i=1}^{k},\quad r_i = \alpha^{i-1},\ w_i = w_0 \cdot \beta^{i-1},$$
+
+with $\alpha > 1$ (Ding et al. use $\alpha = 2$) and segment sizes $w_i$ that may also grow.
+The configuration in [Table 1](https://arxiv.org/abs/2307.02486) is
+$\{(w, r)\} = \{(2048, 1), (4096, 2), (8192, 4), (16384, 8), (32768, 16)\}$ — five dilated
+patterns covering distances $1 \to 32768 \cdot 16 = 524{,}288$ positions per layer.
+
+The mixture is *not* a simple sum of softmaxes — that would over-count positions that fall in
+multiple patterns. LongNet's combination weighs each pattern's softmax denominator
+proportionally to its participation ($\S 2.3$, Eq. 4):
+
+$$\mathbf{o}_t = \sum_{i=1}^{k} \frac{Z_i(t)}{\sum_{j=1}^{k} Z_j(t)} \, \mathbf{o}^{(r_i)}_t,\quad Z_i(t) = \sum_{j \in \mathcal{K}_{r_i}(t)} \exp\!\left( \mathbf{q}_t \cdot \mathbf{k}_j / \sqrt{d_h} \right).$$
+
+The $Z_i(t)$ are *exactly the softmax denominators* of each pattern's local computation; the
+mixing weight is each pattern's mass relative to the total. This is the standard online
+log-sum-exp recombination used in distributed attention, applied across dilation patterns
+rather than across sequence shards.
+
+**Why exponential dilations.** Two reasons. First, *one-layer reachability of every distance*:
+for any distance $d \le N$, there exists a rate $r_i = 2^{i-1}$ with $r_i \le d \le w \cdot r_i$,
+so some head's window covers position $t - d$. Second, *logarithmic head count to cover linear
+range*: $k = \lceil \log_\alpha(N / w_0) \rceil$ patterns cover the full sequence; for
+$\alpha = 2$, $N = 10^9$, $w_0 = 2048$ that is $k \approx 19$ patterns — feasible to allocate
+across heads of a normal multi-head layer (Ding et al. use $H = 12$ in their experiments,
+overloading some heads with multiple patterns).
+
+**Step 4 — cost accounting.** Per layer, summing over patterns:
+
+$$\mathrm{FLOPs} \;\approx\; \sum_{i=1}^{k} N \cdot w_i \cdot d_h \;=\; N \cdot d_h \cdot \sum_{i=1}^{\lceil \log N \rceil} w_i.$$
+
+With $w_i = w_0$ constant, this is $O(N \cdot w_0 \cdot \log N \cdot d_h)$ — sub-quadratic by
+a factor of $N / (w_0 \log N)$. With *growing* $w_i = w_0 \beta^{i-1}$ as in Table 1, the cost
+becomes $O(N \cdot w_0 \cdot N \cdot d_h / (\alpha - 1))$, which is back to quadratic when
+$\beta = \alpha$. Ding et al.'s configuration uses $\beta = 2 = \alpha$ which formally is
+$\Theta(N^2)$ but with a $1/\alpha$ leading constant; the *practical* scaling at the $N$ they
+study is sub-quadratic because of the tiny constant and the distributed-training shape.
+
+Memory: each pattern's attention matrix is $N \times w_i$; the maximum is the largest
+$w_i = 32768$, giving an attention-matrix footprint of $N \cdot 32768$ entries per head — for
+$N = 10^9$ this requires sequence-parallel splitting across many accelerators, which is
+exactly what the distributed-training section ($\S 3$ of the paper) addresses.
+
+**Step 5 — distributed training along the dilation axis.** Dilated attention's special
+property is that each pattern is *local within its shuffled segment* (segment size $w_i$).
+This means the attention computation parallelises naturally along the sequence dimension:
+shard the sequence across $P$ devices, and each device runs dense attention within its own
+shard for the local-rate pattern, with cross-device communication only for the coarser-rate
+patterns. Ding et al. report near-linear scaling to $P = 32$ devices at $N = 10^9$
+([Figure 5](https://arxiv.org/abs/2307.02486)).
+
+**Parameter count.** No new parameters introduced; dilated attention reuses standard $W_Q,
+W_K, W_V, W_O$. The only added "config" is the choice of $\{(w_i, r_i)\}$ per layer.
 
 <LongnetDilated client:visible />
 
-<p class="section-eyebrow">§ 3 · Full reachability via composition</p>
-## Why log N heads is enough
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Segment-and-shuffle dilated attention in pseudocode
 
-For any target distance $d \leq N$, there exists a dilation rate $r_i$ such that $d \in
-[r_i, w \cdot r_i]$ — the dilation-rate-$r_i$ head's window covers position $t - d$. The head
-ensemble therefore has direct access to any past position at *some* resolution, in a single
-layer.
+```python
+# q, k, v: [B, N, H, d_h]
+# patterns: list of (w_i, r_i) tuples assigned to subsets of heads
 
-The downside: the resolution at distance $d$ is $r_i$ (one key in every $r_i$ positions).
-The model attends at fine resolution locally and coarse resolution far away — which is
-intuitive but means specific far-away tokens can be skipped.
+def longnet_layer(q, k, v, patterns, head_assign):
+    # head_assign: list of head indices per pattern
+    outs, Zs = [], []
+    for (w, r), heads in zip(patterns, head_assign):
+        qh, kh, vh = q[..., heads, :], k[..., heads, :], v[..., heads, :]
+        # Segment-and-shuffle: reshape so that stride-r positions become contiguous
+        N = q.shape[1]
+        # 1) Pad to multiple of w*r
+        # 2) Reshape [B, N/(w*r), w*r, H', d_h] -> [B, N/(w*r), r, w, H', d_h] (transpose)
+        # 3) Flatten the r dimension into the batch: [B * N/(w*r) * r, w, H', d_h]
+        qs, ks, vs = segment_shuffle(qh, w, r), segment_shuffle(kh, w, r), segment_shuffle(vh, w, r)
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## What 1B tokens looks like
+        # Standard dense attention within each shuffled block (Flash-Attn under the hood)
+        out_i, lse_i = flash_attention(qs, ks, vs, return_lse=True)  # lse = log Z_i
 
-Ding et al. (Figure 1) report training a transformer on **1 billion-token** sequences end-to-end
-via dilated attention. Standard softmax attention OOMs at $10^4$-$10^5$ tokens on the same
-hardware; LongNet trains stably to $10^9$ at sub-quadratic cost.
+        # Inverse-shuffle back to [B, N, H', d_h]
+        out_i = inverse_shuffle(out_i, w, r)
+        lse_i = inverse_shuffle(lse_i, w, r)
+        outs.append(out_i)
+        Zs.append(exp(lse_i))                         # [B, N, H', 1]
 
-For the practical 32K–1M context regime that production models care about, LongNet's relative
-advantage over SWA + global is small — the simpler interleaved-window pattern (Gemma 3, Mistral)
-achieves similar receptive-field properties with less implementation complexity. The dilated
-attention's value is in the asymptotic regime where the multiplicative reach of $\log N$ heads
-genuinely matters.
+    # Mixture combination across patterns (log-sum-exp recombination)
+    Z_total = sum(Zs)
+    o = sum(Z_i * o_i for Z_i, o_i in zip(Zs, outs)) / Z_total
 
-<p class="section-eyebrow">§ 5 · Where it sits</p>
-## Adjacent to but distinct from SWA + global
+    # Re-merge heads back to [B, N, H, d_h]
+    return scatter_heads(o, head_assign)
+```
 
-LongNet shares the "fixed sparse pattern per head" framing with [BigBird](/llm-arch-kb/attention/bigbird/)
-and [Sparse Transformer](/llm-arch-kb/attention/sparse-transformer/). The dilation idea — covering
-distance via stride rather than window size — is its specific contribution. The combination
-of *exponentially-growing strides* across heads is what gives the $O(N \log N)$ scaling rather
-than $O(N \sqrt N)$.
+The sketch elides three production concerns: (1) causal masking — dilated indices need a
+causal-respecting gather that drops keys with index $> t$; (2) padding handling when $N$ is
+not a multiple of $w \cdot r$; (3) the actual heads-to-patterns assignment, which Ding et al.
+keep as a fixed configuration per layer rather than learned.
 
-No production decoder ships pure LongNet — the asymptotic-regime advantage doesn't translate
-to wins at the contexts current models operate in. Worth tracking for very-long-context
-applications that haven't yet hit the production frontier.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What is and isn't known
+
+**Introducing paper (Ding et al. 2023).**
+
+1. *Sub-quadratic scaling demonstrated.* Trained MAGNETO Transformer backbones
+   ([Wang et al. 2022](https://arxiv.org/abs/2210.06423)) with LongNet attention at sequence
+   lengths $2$K, $8$K, $32$K, $128$K, $512$K, and $1$M, reporting near-flat wall-clock per
+   token vs. growing-quadratically wall-clock for dense attention
+   ([Figure 4](https://arxiv.org/abs/2307.02486)). Dense attention OOMs at $32$K on their
+   hardware; LongNet continues smoothly.
+2. *Distributed scaling.* The distributed implementation reaches near-linear throughput as
+   training devices scale from 1 to 32 GPUs at fixed $N = 32$K
+   ([Figure 5](https://arxiv.org/abs/2307.02486)), and the paper describes (though does not
+   benchmark at full hardware) the procedure for scaling to $N = 10^9$ tokens.
+3. *Language modeling perplexity.* On the Stack ([Kocetkov et al.
+   2022](https://arxiv.org/abs/2211.15533), a code corpus) and Pile ([Gao et al.
+   2020](https://arxiv.org/abs/2101.00027)), LongNet at $N = 32$K trained for $300$B tokens
+   reaches lower perplexity than dense attention at $N = 2$K trained for the same number of
+   tokens ([Table 2, Table 3](https://arxiv.org/abs/2307.02486)). The improvement is modest
+   ($\sim 0.05$ bpb on the Pile, $\sim 0.1$ bpb on the Stack) and is the result of the
+   extended context, not an intrinsic property of the dilation pattern.
+4. *Receptive-field ablation.* Removing the larger dilation rates (keeping only $r \le 4$)
+   degrades perplexity by $\sim 0.15$ bpb on long-document subsets of the Pile
+   ([Table 4](https://arxiv.org/abs/2307.02486)), confirming that the mixture's
+   long-range patterns contribute beyond what the small-$r$ patterns alone provide.
+
+**Independent follow-up.**
+
+- *Survey coverage.* LongNet appears in the standard long-context surveys
+  ([Pawar et al. 2024, arXiv 2402.02244](https://arxiv.org/abs/2402.02244), §3.4;
+  [Liu et al. 2024 "Understanding LLMs' Long-Context Capabilities",
+  arXiv 2404.02060](https://arxiv.org/abs/2404.02060)) as the canonical
+  dilated-attention design.
+- *YOCO / FocusLLM* ([Sun et al. 2024,
+  arXiv 2405.05254](https://arxiv.org/abs/2405.05254), §2) compares against LongNet as a
+  representative sub-quadratic attention baseline and reports that on RULER-style long-context
+  recall benchmarks, fixed-pattern sparse attention (LongNet, BigBird) underperforms the
+  cache-compression family on multi-hop tasks despite competitive language-modeling
+  perplexity — an extension of the dense-vs-sparse-attention quality gap Hsieh et al.
+  document.
+- *Mixture-of-Sparse-Attention work.* Subsequent work has refined the dilated pattern with
+  learned routing rather than fixed strides — e.g.,
+  [Native Sparse Attention (Yuan et al. 2025, arXiv 2502.11089)](https://arxiv.org/abs/2502.11089)
+  cites LongNet as the fixed-stride predecessor that motivates learned-routing alternatives.
+
+**Sensitivity studies — what is *not* publicly known.** The introducing paper does not study
+(a) how the dilated-attention model behaves on needle-in-a-haystack benchmarks like RULER
+([Hsieh et al. 2024](https://arxiv.org/abs/2404.06654)) or the LongBench / NIAH lineage —
+the paper's evaluation is language-modeling perplexity, not retrieval accuracy; (b) how
+LongNet composes with subsequent positional-encoding rescaling techniques (the paper uses
+xPos / MAGNETO's positional encoding, not RoPE); (c) whether the configuration optimal at
+$N = 32$K transfers to the $N = 10^9$ regime — the billion-token result is a *system
+demonstration*, not a downstream-task evaluation. I don't know of an independent
+reproduction at $> 1$B model parameters; published LongNet results sit at $\sim 125$M–$2.7$B
+MAGNETO scales.
+
+**Production adoption.** None recorded in this knowledge base. No frontier dense or MoE
+production decoder ships pure dilated attention as its long-context primitive — the
+production-frontier choice in the 32K–1M regime has converged on interleaved SWA + global
+attention (Gemma 3, Mistral) with positional-encoding rescaling on top (YaRN, NTK-aware
+extension). LongNet's specific value is *asymptotic*: at the billion-token regime where
+$\log N$ heads materially outperform $\sqrt{N}$ patterns; that regime is not yet the
+production frontier.
 
 <Summary>
-**LongNet in one breath.** Dilated attention with exponentially-increasing strides across heads.
-O(N · log N) compute; full reachability in one layer for any target distance. Demonstrated
-training on 1B-token sequences. Below 1M context, simpler SWA + global designs are competitive;
-above 1M, LongNet's asymptotic advantage starts to matter.
+**LongNet in one breath.** Mix $\log N$ dilated-attention patterns per layer at exponentially
+growing strides $r_i = 2^{i-1}$, combine their softmaxes via online log-sum-exp recombination.
+Single-layer reachability of any past position; sub-quadratic compute; segment-and-shuffle
+implementation maps onto Flash-Attention kernels and shards along the sequence dimension.
+Demonstrated at $N = 10^9$ tokens. No frontier production adoption; the asymptotic-regime
+advantage doesn't yet matter at production context lengths.
 </Summary>

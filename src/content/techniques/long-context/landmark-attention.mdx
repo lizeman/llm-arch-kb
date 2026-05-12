@@ -25,98 +25,225 @@ import LandmarkAttention from "~/components/figures/LandmarkAttention";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Random-access attention
+## Where length and resolution collide
 
-Linear-time attention variants — sliding windows, kNN memory, compression — all give up
-something. Sliding loses tokens past the window. kNN loses gradient signal through retrieval.
-Compression loses fine-grained detail. All three trade resolution for length.
+At training length $T = 2{,}048$, the LLaMA-7B used as Mohtashami & Jaggi's testbed already
+materializes a full attention matrix of $T^2 = 4.2 \times 10^6$ entries per head per layer
+([Mohtashami & Jaggi 2023, §1](https://arxiv.org/abs/2305.16300)). Doubling context to 4K
+quadruples the FLOPs and KV-cache footprint; pushing to 32K — the inference regime the paper
+actually targets — would cost $256\times$ the attention compute at fixed depth. By 2023 several
+families of workaround existed, and each gave up something specific:
 
-Landmark Attention's bet: rather than degrading all far-away keys equally, use a learned
-*indexing* mechanism. Each chunk of past tokens gets a single summary representation; the
-model decides which chunks need full attention based on those summaries. Far-away keys not
-selected get zero attention; selected far-away chunks get attended to at full resolution.
+- **Sliding-window attention** (Beltagy et al. 2020,
+  [arXiv 2004.05150](https://arxiv.org/abs/2004.05150); StreamingLLM keeps an attention-sink
+  prefix on top, [Xiao et al. 2023](https://arxiv.org/abs/2309.17453)) keeps cost linear in
+  $T$ but discards keys older than the window. A token at distance $> W$ is unreachable in one
+  layer; deep stacks recover it slowly and lossily.
+- **Compressive memory** (Transformer-XL,
+  [Dai et al. 2019](https://arxiv.org/abs/1901.02860); Compressive Transformer,
+  [Rae et al. 2019](https://arxiv.org/abs/1911.05507)) keeps everything but at coarsened
+  resolution: the old tokens survive as pooled or attention-summarized vectors. Resolution
+  degrades with distance.
+- **kNN memory** (Memorizing Transformers,
+  [Wu et al. 2022](https://arxiv.org/abs/2203.08913)) retrieves a small slice of old K/V at
+  full resolution, but the retrieval index is non-differentiable; the model cannot learn
+  to *index* better.
 
-<p class="section-eyebrow">§ 2 · The landmark token</p>
-## One summary per chunk
+Landmark Attention's wager is that the right primitive is *random access* rather than uniform
+decay or sliding eviction: most queries need only a few specific chunks of the distant past at
+full resolution, and the model itself can learn which chunks those are. The contribution is a
+single special token — the *landmark* — that summarizes a chunk well enough to act as its
+addressable handle inside the attention softmax.
 
-Insert a learnable token $\mathbf{L}$ at the end of each chunk of $W$ tokens during training:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From dense attention to landmark-gated retrieval
 
-$$[\text{tok}_1, \ldots, \text{tok}_W, \mathbf{L}, \text{tok}_{W+1}, \ldots, \text{tok}_{2W}, \mathbf{L}, \ldots]$$
+**Starting point.** Standard causal attention at position $t$ over a key/value cache of
+length $T$ computes
 
-The landmark token attends to its preceding chunk via standard attention and develops an
-activation that summarizes the chunk's content. The model learns this implicitly during
-pretraining (with a small auxiliary loss to encourage useful summaries).
+$$\mathrm{Attn}(\mathbf{q}_t, K_{1:t}, V_{1:t}) = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{1:t}^\top}{\sqrt{d_h}}\right) V_{1:t},$$
 
-At inference time, attention is hierarchical:
+with $\mathbf{q}_t \in \mathbb{R}^{d_h}$, $K_{1:t}, V_{1:t} \in \mathbb{R}^{t \times d_h}$.
+The $O(T)$ keys all participate in the same softmax; both memory and FLOPs scale as
+$\Theta(T \cdot d_h)$ per query position.
 
-1. **Coarse stage**: query $\mathbf{q}_t$ attends to *all landmark tokens*. This produces a
-   distribution over chunks indicating which are relevant.
-2. **Fine stage**: for the top-K most relevant chunks, expand and run full attention over
-   their constituent tokens.
+**Step 1 — chunking with landmark slots.** Partition the sequence into contiguous *blocks* of
+$W$ tokens (Mohtashami & Jaggi use $W = 50$ in their LLaMA-7B fine-tune,
+[§4.1](https://arxiv.org/abs/2305.16300)). For each block $b$, append a single learnable
+*landmark token* $\boldsymbol{\ell}_b$ that participates in self-attention exactly like a
+real token:
 
-```python
-def landmark_attention(q, all_landmarks, chunks, top_K, full_attn):
-    # all_landmarks: [num_chunks, d_h]
-    # chunks: list of [chunk_len, d_h] per chunk
-    landmark_scores = q @ all_landmarks.T            # [num_chunks]
-    top_chunk_idx = landmark_scores.topk(top_K).indices
-    selected_keys = cat([chunks[i] for i in top_chunk_idx])
-    return full_attn(q, selected_keys, selected_keys)
-```
+$$\underbrace{[x_1, \ldots, x_W, \boldsymbol{\ell}_1]}_{\text{block 1}},\;
+\underbrace{[x_{W+1}, \ldots, x_{2W}, \boldsymbol{\ell}_2]}_{\text{block 2}},\;\ldots$$
 
-Cost: $O(C)$ for the landmark stage plus $O(K \cdot W)$ for the fine stage, where $C$ is the
-number of chunks and $W$ is each chunk's size. For a 1M-token context with $C = 256$ chunks of
-$W = 4096$ and $K = 4$, total cost is $\sim 16{,}640$ operations per query — vs $10^6$ for full
-attention.
+Each $\boldsymbol{\ell}_b$ is a sequence position; it has its own query, key, value via the
+shared $W_Q, W_K, W_V$, and through normal causal attention it absorbs information from the
+$W$ tokens of its block. There is no auxiliary loss; the landmark's representation is shaped
+entirely by next-token prediction on the chunked sequence.
+
+**Step 2 — *grouped softmax* at training time.** Define $\mathcal{B}(t)$ as the index of the
+block containing token $t$. Partition the keys before $t$ into blocks $b = 1, \ldots, \mathcal{B}(t)$.
+A landmark $\boldsymbol{\ell}_b$ stands for its whole block. Mohtashami & Jaggi modify the
+softmax so that, for a query $\mathbf{q}_t$ and a non-landmark key $\mathbf{k}_j$ in block $b$,
+the *normalized* attention weight is the product of two factors —
+([§3.2, Eq. 1](https://arxiv.org/abs/2305.16300)):
+
+$$\alpha_{t,j} \;=\; \underbrace{\frac{\exp(\mathbf{q}_t \cdot \boldsymbol{\ell}_b / \sqrt{d_h})}{\sum_{b'=1}^{\mathcal{B}(t)} \exp(\mathbf{q}_t \cdot \boldsymbol{\ell}_{b'} / \sqrt{d_h})}}_{\text{block-level (over landmarks)}} \;\cdot\; \underbrace{\frac{\exp(\mathbf{q}_t \cdot \mathbf{k}_j / \sqrt{d_h})}{\sum_{j' \in \text{block } b} \exp(\mathbf{q}_t \cdot \mathbf{k}_{j'} / \sqrt{d_h})}}_{\text{within-block (excluding landmark)}}.$$
+
+The first factor is a softmax over *landmarks only* — exactly $\mathcal{B}(t)$ logits, one per
+block. The second factor is a per-block softmax over the $W$ ordinary keys, with the landmark
+removed. Reading this equation backwards is what makes the rest of the design work: the
+landmark $\boldsymbol{\ell}_b$ is *forced* to carry whatever signal the model needs to compute
+its block's outer-softmax weight, because the gradient of $\alpha_{t,j}$ with respect to
+$\boldsymbol{\ell}_b$ flows only through the outer factor.
+
+**Why two softmaxes rather than one.** A single softmax over $\{\mathbf{k}_j\} \cup
+\{\boldsymbol{\ell}_b\}$ would let landmarks and tokens compete on the same scale; the landmark
+would have to win each token's mass directly. The grouped form decouples the *selection*
+problem (which block?) from the *content* problem (which token within the block?). The model
+can learn to make landmark logits very different in scale from token logits without that
+choice corrupting within-block attention.
+
+**Step 3 — sparse inference via landmark gating.** At inference, materializing the grouped
+softmax above costs the same as dense attention. The point of the construction is that, with
+the landmarks already trained, we can replace the inner softmax over *every* block with a
+sparse approximation:
+
+$$\widehat{\mathrm{Attn}}(\mathbf{q}_t) = \sum_{b \in \mathrm{TopK}(\mathbf{q}_t \cdot L)} \;\;\;\; \sum_{j \in \text{block } b} \alpha_{t,j} \, \mathbf{v}_j,$$
+
+where $L = [\boldsymbol{\ell}_1, \ldots, \boldsymbol{\ell}_C] \in \mathbb{R}^{C \times d_h}$
+stacks the landmarks for the $C$ past blocks and $\mathrm{TopK}$ picks the highest-scoring
+landmark indices. Mohtashami & Jaggi report $K = 2$ retrieved blocks works for their LLaMA-7B
+fine-tune ([§4.3](https://arxiv.org/abs/2305.16300)). For blocks outside the top-$K$ set the
+weight is treated as zero — the inner softmax never runs.
+
+**Step 4 — cost accounting.** Let $C = T / W$ be the number of past blocks at position $t$,
+$W$ the block size, $K$ the retrieval budget, $d_h$ the head dimension. Per query, per head:
+
+$$\mathrm{FLOPs} \approx \underbrace{C \cdot d_h}_{\text{landmark scoring}} + \underbrace{K \cdot W \cdot d_h}_{\text{in-block attention}} \;=\; d_h \cdot \left( \tfrac{T}{W} + K W \right).$$
+
+This is minimized at $W \approx \sqrt{T/K}$ — the classic two-level lookup balance. For
+$T = 32{,}768$, $W = 50$, $K = 2$ that gives $\approx 755 d_h$ FLOPs per query vs.
+$T d_h = 32{,}768 d_h$ for dense attention, a $\sim 43\times$ reduction at the FLOP level.
+Memory follows the same shape: only the landmark matrix $L \in \mathbb{R}^{C \times d_h}$ and
+the top-$K$ blocks need to live in fast memory at any given step.
+
+**Step 5 — boundary handling.** Two details Mohtashami & Jaggi treat carefully:
+
+- The *current block* (containing position $t$) and a small *recent window* of $r$ prior tokens
+  are exempted from the gating — they are always attended to in full. This keeps short-range
+  attention exact and avoids the failure mode where the top-$K$ blocks all sit deep in the past.
+- The training-time grouped softmax uses *teacher-forced* chunk boundaries that match what the
+  inference loop will see; the model never learns under a different partition than it deploys
+  under ([§3.4](https://arxiv.org/abs/2305.16300)).
+
+**Parameter count.** The only added parameters are the embedding of the landmark token —
+$d_h \cdot H$ scalars in total, where $H$ is the number of heads, since the same landmark
+embedding is used in every position. Across a typical 32-layer 4096-dim model that is on the
+order of $\sim 4{,}000$ extra parameters, *not per layer*: the landmark is a special input
+token, not a per-layer projection.
 
 <LandmarkAttention client:visible />
 
-<p class="section-eyebrow">§ 3 · Training</p>
-## How the landmark learns to summarize
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Grouped softmax in PyTorch-style pseudocode
 
-The training objective makes landmark tokens useful via a small auxiliary loss: each landmark
-must be able to "recover" its chunk's content well enough that gradients flow through the
-landmark routing. Mohtashami & Jaggi train this implicitly — the model is rewarded for
-producing landmarks that maximize end-task quality on long-context retrieval tasks.
+```python
+# x: [B, T, d_model]  block-chunked with one landmark token appended per W real tokens
+# block_id[t] in [0, C) tells which block position t belongs to
+# is_landmark[t] is True iff position t is a landmark slot
+def landmark_attn_train(q, k, v, block_id, is_landmark):
+    # q, k, v: [B, T, H, d_h]
+    logits = einsum("bthd,bshd->bhts", q, k) / sqrt(d_h)
+    causal_mask(logits)
 
-A second design choice: at training time, landmarks attend to the entire preceding chunk via
-standard attention, so the model can pack summaries optimally. At inference, the chunked
-hierarchical attention is what runs.
+    # Outer softmax: only landmark keys participate, normalized over past blocks
+    land_logits = logits.masked_fill(~is_landmark[None, None, None, :], -inf)
+    outer = softmax(land_logits, dim=-1)            # [B, H, T, T], nonzero only at landmark cols
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+    # Inner softmax: only non-landmark keys, normalized within each block
+    tok_logits = logits.masked_fill(is_landmark[None, None, None, :], -inf)
+    # group_softmax normalizes within each block_id group along the key axis
+    inner = group_softmax(tok_logits, group=block_id, dim=-1)
 
-Mohtashami & Jaggi (Table 2) report Llama-7B extended to 32K context via Landmark fine-tuning,
-matching standard Llama-7B's PG-19 perplexity at the new length. On synthetic key-value
-retrieval tasks (where exact recall is required), Landmark significantly outperforms naive
-sliding-window approaches at the same compute budget — the hierarchical routing lets it pick
-the relevant chunk regardless of distance.
+    # Combine: weight = outer-block-prob * inner-within-block-prob
+    block_prob = scatter_to_token(outer, block_id)  # broadcast block weight to its tokens
+    weights = block_prob * inner                    # [B, H, T, T]
+    return einsum("bhts,bshd->bthd", weights, v)
 
-Where it lost ground: tasks that need broadly-distributed long-range signals (e.g., document
-summarization that pulls from many chunks at once) saw smaller gains, because each query can
-only afford to expand ~$K = 4$ chunks before the cost-savings disappear.
+def landmark_attn_infer(q_t, k_landmarks, v_landmarks, blocks_kv, K, recent_window):
+    # k_landmarks: [C, H, d_h]   one per past block
+    # blocks_kv: list of (K_b, V_b), each [W, H, d_h]
+    scores = einsum("hd,chd->hc", q_t, k_landmarks) / sqrt(d_h)
+    topk = scores.topk(K, dim=-1).indices            # [H, K]
+    out = recent_attn(q_t, recent_window)            # always-on local window
+    for h in range(H):
+        for b in topk[h]:
+            out[h] += attend(q_t[h], blocks_kv[b])   # full softmax inside selected block
+    return out
+```
 
-<p class="section-eyebrow">§ 5 · Where it sits</p>
-## The four long-context approaches
+The sketch elides three production concerns: (1) fused-kernel realization of the grouped
+softmax — Mohtashami & Jaggi rely on a custom Triton kernel
+([repo `epfml/landmark-attention`](https://github.com/epfml/landmark-attention)); (2)
+position encoding for landmarks, which they handle by giving the landmark a position equal to
+the *last* token of its block; (3) head-merged top-$K$ — heads can either vote individually
+or share a single retrieved block set.
 
-The long-context category in this knowledge base now spans four structurally distinct ideas:
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What is and isn't known
 
-- **Sliding** ([StreamingLLM](/llm-arch-kb/long-context/streaming-llm/)): pin some, slide the
-  rest. Loss-free within the window.
-- **Compression** ([Compressive Transformer](/llm-arch-kb/long-context/compressive-transformer/),
-  [Activation Beacon](/llm-arch-kb/long-context/activation-beacon/)): summarize the past
-  losslessly per chunk.
-- **Retrieval** ([Memorizing Transformers](/llm-arch-kb/long-context/memorizing-transformers/)):
-  non-differentiable kNN lookup.
-- **Hierarchical indexing** (Landmark): differentiable summary tokens guide attention routing.
+**Introducing paper (Mohtashami & Jaggi 2023).** Two main results:
 
-Each trades a different axis. Landmark's contribution: keep the *option* of full-resolution
-attention for selected far-away chunks, rather than committing globally to compression or
-retrieval.
+1. *Perplexity at training length.* On English Wikipedia, a Transformer trained from scratch
+   with landmark attention at block size $W = 50$ matches a dense-attention baseline within
+   $\sim 0.05$ perplexity at sequence length 512, the training length
+   ([Table 1](https://arxiv.org/abs/2305.16300)). The grouped softmax is *not* a quality
+   regression at the trained length.
+2. *Extrapolation to longer contexts.* Fine-tuning a LLaMA-7B checkpoint with landmark
+   attention on 15B tokens of RedPajama at chunk size $W = 50$ produces a model that
+   correctly retrieves a hidden passphrase from contexts up to $32{,}768$ tokens — well beyond
+   LLaMA's 2K pretraining length — at $> 90\%$ accuracy on the "Passkey Retrieval" task they
+   introduce ([Figure 3, §4.3](https://arxiv.org/abs/2305.16300)). A dense LLaMA-7B baseline
+   drops to chance at $\sim 4{,}000$ tokens.
+
+**Independent follow-up.** Passkey retrieval became the canonical lightweight long-context
+probe after this paper; later work directly compares against landmark attention:
+
+- *Activation Beacon* ([Zhang et al. 2024,
+  arXiv 2401.03462](https://arxiv.org/abs/2401.03462), Table 5) reproduces landmark attention
+  on LLaMA-2-7B and reports comparable passkey accuracy at 32K context but a $\sim 2$ point
+  PG-19 perplexity gap versus the beacon-based summarizer at equal context length — i.e.,
+  landmark attention preserves *retrieval* well but loses *fluency* on broad-context tasks.
+- *LongLoRA* ([Chen et al. 2023,
+  arXiv 2309.12307](https://arxiv.org/abs/2309.12307), §5) uses passkey as one of its
+  evaluation tasks and confirms landmark attention's near-perfect recall at 32K, while
+  reporting that LongLoRA's S²-attention reaches comparable recall with $\sim 30\%$ less
+  fine-tuning compute.
+- *Lost in the Middle* ([Liu et al. 2023,
+  arXiv 2307.03172](https://arxiv.org/abs/2307.03172)) and the broader "needle-in-a-haystack"
+  literature inherited the chunked-passkey evaluation protocol that landmark attention's
+  paper popularized.
+
+**Sensitivity studies — what is *not* publicly known.** The introducing paper sweeps block size
+$W \in \{25, 50, 100\}$ and retrieval budget $K \in \{2, 4\}$
+([Table 4](https://arxiv.org/abs/2305.16300)), reporting that $W = 50, K = 2$ is the sweet spot
+for their LLaMA-7B setup. There is *no* public study of: how landmark attention behaves on
+tasks that require *aggregating* information across many distant blocks (e.g., document-level
+summarization), how the design interacts with RoPE position scaling at extrapolation lengths
+beyond 32K, or how it composes with GQA / MLA-style KV compression. I don't know of an
+independent reproduction at $> 13$B parameters; the landmark-attention codebase pinned at
+LLaMA-7B is what the field has compared against.
+
+**Production adoption.** None recorded in this knowledge base. The technique sits in the
+research lineage that fed into Activation Beacon, LongLoRA, and the broader 2024 long-context
+retrieval-via-attention thread, but no frontier dense or MoE model ships landmark attention as
+its long-context primitive.
 
 <Summary>
-**Landmark Attention in one breath.** Train landmark tokens to summarize chunks; at inference,
-attention queries pick the top-K chunks via landmark scores, then run full attention only
-within selected chunks. O(C + K·W) per query. Best for tasks needing exact recall from a few
-specific places in a long context; worse for broadly-distributed long-range signals.
+**Landmark Attention in one breath.** Train a single learnable token per block under a grouped
+softmax that forces it to summarize its block's content. At inference, queries score
+landmarks, retrieve top-$K$ blocks, and run full attention only inside those blocks —
+$O(T/W + K W)$ per query. Demonstrated to extend LLaMA-7B to 32K context for passkey-style
+retrieval; weaker on broad-context tasks; no frontier production adoption.
 </Summary>

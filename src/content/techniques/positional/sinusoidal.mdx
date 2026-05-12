@@ -24,85 +24,199 @@ import Summary from "~/components/Summary.astro";
 <p class="section-eyebrow">§ 1 · Premise</p>
 ## Self-attention is permutation-equivariant
 
-Without any positional information, attention treats its input as a set: permuting the tokens
-gives a permuted output, period. Language is not a set. The 2017 transformer needed *some*
-mechanism to inject "where in the sequence am I" into the input.
+The self-attention layer of Vaswani et al. (2017) is symmetric in its inputs: permuting
+the input token sequence permutes the output the same way. Without any positional
+information, the model treats its input as a set, not a sequence. Language is a sequence;
+something must inject "where in the sequence am I" into the input.
 
-The available options at the time:
+The paper considers two options at the 2017 design point (§ 3.5):
 
-1. A *learned* position embedding table — one vector per position, trained jointly with the
-   model. Simple but caps the maximum supported position at the table size.
-2. A *fixed* deterministic position encoding — closed form, no parameters. No cap; potentially
-   extrapolates.
+1. A *learned* position embedding table — one vector per absolute position, trained jointly
+   with the rest of the model, in the style of [Gehring et al. 2017,
+   arXiv 1705.03122](https://arxiv.org/abs/1705.03122). Simple and expressive but caps the
+   maximum supported position at the training-time table size; there is no defined
+   embedding for positions beyond $L_{\text{max}}$.
+2. A *fixed* deterministic position encoding — closed form, no learnable parameters. No
+   cap on position; potentially extrapolates to lengths beyond training.
 
-Vaswani et al. chose option 2, with a specific sinusoidal form.
+Vaswani et al. chose option 2 with a sinusoidal form, and they justified the choice on
+two grounds (§ 3.5, final two paragraphs): (a) learned and sinusoidal embeddings gave
+"nearly identical results" on WMT En–De translation (Table 3, row E vs. base), so quality
+was not the deciding factor; (b) the sinusoidal form was hypothesized to "allow the model
+to extrapolate to sequence lengths longer than the ones encountered during training", a
+property a learned table cannot have by construction.
 
-<p class="section-eyebrow">§ 2 · The encoding</p>
-## A geometric frequency ladder
+The one-sentence preview: every absolute position $t$ gets a deterministic
+$d_{\text{model}}$-dimensional vector built from sines and cosines at geometrically spaced
+frequencies, added to the token embedding before the first attention layer.
 
-For position $t \in \{0, 1, \ldots\}$ and embedding dimension index $i \in \{0, 1, \ldots, d/2 - 1\}$,
-the sinusoidal embedding is
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## A geometric frequency ladder, added to the token embedding
 
-$$\mathrm{PE}(t, 2i) = \sin\!\left(\frac{t}{10000^{2i/d}}\right),\quad \mathrm{PE}(t, 2i+1) = \cos\!\left(\frac{t}{10000^{2i/d}}\right).$$
+The encoding is defined in § 3.5 of the paper as two interleaved coordinate functions
+indexed by position $t \in \{0, 1, 2, \ldots\}$ and dimension index
+$i \in \{0, 1, \ldots, d_{\text{model}}/2 - 1\}$. Even-numbered coordinates use sine,
+odd-numbered coordinates use cosine, and the wavelength grows geometrically with $i$:
 
-The two adjacent dimensions $(2i, 2i+1)$ together encode position via the angle
-$\theta_i(t) = t / 10000^{2i/d}$. Low-$i$ dimensions oscillate quickly across positions (the
-denominator is small); high-$i$ dimensions oscillate slowly.
+$$
+\mathrm{PE}(t, 2i) \;=\; \sin\!\Bigl(\frac{t}{10000^{2i / d_{\text{model}}}}\Bigr),
+$$
+
+$$
+\mathrm{PE}(t, 2i+1) \;=\; \cos\!\Bigl(\frac{t}{10000^{2i / d_{\text{model}}}}\Bigr).
+$$
+
+Each adjacent dimension pair $(2i, 2i+1)$ jointly encodes position $t$ via the angle
+$\theta_i(t) = t \cdot \omega_i$ with frequency $\omega_i = 10000^{-2i / d_{\text{model}}}$.
+The lowest-index pair $i = 0$ has $\omega_0 = 1$ — one radian per position step,
+wavelength $2\pi$ positions, oscillating fastest across the sequence. The highest-index
+pair $i = d_{\text{model}}/2 - 1$ has $\omega = 10000^{-(d_{\text{model}} - 2)/d_{\text{model}}} \approx 1/10000$ —
+wavelength $\sim 10000 \cdot 2\pi$ positions, the slowest oscillation. Vaswani et al.
+describe this explicitly: "the wavelengths form a geometric progression from $2\pi$ to
+$10000 \cdot 2\pi$."
+
+**Why a geometric ladder.** Each coordinate pair acts as a different "ruler" against
+which the model can measure position. A short-wavelength coordinate distinguishes
+neighbors but wraps quickly; a long-wavelength coordinate cannot resolve neighbors but
+provides a coarse absolute marker that does not wrap within the training range. Together
+the $d_{\text{model}}/2$ coordinate pairs furnish a multi-resolution position descriptor,
+analogous in spirit to a binary expansion but continuous and differentiable.
+
+**The relative-position property.** For any fixed offset $k$, the encoding at position
+$t + k$ is a fixed linear function of the encoding at position $t$. Concretely, the
+2D coordinate pair $(\sin \omega_i t, \cos \omega_i t)$ rotates rigidly to
+$(\sin \omega_i (t+k), \cos \omega_i (t+k))$ under multiplication by the rotation matrix
+
+$$
+R_i(k) \;=\; \begin{bmatrix} \cos \omega_i k & \sin \omega_i k \\ -\sin \omega_i k & \cos \omega_i k \end{bmatrix}.
+$$
+
+Stacking these block-diagonal rotations across all $i$ gives a fixed $d_{\text{model}} \times d_{\text{model}}$
+matrix $M_k$ such that $\mathrm{PE}(t + k) = M_k \cdot \mathrm{PE}(t)$ for every $t$.
+Vaswani et al. write this as the linearity argument: "we hypothesized it would allow the
+model to easily learn to attend by relative positions, since for any fixed offset $k$,
+$PE_{pos+k}$ can be represented as a linear function of $PE_{pos}$."
+
+**Why this hope did not fully cash out.** The relative-position property holds on the
+sinusoidal encoding itself, but the encoding is *added* to the token embedding
+($\mathbf{x}_t = \mathbf{e}_{\text{tok}(t)} + \mathrm{PE}(t)$) before entering the
+attention layer. To exploit the rotation $M_k$ for a relative-position-aware dot product,
+the model would need its $W_Q, W_K$ projections to learn to ignore the token-embedding
+contribution and operate cleanly on the PE subspace — a strong implicit constraint that is
+not enforced. Rotary embeddings ([RoPE](/llm-arch-kb/positional/rope/), Su et al. 2021)
+later fixed this by *rotating Q and K directly* with the same frequency ladder, giving
+the relative-position property exactly in the inner product:
+$\langle R_i(t) \mathbf{q}, R_i(s) \mathbf{k}\rangle = \langle \mathbf{q}, R_i(s-t)\mathbf{k}\rangle$.
+RoPE inherits the $10000^{-2i/d_{\text{model}}}$ frequency ladder unchanged.
+
+**Cost.** Zero learnable position parameters. One vector-add at the input layer per
+sequence. The PE table for the full training context is precomputed once and held
+in memory; lookup is $O(L \cdot d_{\text{model}})$ memory and trivial compute. The
+implementation is a few lines (see § 3).
+
+**The choice of base $10000$.** The paper does not derive the constant $10000$ from
+first principles — it is a hyperparameter. The number sets the *slowest* wavelength
+the encoding can resolve: roughly $10000 \cdot 2\pi \approx 62800$ position steps for the
+lowest-frequency coordinate. For the WMT translation contexts of 2017 (single sentences,
+typically $< 200$ tokens) this is two orders of magnitude of headroom. The value becomes
+load-bearing later: RoPE inherits it, then the long-context era (2023–2025) has to
+*adjust* it — bases of 500K, 1M, even 10M appear in [Llama 3](https://arxiv.org/abs/2407.21783)
+and Gemma 3 to keep the slowest frequencies from wrapping inside a 128K context. The
+$10000$ choice is the single most-copied magic number in transformer history.
+
+**Bidirectional vs. causal usage.** Sinusoidal PE in the 2017 paper was used in both the
+encoder (bidirectional) and decoder (causal). For decoder-only LMs that became the focus
+after 2018, the additive-at-input form is unchanged — causality is implemented downstream
+in the attention mask, independent of the position mechanism. The
+[NoPE result](/llm-arch-kb/positional/nope/) (Haviv et al. 2022) later shows that for
+causal attention specifically, sinusoidal is not strictly necessary; for bidirectional
+attention, it is.
 
 ```python
 def sinusoidal_pe(seq_len, d_model, device):
     pos = torch.arange(seq_len, device=device).unsqueeze(1)        # [T, 1]
-    i = torch.arange(0, d_model, 2, device=device).unsqueeze(0)    # [1, d/2]
-    angle = pos / 10000.0**(i / d_model)                            # [T, d/2]
+    i   = torch.arange(0, d_model, 2, device=device).unsqueeze(0)  # [1, d/2]
+    angle = pos / 10000.0 ** (i / d_model)                          # [T, d/2]
     pe = torch.zeros(seq_len, d_model, device=device)
     pe[:, 0::2] = angle.sin()
     pe[:, 1::2] = angle.cos()
     return pe
 ```
 
-The result is added to the token embedding before the first attention layer:
-$\mathbf{x}_t = \mathbf{e}_{\text{tok}(t)} + \mathrm{PE}(t)$.
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## A two-line addition before the first attention layer
 
-<p class="section-eyebrow">§ 3 · The relative-position property</p>
-## Why this particular form
+```python
+def embed_with_sinusoidal(tokens, tok_embed, d_model):
+    # tokens:    [B, T]              token IDs
+    # tok_embed: [V, d_model]        learned token embedding table
+    x  = tok_embed[tokens]                                           # [B, T, d_model]
+    pe = sinusoidal_pe(tokens.shape[-1], d_model, tokens.device)     # [T, d_model]
+    return x + pe                                                    # broadcast
+```
 
-The reason Vaswani et al. chose sin/cos rather than any other closed-form function: for any
-fixed offset $\Delta$, the sinusoidal encoding at position $t + \Delta$ is a *linear function*
-of the encoding at position $t$. That is, there exists a fixed matrix $M_\Delta$ such that
-$\mathrm{PE}(t + \Delta) = M_\Delta \cdot \mathrm{PE}(t)$.
+The encoding lives entirely at the input. Every downstream attention layer receives
+position information mixed into the token representation via the residual stream. The
+mechanism stops contributing once the first sublayer's projections decompose the
+embedding-plus-PE sum however they choose; there is no per-layer reinjection. This is the
+load-bearing difference vs. [RoPE](/llm-arch-kb/positional/rope/), which reinjects
+position into Q and K at every attention layer.
 
-The hope was that this linearity would let attention learn relative-position arithmetic easily —
-that a single matrix in $W_Q$ could represent "shift left by $\Delta$" for any $\Delta$.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What 2017 measured, and what later work showed
 
-In practice this property is not very useful. The transformer adds the encoding to the
-embedding rather than concatenating, so the linearity is on a subspace whose recovery requires
-nontrivial projection work. RoPE later used the same frequency ladder but applied it as a
-*rotation* of Q and K directly, which gives the relative-position property for free in the
-inner product — see the [RoPE entry](/llm-arch-kb/positional/rope/).
+**Original paper.** Table 3 row (E) of Vaswani et al. compares the base transformer with
+sinusoidal PE against an otherwise-identical model with learned positional embeddings
+trained jointly. The two configurations produce "nearly identical results" on WMT 2014
+English–German — 25.7 vs. 25.8 BLEU at the base configuration. The choice of sinusoidal
+over learned is justified by Vaswani et al. on extrapolation grounds, not quality.
 
-<p class="section-eyebrow">§ 4 · Why it lost</p>
-## Extrapolation cliff, not relative-position math
+**Extrapolation behavior.** The original paper hypothesized but did not test
+extrapolation. The first systematic measurement came from [Press et al. 2022
+(ALiBi paper, arXiv 2108.12409)](https://arxiv.org/abs/2108.12409), Figure 1. A
+sinusoidal-PE language model trained at sequence length $L = 512$ on WikiText-103
+maintains its perplexity ($\sim 20$) within roughly $L_{\text{valid}} = 532$ tokens
+(i.e., the training length plus about $50$), then degrades sharply, reaching perplexity
+$\sim 55$ at $L_{\text{valid}} = 16000$. Trained at $L = 1024$, it cannot extrapolate "to
+more than a few dozen tokens beyond $L$". The "extrapolation by construction" hypothesis
+of the 2017 paper, in retrospect, did not hold up.
 
-Sinusoidal encoding works fine within the training context but extrapolates poorly. Trained at
-length 1024, a model evaluated at length 4096 sees encodings with phases its attention layers
-never saw — perplexity spikes badly within 2× of trained length.
+The mechanism of the failure is not in the encoding itself — the sinusoids are
+well-defined at any position — but in the attention layers' learned $W_Q, W_K$
+projections: they were trained against PE phase patterns from the training-length
+range only, and never had to handle the phase combinations that arise at longer positions.
 
-The successor encodings each fix this from a different angle:
+**Within-length quality vs. modern alternatives.** [Haviv et al. 2022 NoPE paper
+(arXiv 2203.16634)](https://arxiv.org/abs/2203.16634), Table 1, compares sinusoidal
+against learned, ALiBi, and no-PE on the Pile at 1.3B parameters with $L = 1024$:
+sinusoidal 12.93, learned 13.05, ALiBi 12.51, NoPE 13.10. Sinusoidal sits in the middle
+of the pack — better than learned and NoPE, worse than ALiBi — but the gaps are small
+and consistent with random-seed variance for these architectures.
 
-- [RoPE](/llm-arch-kb/positional/rope/): same frequency ladder, applied as rotation. Same
-  extrapolation cliff but easier to stretch with YaRN.
-- [ALiBi](/llm-arch-kb/positional/alibi/): linear bias on attention scores. Free length
-  extrapolation; gives up expressive flexibility.
-- [NoPE](/llm-arch-kb/positional/nope/): no positional encoding at all. The causal mask leaks
-  enough information; extrapolates best of all on certain tasks.
+**Why production replaced it.** The frequency-ladder *idea* of sinusoidal lives on
+essentially unchanged: [RoPE](/llm-arch-kb/positional/rope/) (Su et al. 2021,
+[arXiv 2104.09864](https://arxiv.org/abs/2104.09864)) reuses the exact
+$\omega_i = 10000^{-2i/d_{\text{model}}}$ frequency formula but applies the frequencies as
+rotations of Q and K at every attention layer rather than as additive embeddings at the
+input. This gives the relative-position property exactly in the attention dot product (no
+implicit projection constraint needed), and it makes long-context stretching tractable
+via [YaRN](/llm-arch-kb/positional/yarn/) and related rescaling methods. By the GPT-3 /
+PaLM era, the additive sinusoidal form was already a minority choice for new training
+runs; by 2023 it had been displaced for new dense decoder LMs.
 
-For modern open decoders, sinusoidal is purely historical. Its 10000-base frequency ladder
-remains the most-copied design choice in this entire knowledge base — RoPE inherits it nearly
-unchanged.
+**Where it still appears.** Sinusoidal remains in encoder-decoder machine translation
+models from the original transformer lineage and in many smaller-scale research baselines
+where its parameter-free simplicity matters more than its extrapolation cliff. As a
+production choice for new decoder-only LLMs in 2024-2025, sinusoidal is foundational
+history rather than active practice — its frequency ladder is what survived, in RoPE's
+rotation form.
 
 <Summary>
-**Sinusoidal in one breath.** Add fixed geometrically-spaced sin/cos to token embeddings as
-position. Closed-form, no parameters, the original transformer's answer. Replaced everywhere in
-modern decoders by RoPE — which kept Sinusoidal's frequency ladder but applied it as Q,K
-rotation, giving the relative-position property the original form was reaching for.
+**Sinusoidal in one breath.** Add a fixed geometrically-spaced sin/cos vector to each
+token embedding at the input; wavelengths from $2\pi$ to $10000 \cdot 2\pi$ positions;
+zero learned parameters. Original transformer's answer to "how does the model know where
+each token is." Within-length quality matches learned PE (Vaswani Table 3); extrapolation
+breaks within a few dozen tokens beyond $L_{\text{train}}$ (Press et al. Figure 1).
+Replaced everywhere in modern decoders by RoPE, which inherited the frequency ladder but
+applied it as Q,K rotation instead of additive input.
 </Summary>

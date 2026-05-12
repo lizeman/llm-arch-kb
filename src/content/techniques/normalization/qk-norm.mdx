@@ -50,72 +50,198 @@ import Summary from "~/components/Summary.astro";
 <p class="section-eyebrow">§ 1 · Premise</p>
 ## Why attention logits blow up
 
-Attention computes softmax over scaled dot products:
+Scaled dot-product attention forms an unnormalized logit matrix
+$\mathbf{S} = \mathbf{Q}\mathbf{K}^\top / \sqrt{d_h}$ and then softmax-normalizes it row-wise.
+The $1/\sqrt{d_h}$ factor in Vaswani et al.
+([arXiv 1706.03762](https://arxiv.org/abs/1706.03762), §3.2.1) is a *statistical*
+correction: if the entries of $\mathbf{q}, \mathbf{k} \in \mathbb{R}^{d_h}$ are independent
+zero-mean unit-variance, then $\mathbb{E}[(\mathbf{q}^\top\mathbf{k})^2] = d_h$, so dividing by
+$\sqrt{d_h}$ brings the typical logit back to $O(1)$ and the softmax operates in a regime
+where its Jacobian is well-conditioned.
 
-$$\mathrm{Attn}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \mathrm{softmax}\!\left(\frac{\mathbf{Q}\mathbf{K}^\top}{\sqrt{d_h}}\right)\mathbf{V}.$$
+That iid assumption fails in three predictable ways during transformer training:
 
-The $\sqrt{d_h}$ scaling is a *statistical* assumption: if Q and K entries are zero-mean unit-variance,
-the dot product has variance $d_h$, so dividing by $\sqrt{d_h}$ keeps it $O(1)$. But the assumption
-breaks the moment a single component of $\mathbf{q}$ or $\mathbf{k}$ is large. Then $\mathbf{q}^\top\mathbf{k}$
-becomes dominated by that one term, the softmax sharpens to a single key, and gradients vanish on
-every other key.
+1. **Outlier coordinates.** A handful of feature dimensions in the residual stream develop
+   anomalously large magnitudes during training. The phenomenon is documented at scale in
+   Dettmers et al. ([arXiv 2208.07339](https://arxiv.org/abs/2208.07339), §3) for OPT and
+   BLOOM at 6.7B+ parameters, and in Bondarenko et al.
+   ([arXiv 2306.12929](https://arxiv.org/abs/2306.12929)) who tie the outliers specifically
+   to attention dynamics. A single coordinate with $q_i \sim 100$ and $k_i \sim 100$ creates
+   a logit dominated by that one term, $q_i k_i / \sqrt{d_h} \sim 100^2 / 8 = 1250$ on a head
+   with $d_h = 64$. Softmax of a row with one entry near 1250 and the rest near 1 collapses
+   to a one-hot.
+2. **Long context.** With $T = 128k$ keys per row, the softmax's effective inverse temperature
+   matters at the tail. Even mild logit growth shifts attention onto a vanishing fraction of
+   the keys; once the soft assignment becomes one-hot, the gradient through every other key
+   is zero and they receive no training signal.
+3. **Low precision.** In bf16 the softmax denominator $\sum_j \exp(s_j)$ overflows when
+   any $s_j > \log(\text{bf16}_\text{max}) \approx 88.7$. fp16 overflows at $\sim 11$. Real
+   training runs at scale hit these limits routinely.
 
-This shows up at long context, in mixed-precision (fp16/bf16) training, and during the first few
-hundred steps before the residual-stream norms have stabilized.
+Henry et al. ([arXiv 2010.04245](https://arxiv.org/abs/2010.04245)) propose to remove the
+problem at its source by normalizing $\mathbf{q}$ and $\mathbf{k}$ to a fixed magnitude
+*before* the dot product, replacing the brittle $1/\sqrt{d_h}$ scaling with a learnable
+temperature.
 
-<p class="section-eyebrow">§ 2 · The fix</p>
-## Normalize Q and K first
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Bounding the dot product by construction
 
-Apply a per-head RMSNorm (or LayerNorm) row-wise to Q and K *before* taking the dot product:
+Take a single attention head with per-token query and key vectors $\mathbf{q}_t, \mathbf{k}_t \in \mathbb{R}^{d_h}$,
+where $t$ indexes the sequence position, $d_h$ is the per-head dimension (commonly 64 or
+128), and the per-head batch is $B \times H \times T$. The standard logit is
 
-$$\tilde{\mathbf{Q}} = \mathrm{RMSNorm}(\mathbf{Q}),\quad \tilde{\mathbf{K}} = \mathrm{RMSNorm}(\mathbf{K}),\quad \mathrm{logits} = s \cdot \tilde{\mathbf{Q}}\tilde{\mathbf{K}}^\top.$$
+$$s_{tj} = \frac{\mathbf{q}_t^\top \mathbf{k}_j}{\sqrt{d_h}}.$$
 
-Each vector now has unit RMS, so the dot product is bounded by the head dim regardless of input
-outliers. A small learnable scale $s$ (often a single scalar per head) replaces the $1/\sqrt{d_h}$
-factor since the statistics are now fixed.
+The Cauchy–Schwarz bound is $|s_{tj}| \le \|\mathbf{q}_t\|_2\,\|\mathbf{k}_j\|_2 / \sqrt{d_h}$,
+so the logit magnitude is controlled entirely by the *norms* of $\mathbf{q}_t$ and $\mathbf{k}_j$.
+If those norms are bounded, the logits are bounded. The QK-Norm move is therefore to insert
+an explicit normalization on each query and key vector:
+
+$$\tilde{\mathbf{q}}_t = \frac{\mathbf{q}_t}{\|\mathbf{q}_t\|_2}, \qquad \tilde{\mathbf{k}}_j = \frac{\mathbf{k}_j}{\|\mathbf{k}_j\|_2}, \qquad s_{tj} = g \cdot \tilde{\mathbf{q}}_t^\top \tilde{\mathbf{k}}_j,$$
+
+with a learnable scalar gain $g \in \mathbb{R}$ (or, in some variants, a per-head gain vector)
+replacing the fixed $1/\sqrt{d_h}$. After normalization, $\tilde{\mathbf{q}}_t^\top \tilde{\mathbf{k}}_j = \cos\theta_{tj} \in [-1, 1]$
+by construction — the logit is the cosine of the angle between the query and key directions,
+rescaled by $g$. The maximum possible logit is now $g$, regardless of the activation
+distribution, regardless of outliers, regardless of context length, regardless of precision.
+
+In practice the L2 normalization is implemented with a per-head RMSNorm rather than a pure
+unit-norm projection. RMSNorm preserves the magnitude information up to a learnable
+per-feature gain $\boldsymbol{\gamma}_q, \boldsymbol{\gamma}_k \in \mathbb{R}^{d_h}$:
+
+$$\mathrm{RMSNorm}(\mathbf{x};\boldsymbol{\gamma}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x}}{\sqrt{\tfrac{1}{d_h}\sum_i x_i^2 + \varepsilon}},$$
+
+so the output is rescaled to unit RMS and then per-feature reweighted. The dot product
+between two RMSNorm-ed vectors is no longer the cosine in general, but it is bounded by
+$\|\boldsymbol{\gamma}_q\|_\infty \|\boldsymbol{\gamma}_k\|_\infty \cdot d_h$ when both gains
+are clipped — far better than the unbounded raw form. The OLMo 2 tech report
+([arXiv 2501.00656](https://arxiv.org/abs/2501.00656), §3.1) and the Gemma 3 report
+([arXiv 2503.19786](https://arxiv.org/abs/2503.19786), Table 2) both use the RMSNorm
+variant; the original Henry et al. paper used L2 normalization with an explicit learnable
+temperature $g$.
+
+**Why per-head, not per-token-stream.** The normalization is applied row-wise to the head's
+own $\mathbf{q}_t$ and $\mathbf{k}_t$ slices, not to the full $d_{\text{model}}$-dim
+residual. Per-head normalization is what controls the logits at the right granularity — each
+head has its own outlier statistics, its own learned scale, its own softmax row. Normalizing
+the residual stream upstream of the QKV projection (as Pre-Norm already does) does not
+prevent the projection from re-introducing outliers; the QK-Norm has to sit *after* the
+projection. The OLMo 2 paper makes this point explicitly in §3.1.
+
+**Why apply it to Q and K but not V.** The bound only matters for terms that enter the
+softmax. The value tensor $\mathbf{V}$ is multiplied by the softmax output and then
+projected; its scale propagates linearly to the residual stream where downstream normalization
+handles it. Normalizing $\mathbf{V}$ as well changes the head's expressive geometry without
+addressing the logit-overflow failure mode and is not adopted in any of the production
+recipes that ship QK-Norm.
+
+**Why a learnable gain rather than a fixed temperature.** Once the logits are bounded by $g$,
+the softmax's sharpness — the inverse temperature — is controlled entirely by $g$. A fixed
+$g = \sqrt{d_h}$ would mimic the old scaling at the bounded level but is empirically too
+soft; Henry et al. (Table 4) report that letting $g$ be learned per-head and per-layer
+gives the lowest validation perplexity. A reasonable initialization is
+$g \approx \sqrt{d_h}$ so that early training matches the unnormalized baseline's effective
+temperature.
+
+**Parameter and FLOP cost.** Each QK-Norm head adds $2 d_h$ parameters (one gain vector for
+queries, one for keys) and one scalar (or per-head vector) gain $g$. Total over a model
+with $L$ layers and $H$ heads per layer: $\sim 2 L H d_h = 2 L d_{\text{model}}$ parameters
+when $H d_h = d_{\text{model}}$ — the same order as adding two extra LayerNorms per block.
+FLOP cost is two RMSNorms per attention call, each $O(B T H d_h)$. For Llama-3-70B-shaped
+attention ($L = 80$, $H = 64$, $d_h = 128$), the parameter add is $\sim 1.3M$ — six orders
+of magnitude smaller than the model itself.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Reference implementation
 
 ```python
-def qk_norm_attn(q, k, v, q_norm, k_norm, scale, mask=None):
-    # q, k, v: [B, H, T, d_h]
-    q = q_norm(q)
-    k = k_norm(k)
-    logits = (q @ k.transpose(-2, -1)) * scale
+def qk_norm_attention(x, w_qkv, w_o,
+                      gamma_q, gamma_k,                # [H, d_h] each
+                      g_scale,                          # [H] learnable per-head gain
+                      n_heads, head_dim, mask=None):
+    B, T, d_model = x.shape
+    qkv = x @ w_qkv                                     # [B, T, 3*d_model]
+    q, k, v = qkv.split(d_model, dim=-1)
+    q = q.view(B, T, n_heads, head_dim).transpose(1, 2) # [B, H, T, d_h]
+    k = k.view(B, T, n_heads, head_dim).transpose(1, 2)
+    v = v.view(B, T, n_heads, head_dim).transpose(1, 2)
+
+    # QK-Norm: per-head RMSNorm on Q and K before the dot product.
+    q = rms_norm(q, gamma_q)                            # gain broadcasts over [B, T]
+    k = rms_norm(k, gamma_k)
+
+    logits = (q @ k.transpose(-2, -1)) * g_scale[:, None, None]  # [B, H, T, T]
     if mask is not None:
         logits = logits.masked_fill(mask, float("-inf"))
-    return logits.softmax(-1) @ v
+    attn = logits.softmax(-1) @ v                       # [B, H, T, d_h]
+    return attn.transpose(1, 2).reshape(B, T, d_model) @ w_o
 ```
 
-The per-head norm parameters are tiny (a single gain vector of size $d_h$ per head) and add
-negligible compute.
+The two-line addition (`q = rms_norm(q, ...); k = rms_norm(k, ...)`) is the entire
+mechanical change vs a Pre-Norm attention block. Everything downstream — softmax, value
+mix, output projection — is unchanged. Production kernels (FlashAttention 2/3, xFormers
+memory-efficient attention) accept pre-normalized $\mathbf{Q}, \mathbf{K}$ without
+modification; the QK-Norm happens in the QKV-projection step.
 
 <QkNormLogits client:visible />
 
-<p class="section-eyebrow">§ 3 · Why it matters at scale</p>
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
 ## Empirical evidence
 
-Dehghani et al. (2023, "Scaling Vision Transformers to 22B Parameters", arXiv 2302.05442) report
-that without QK-Norm, attention logits diverged catastrophically during ViT-22B training,
-preventing the model from training at all in bf16. Adding QK-Norm let the same recipe complete
-training. The paper presents this as a hard requirement past a certain scale.
+**Original paper (Henry et al. 2020).** The 2020 paper trains 6-layer transformers on
+five WMT translation tasks (Table 2). QK-Norm with cosine attention beats the
+$1/\sqrt{d_h}$ baseline by 0.5–1.5 BLEU on most pairs and notably stabilizes training on
+low-resource pairs where the baseline diverges. The paper does not run at multi-billion
+parameter scale — that evidence comes later.
 
-Gemma 3 (2025) adopted QK-Norm as standard, citing similar stability concerns on text-only
-training at 27B and below. The technique has also been picked up by several closed-frontier
-recipes (per public blog disclosures), though those models do not enter this knowledge base per
-the [closed-model policy](/llm-arch-kb/about/).
+**Dehghani et al. (ViT-22B, 2023).** The first large-scale stability demonstration came
+from vision. Dehghani et al.
+([arXiv 2302.05442](https://arxiv.org/abs/2302.05442), §2 and Figure 1) report that without
+QK-Norm, the ViT-22B model's attention logits diverged catastrophically within the first
+few thousand bf16 training steps, with cosine similarities of $\mathbf{q}, \mathbf{k}$ pairs
+saturating near $\pm 1$. Adding QK-Norm (their phrasing: "an L2-normalization layer applied
+to the query and key vectors at each layer") let the same recipe complete training. The
+paper frames this as a hard requirement past a certain scale, not a minor improvement.
 
-<p class="section-eyebrow">§ 4 · The cost</p>
-## Almost nothing
+**OLMo 2 (AI2, 2024).** Walsh et al.
+([arXiv 2501.00656](https://arxiv.org/abs/2501.00656), §3.1, Figure 4) ablate the OLMo 2
+stability package at 7B and 13B. The reordered Post-Norm + QK-Norm + Z-loss combination
+eliminates the periodic loss spikes that the OLMo 1 Pre-Norm baseline exhibited across a
+5T-token training run. The team is careful to attribute the stability to the combination;
+removing QK-Norm alone returned spike frequency to within an order of magnitude of the
+unstabilized baseline. The OLMo 2 paper is the most complete public ablation specifically
+isolating QK-Norm's contribution at modern LLM scale.
 
-QK-Norm adds two RMSNorm calls per attention layer — one on Q, one on K. Both reduce over the
-head-dim axis, which is small. On a typical 70B model with 64 heads at 128 head-dim, the extra
-compute is well under 1% of attention's total flop count.
+**Qwen 3 (Alibaba, 2025).** The Qwen 3 tech report
+([arXiv 2505.09388](https://arxiv.org/abs/2505.09388), §2.1) documents adding QK-Norm
+alongside removing the QKV bias used in Qwen 2.5, citing "training stability" as the
+motivation for the architectural change across the 30B-A3B, 32B, and 235B-A22B variants.
+No paired ablation table is provided, but the choice was made for the full Qwen 3 family.
 
-The only conceptual cost is that the softmax sharpness is now controlled entirely by the
-learnable scale $s$ rather than by the magnitude of Q and K. In practice this is easier to tune,
-not harder.
+**Gemma 3 (Google, 2025).** The Gemma 3 report
+([arXiv 2503.19786](https://arxiv.org/abs/2503.19786), Table 2) lists QK-Norm (RMSNorm
+variant) as a default across the 1B / 4B / 12B / 27B family, paired with the "norm
+everywhere" sandwich placement. The report attributes the stability of the unified
+1B-to-27B recipe in part to QK-Norm but does not isolate its contribution in an ablation
+table.
+
+**GLM-4.5 (Zhipu, 2025).** The GLM-4.5 report
+([arXiv 2508.06471](https://arxiv.org/abs/2508.06471)) names QK-Norm as one of the
+explicit architectural choices alongside GQA, MTP, and the Muon optimizer, but no
+isolated ablation is given.
+
+**No isolated quality ablation at frontier scale.** Across the open reports above, every
+adoption frames QK-Norm as a *stability* fix, not a perplexity or downstream-benchmark
+improvement. The Henry et al. translation results stand alone as the public claim of
+quality lift from QK-Norm itself; at LLM scale, no public paper has isolated whether
+QK-Norm changes final benchmark performance after both runs converge. The honest summary
+is: QK-Norm is mandatory if you want bf16 to train reliably past a few billion
+parameters, and the per-step compute it adds is small enough to be irrelevant.
 
 <Summary>
-**QK-Norm in one breath.** A small RMSNorm on Q and K before the dot product caps attention logit
-magnitude regardless of activation outliers. Mandatory for stable bf16 training past a few
-billion parameters; nearly free in compute; adopted in Gemma 3 and frontier-scale ViTs.
+**QK-Norm in one breath.** A per-head RMSNorm on $\mathbf{Q}$ and $\mathbf{K}$ before the
+dot product caps attention logit magnitude regardless of activation outliers, removing the
+single largest source of bf16 training instability past a few billion parameters. Originated
+in machine translation (Henry et al. 2020), confirmed at scale by ViT-22B (Dehghani et al.
+2023), and now standard in OLMo 2, Qwen 3, Gemma 3, and GLM-4.5.
 </Summary>

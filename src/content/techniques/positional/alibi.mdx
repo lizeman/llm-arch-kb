@@ -28,82 +28,210 @@ import AlibiSlopes from "~/components/figures/AlibiSlopes";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Position without embeddings
+## Position as score penalty, not embedding
 
-Sinusoidal and learned position embeddings inject position into the input. RoPE injects it into
-Q and K via rotation. ALiBi takes the third option: inject it into the attention *scores*.
+The first transformer (Vaswani et al. 2017) injected position by adding a
+[sinusoidal](/llm-arch-kb/positional/sinusoidal/) vector to the token embedding at the
+bottom of the stack. RoPE (Su et al. 2021) injected it as a rotation applied to Q and K
+at every attention layer. Both inject position into the *vectors* that participate in the
+attention dot product.
 
-The intuition: distant tokens should be attended to less, all else equal. A static linear
-distance penalty on the attention logits encodes that intuition directly, with no learnable
-parameters and no per-position computation.
+Press, Smith, and Lewis (ICLR 2022) take the third option: inject position into the
+attention *scores* directly, as an additive bias proportional to query–key distance, after
+the dot product is computed. The intuition is concrete: in language, distant tokens should
+on average matter less than nearby tokens, and that bias can be expressed as a fixed
+linear function of distance with no per-position learnable parameters.
 
-<p class="section-eyebrow">§ 2 · The bias</p>
-## A linear penalty per head
+The motivating measurement comes from § 2 and Figure 1 of the paper. A sinusoidal-PE
+language model trained at sequence length $L = 512$ degrades sharply when evaluated on
+longer inputs: validation perplexity goes from $\sim 20$ at $L_{\text{valid}} = 512$ to
+$\sim 50$ at $L_{\text{valid}} = 16000$. A rotary-PE model does better, peaking near
+$2 \cdot L_{\text{train}}$, but also collapses on long inputs. The T5 relative-bias
+position method extrapolates best of the prior baselines but at "considerably slower" cost
+than sinusoidal (Figure 2). ALiBi's claim: simpler, cheaper, and at least as good at
+extrapolation.
 
-For head $h$ with slope $m_h$, ALiBi modifies the attention logits as:
+The one-sentence preview: ALiBi adds a per-head, position-independent, fixed slope penalty
+of $-m_h \cdot (i - j)$ to the attention logit at query position $i$ and key position $j$,
+with the slopes $m_h$ forming a geometric sequence over heads.
 
-$$\text{logit}^{(h)}_{i,j} = \frac{\mathbf{q}^{(h)}_i \cdot \mathbf{k}^{(h)}_j}{\sqrt{d_h}} - m_h \cdot (i - j),\quad j \leq i.$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## A static bias on every attention logit
 
-The slopes $m_h$ are fixed, not learned: a geometric sequence over heads. For $H = 8$ heads,
-the slopes are $1/2^1, 1/2^2, \ldots, 1/2^8$. Different heads see different effective windows —
-the head with the steepest slope attends very locally, the shallowest-slope head attends almost
-uniformly.
+Start from the unmodified scaled dot-product attention as in Vaswani et al. (omitting the
+$\sqrt{d_k}$ scale for clarity). For query $\mathbf{q}_i \in \mathbb{R}^{d_h}$ at position
+$i$ and the $L \times d_h$ key matrix $K$ collecting all keys up to and including position
+$i$ (causal), the unmodified logits and softmax weights are:
+
+$$
+\mathrm{softmax}(\mathbf{q}_i K^\top).
+$$
+
+ALiBi adds a static, non-learned, head-dependent bias to these logits before the softmax
+(paper § 3, displayed equation; using $\mathbf{K}$ for the key matrix and head index $h$
+suppressed):
+
+$$
+\mathrm{softmax}\!\Bigl(\mathbf{q}_i K^\top + m \cdot \bigl[-(i-1), -(i-2), \ldots, -1, 0\bigr]\Bigr).
+$$
+
+The bias vector is $-m \cdot (i - j)$ for $j \in \{1, \ldots, i\}$ — a linear decrease in
+log-attention with increasing query–key distance, scaled by a head-specific positive
+scalar $m$. The bias is identical at every layer and is computed once per
+forward pass, not per token.
+
+**The slope sequence.** For a model with $H$ heads, ALiBi uses the geometric sequence
+(paper § 3):
+
+$$
+m_h \;=\; 2^{-8 h / H}, \qquad h = 1, 2, \ldots, H.
+$$
+
+For $H = 8$: slopes $1/2^1, 1/2^2, \ldots, 1/2^8$. For $H = 16$: the same set
+interpolated geometrically, $1/2^{0.5}, 1/2^1, 1/2^{1.5}, \ldots, 1/2^8$. The general rule
+is "start at $2^{-8/H}$, use ratio $2^{-8/H}$, end at $2^{-8}$". The exponent $8$ is the
+single hyperparameter; the paper reports (§ 3) that "we do not believe that it is
+necessary to tune these slope values every time a new model is trained on a new dataset",
+making this choice analogous to the fixed wavelength range
+$[2\pi, 10000 \cdot 2\pi]$ that Vaswani et al. picked for sinusoidal.
+
+**What different slopes mean geometrically.** A head with slope $m_h = 1/2$ assigns
+log-attention $-256$ to a key 512 tokens away; the corresponding softmax weight is
+$e^{-256}$, indistinguishable from zero. That head is effectively a local-window
+attention head. A head with slope $m_h = 1/256$ assigns log-attention $-2$ to a key 512
+tokens away; the softmax weight is $\sim 0.14$ — appreciable. That head is effectively a
+nearly-uniform-attention head with a mild recency preference. The geometric ladder spans
+the range from "very local" to "almost global" in a single fixed sequence.
+
+**Why this generalizes to longer inputs.** A model trained at length $L_{\text{train}}$
+has seen relative distances from $0$ to $L_{\text{train}} - 1$, which translates to
+bias values from $0$ to $-m_h (L_{\text{train}} - 1)$. At inference on length
+$L_{\text{valid}} > L_{\text{train}}$, the new positions produce bias values $-m_h (i - j)$
+for $i - j$ up to $L_{\text{valid}} - 1$ — more negative biases than the model has
+encountered. The softmax handles "more negative" gracefully: it routes attention away
+from those keys and toward keys with less-negative bias. There is no new positional value
+to extrapolate, because position never appeared in the input or in Q/K — only in the
+post-dot-product additive penalty, which is monotone in distance.
+
+Sinusoidal and learned positional embeddings, in contrast, must produce embeddings for
+new positions never seen during training. For sinusoidal, the phases are well-defined but
+the model's attention layers never observed them; for learned embeddings, the embedding
+table simply has no entry past $L_{\text{train}}$.
+
+**Cost.** The bias matrix is $H \times L \times L$, computed once. Implementation
+piggybacks on the existing causal mask: instead of "$0$ where attendable, $-\infty$
+where not", the mask becomes "$-m_h (i - j)$ where attendable, $-\infty$ where not".
+Press et al. (§ 3, Implementation paragraph) report no extra runtime overhead beyond a
+"negligible (0–0.7%) memory increase" relative to the unmodified sinusoidal model. Figure 2
+confirms: training speed within 1% of sinusoidal, inference speed within 3%.
+
+**Parameter count.** Zero learnable position parameters. The slopes are fixed before
+training; the bias has no learned components. This is a strict reduction relative to
+learned PE (which adds $L_{\text{max}} \cdot d_{\text{model}}$ embedding parameters), and
+matches sinusoidal (also parameter-free).
 
 ```python
 def alibi_bias(seq_len, num_heads, device):
-    # Geometric slope sequence: 1/2^(8/H), 1/2^(16/H), ... down to 1/2^8
-    slopes = torch.tensor([2 ** (-8.0 * h / num_heads) for h in range(1, num_heads + 1)],
-                          device=device)
-    # Distance matrix (i, j) -> i - j  (clamped to ≥0 since attention is causal)
+    # Geometric slope sequence 1/2^(8/H), 1/2^(16/H), ..., 1/2^8
+    slopes = torch.tensor(
+        [2 ** (-8.0 * h / num_heads) for h in range(1, num_heads + 1)],
+        device=device,
+    )
+    # Distance i - j, clamped to >= 0 since attention is causal.
     pos = torch.arange(seq_len, device=device)
     dist = pos[:, None] - pos[None, :]                 # [T, T]
     bias = -slopes[:, None, None] * dist.clamp(min=0)  # [H, T, T]
     return bias
 ```
 
-The bias matrix is computed once per layer, not per token, so the overhead is negligible.
-
 <AlibiSlopes client:visible />
 
-<p class="section-eyebrow">§ 3 · Length extrapolation</p>
-## Why it generalizes
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Adding the bias inside the attention call
 
-The headline result from Press et al. (Figure 1): a model trained at sequence length 1024 with
-ALiBi maintains its perplexity essentially unchanged when evaluated at sequence length 16384 —
-no fine-tune, no scale adjustment, nothing. Sinusoidal and learned positional embeddings, by
-contrast, diverge sharply past their training context.
+```python
+def alibi_attention(q, k, v, alibi):
+    # q, k, v: [B, H, T, d_h]
+    # alibi:   [H, T, T]  precomputed via alibi_bias(); negative for valid pairs,
+    #                     -inf for above-diagonal (causal) entries.
+    logits = (q @ k.transpose(-2, -1)) / d_h**0.5   # [B, H, T, T]
+    logits = logits + alibi                          # broadcast over batch
+    weights = logits.softmax(-1)
+    return weights @ v
+```
 
-The mechanism: every additional token simply gets a slightly bigger penalty than the previous
-ones. The model never has to extrapolate any "new" positional value; it only has to handle a
-larger negative bias, which the softmax handles gracefully by routing more attention toward
-recent tokens.
+The bias is added once per layer; it has the same shape as the causal mask and can be
+fused with it. There is no per-token computation, no per-position embedding lookup, and
+no rotation of Q or K. At inference on a longer sequence, `alibi_bias` is recomputed at
+the new length — that is the entire extrapolation mechanism.
 
-For research and prototyping use cases that need "trained at 1K, run at 100K", ALiBi remains
-the simplest answer.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Extrapolation, training cost, and where RoPE wins anyway
 
-<p class="section-eyebrow">§ 4 · Why RoPE won anyway</p>
-## What the linear bias gives up
+**Within-length perplexity.** Table 1 of the paper (WikiText-103,
+[Merity et al. 2017](https://arxiv.org/abs/1609.07843), Baevski–Auli architecture, 247M
+parameters) reports validation perplexity at $L = 512$ training and $L_{\text{valid}} = 512$
+evaluation: sinusoidal 20.16, learned 20.42, ALiBi 19.71. ALiBi matches or slightly
+outperforms the baselines even without exercising its extrapolation advantage. The 1.3B
+CC100+RoBERTa run (§ 4.2) reaches similar perplexity to the sinusoidal baseline while
+training on inputs half as long — 11% faster and using 11% less memory.
 
-Three things tilted the production landscape toward RoPE rather than ALiBi:
+**Extrapolation.** Figure 1 is the headline: a model trained at $L = 1024$ and evaluated
+on $L_{\text{valid}}$ from 1024 to 16000. Sinusoidal perplexity climbs from 19 to 55+;
+rotary climbs from 19 to 45+; T5 bias holds near 19 up to ~3000 tokens then degrades;
+ALiBi holds near 19 across the full 16000-token range. The same pattern holds for
+$L = 512$ training. Figure 6 extends to $L_{\text{valid}} = 10000$ on CC100+RoBERTa and
+reproduces the result on a different domain.
 
-1. **Relative position is the *only* signal in ALiBi.** All knowledge of position lives in a
-   linear penalty. A model cannot easily learn that "position 0" or "position 5" is structurally
-   special. RoPE's frequency ladder gives the model a richer relative-position substrate.
-2. **No long-range fine control.** ALiBi forces every head to commit to one linear slope —
-   you cannot have a head that pays attention to position $t-1024$ specifically and ignores
-   $t-512$ and $t-2048$. RoPE's rotations let the model learn arbitrary relative-distance
-   patterns.
-3. **Empirically, RoPE-based models tend to do better on long-range reasoning benchmarks**
-   (Press et al. report this too, Section 5) once the context is filled with genuinely relevant
-   content rather than mostly-irrelevant fillers.
+**The "sweet spot" at $\sim 2 L_{\text{train}}$.** Section 4.1 reports that ALiBi's best
+perplexity is typically reached around $L_{\text{valid}} \approx 2 L_{\text{train}}$,
+then plateaus. The $L_{\text{train}} = 512$ model gets best score $9.3$ at
+$L_{\text{valid}} = 1012$ on CC100+RoBERTa; the $L_{\text{train}} = 1024$ model peaks at
+$L_{\text{valid}} = 2024$. The interpretation (paper § 4.2): on short evaluation contexts,
+each prediction is conditioned on more new tokens than the model saw during training,
+which slightly hurts; beyond that the bias keeps the active attention window roughly
+constant in size.
 
-BLOOM (Scao et al. 2022) and MPT (MosaicML 2023) used ALiBi at scale; both lineages later moved
-toward RoPE for their successors. ALiBi survives as a research baseline and in resource-constrained
-settings where its parameter-free simplicity is valuable.
+**What the paper claims and does not claim.** ALiBi is presented as a recency-biased
+position method that enables training on shorter inputs while inferring on longer ones.
+The paper does not claim ALiBi recovers arbitrary relative-position patterns, and
+Section 5 explicitly notes that the inductive bias toward recency is what gives ALiBi its
+advantage on language modeling — a strict head-specific monotone-in-distance penalty is
+not what every attention head would learn given the choice.
+
+**Independent reproduction at scale.** [BLOOM 176B (Scao et al. 2022,
+arXiv 2211.05100)](https://arxiv.org/abs/2211.05100) shipped ALiBi as its position
+mechanism after Scao et al.'s [hyperparameter-search paper
+(arXiv 2210.15424)](https://arxiv.org/abs/2210.15424) selected it over rotary and
+learned-PE in their controlled comparison. MPT (MosaicML, 2023) also adopted ALiBi for
+its 7B/30B releases. Both lineages later moved toward [RoPE](/llm-arch-kb/positional/rope/)
+for their successors. The [Haviv et al. 2022 NoPE
+paper (arXiv 2203.16634)](https://arxiv.org/abs/2203.16634) — Table 1, 1.3B Pile —
+reports ALiBi at 12.51 vs. sinusoidal 12.93 vs. NoPE 13.10, confirming ALiBi's
+within-length quality lead persists across architectures.
+
+**Where RoPE won.** Three threads tipped production toward RoPE rather than ALiBi:
+(1) **Long-context retrieval.** The recency bias that helps language-modeling perplexity
+hurts retrieval over long contexts: a head cannot learn to attend strongly to a key at
+distance 8192 if every head's bias makes that key exponentially down-weighted. The
+[Lost-in-the-Middle work (Liu et al. 2023,
+arXiv 2307.03172)](https://arxiv.org/abs/2307.03172) showed strong recency effects in
+production LMs; ALiBi's structural recency bias amplifies them. (2) **Rotary's stretching
+machinery** ([YaRN](/llm-arch-kb/positional/yarn/), NTK scaling) gave practitioners a
+path to extend RoPE context that ALiBi did not need but could not match in retrieval
+quality. (3) **Empirical leadership of RoPE in 2023-2024 frontier models** — Llama, Qwen,
+DeepSeek, Mistral all settled on RoPE — meant the ecosystem of tooling, ablations, and
+long-context recipes all targeted RoPE.
+
+ALiBi remains active as a research baseline and as the position mechanism in some
+non-language-modeling settings where its parameter-free simplicity and free extrapolation
+are valuable. For dense decoder language models, the production race ended in 2023-2024.
 
 <Summary>
-**ALiBi in one breath.** Fixed per-head linear bias on attention scores. Zero learnable
-positional parameters, free length extrapolation (1K → 100K with no degradation), and one big
-limitation: every head commits to one linear penalty. RoPE outperforms on dense LLM long-range
-tasks; ALiBi stays useful as a clean baseline.
+**ALiBi in one breath.** Static per-head linear penalty on attention logits, slope
+$m_h = 2^{-8h/H}$. Zero learnable position parameters; trains 11% faster and uses 11% less
+memory at matched sinusoidal-baseline quality; extrapolates from $L_{\text{train}} = 1024$
+to $L_{\text{valid}} = 16000$ with perplexity essentially flat. Lost the production race
+to RoPE on long-context retrieval and stretchability, but remains the cleanest worked
+example of "position as score bias" in the literature.
 </Summary>

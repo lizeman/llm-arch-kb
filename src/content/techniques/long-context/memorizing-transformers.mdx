@@ -25,85 +25,222 @@ import MemorizingKnn from "~/components/figures/MemorizingKnn";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Two ways out of the context cap
+## The 8K ceiling and the routes around it
 
-By 2022 there were two strategies for letting a transformer access information older than its
-attention window:
+A 2022-era Transformer decoder at 8K context and 1024-dim heads carries $2 \cdot 8192 \cdot
+1024 = 16$M scalar entries per layer in its KV cache — manageable at $\sim 32$ MB per layer
+fp16 but quadratic in attention compute: $T^2 d_h = 8.6 \cdot 10^{10}$ multiply-adds per layer
+per head. Doubling $T$ quadruples it. By the time Wu et al. wrote *Memorizing Transformers*
+([arXiv 2203.08913](https://arxiv.org/abs/2203.08913)) in early 2022, two routes around the
+ceiling had been published:
 
-1. **Compress the past.** Pack old activations into a smaller representation that current
-   attention can still see — Compressive Transformer's approach. Lossy but fully differentiable.
-2. **Retrieve from the past.** Maintain a non-differentiable database of past activations, and
-   at inference time look up the most relevant entries by similarity. Lossless on retrieved
-   items, but the retrieval mechanism doesn't get gradient signal.
+- *Lengthening attention itself.* Transformer-XL recurrence ([Dai et al.
+  2019](https://arxiv.org/abs/1901.02860)) and the sparse / kernel families (Reformer,
+  Longformer, Performer) modify the attention computation so $T^2$ becomes $T \log T$ or
+  $T \cdot d$.
+- *Lossy summarization of the past.* Compressive Transformer ([Rae et al.
+  2019](https://arxiv.org/abs/1911.05507)) pools or attention-summarizes evicted activations
+  into a coarser long-term memory.
 
-Memorizing Transformers explored route 2 within a single transformer layer.
+Both modify the model. Wu et al.'s wager is that the simpler primitive is *retrieval*: keep
+the regular self-attention mechanism untouched, but at one chosen layer also let each query
+look up the $k$ nearest neighbours of its own vector inside a vast external store of *past*
+keys/values produced by that same layer. Retrieved $(K, V)$ pairs are spliced into the local
+attention through a learned gate. The store can be billions of entries; it is *not*
+backpropagated through. The contribution is the demonstration that a single mid-stack
+non-differentiable kNN attention substantially improves language-model perplexity at fixed
+compute, generalises across domains, and scales sub-linearly with memory size.
 
-<p class="section-eyebrow">§ 2 · The kNN memory</p>
-## Retrieve, then attend
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Attention extended by a kNN-retrieved set
 
-Pick one mid-stack attention layer to augment. As text streams through the model, store every
-K, V pair produced by that layer in an external memory bank — a vector database keyed by K.
-At each new query position $t$:
+**Starting point — single-layer attention.** Let $\mathbf{q}_t, \mathbf{k}_t, \mathbf{v}_t \in
+\mathbb{R}^{d_h}$ be the query, key, value at position $t$ for one attention head. Standard
+causal attention over a *local* window of length $W$ is
 
-1. Use $\mathbf{q}_t$ to look up the $k$ nearest keys in the external bank (k-Nearest-Neighbors,
-   exact or approximate).
-2. Add the retrieved $k$ (key, value) pairs to the normal in-window keys/values.
-3. Run standard attention over the combined set.
+$$\mathbf{o}^{\text{local}}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{[t-W:t]}^\top}{\sqrt{d_h}}\right) V_{[t-W:t]}.$$
 
-```python
-def memorizing_attn(q, k, v, external_memory, knn_k=32):
-    # q, k, v: [B, T, H, d_h]
-    # external_memory: KV database from past chunks
-    retrieved_k, retrieved_v = external_memory.knn_lookup(q, knn_k)
-    full_k = concat([k, retrieved_k], dim=2)
-    full_v = concat([v, retrieved_v], dim=2)
-    return scaled_dot_product_attention(q, full_k, full_v)
-```
+In Wu et al.'s setup $W$ matches the Transformer-XL recurrent context size (1024 or 2048
+tokens, [§3](https://arxiv.org/abs/2203.08913)). Anything older than $W$ has been evicted.
 
-The external memory's vectors are *not* part of the computational graph: the kNN lookup is a
-discrete operation, retrieved values are treated as constants. Gradients flow only through the
-in-window K, V. This makes the memory cheap to store (no autograd state needed) and easy to
-scale to millions of entries.
+**Step 1 — the external memory.** At one chosen layer $\ell^\star$, write every $(\mathbf{k},
+\mathbf{v})$ pair produced by that layer into an *external memory* $\mathcal{M}$. The store
+is indexed by the keys: the index supports approximate-nearest-neighbour (ANN) search using
+inner product as the similarity. Wu et al. implement this with ScaNN
+([Guo et al. 2020](https://arxiv.org/abs/1908.10396)), which gives sub-linear lookup time
+even at $|\mathcal{M}| = 10^9$ entries ([§3.1](https://arxiv.org/abs/2203.08913)). Memory is
+*per attention head per layer* but only at the single layer $\ell^\star$ — not the whole stack.
+
+**Step 2 — retrieval at inference and training.** At every query position $t$ in layer
+$\ell^\star$, run a top-$k$ search on the external memory:
+
+$$\mathcal{N}_k(\mathbf{q}_t) = \mathrm{ANN\text{-}TopK}\!\left(\mathbf{q}_t,\; \{\mathbf{k}^{(m)}\}_{m \in \mathcal{M}}\right), \quad |\mathcal{N}_k| = k.$$
+
+Wu et al. use $k = 32$ or $k = 64$ ([Table 1](https://arxiv.org/abs/2203.08913)). The returned
+set $\{(\mathbf{k}^{(m)}, \mathbf{v}^{(m)})\}_{m \in \mathcal{N}_k(\mathbf{q}_t)}$ is treated
+as constants — no gradient flows back into $\mathcal{M}$. From these, compute an *external*
+attention output exactly as standard attention:
+
+$$\mathbf{o}^{\text{ext}}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{\mathcal{N}_k(\mathbf{q}_t)}^\top}{\sqrt{d_h}}\right) V_{\mathcal{N}_k(\mathbf{q}_t)}.$$
+
+The external softmax is *independent* of the local softmax — two separate normalizations.
+
+**Step 3 — the learned gate.** The two outputs $\mathbf{o}^{\text{local}}_t$ and
+$\mathbf{o}^{\text{ext}}_t$ are combined via a per-head learnable scalar gate $g_h \in (0, 1)$
+([Eq. 1, §3.2](https://arxiv.org/abs/2203.08913)):
+
+$$\mathbf{o}_t = (1 - \sigma(g_h)) \cdot \mathbf{o}^{\text{local}}_t + \sigma(g_h) \cdot \mathbf{o}^{\text{ext}}_t,$$
+
+where $\sigma$ is the sigmoid and $g_h$ is a single scalar trained alongside everything else.
+Wu et al. choose the gate-then-mix form (rather than concatenating $K^{\text{local}}$ and
+$K^{\text{ext}}$ into one softmax) for two reasons:
+
+1. *Scale incompatibility.* External keys come from arbitrary past contexts and may have
+   very different norms from local keys; sharing a softmax would let one set dominate the
+   other in a way that's hard to control.
+2. *Training-time stability.* The gate starts near $\sigma(g_h) \approx 0.05$ so external
+   attention is off-by-default; the model learns to open the gate only when retrieval helps.
+   Sharing a softmax would couple the gradient signal of "did retrieval help?" to "did the
+   right key happen to be retrieved?" — Wu et al. report training instabilities under the
+   shared form ([§3.2 footnote](https://arxiv.org/abs/2203.08913)).
+
+**Step 4 — non-differentiability and what it costs.** The discrete top-$k$ step in
+$\mathcal{N}_k(\mathbf{q}_t)$ is non-differentiable. Gradients flow:
+
+- *Into* the retrieved $\mathbf{k}^{(m)}, \mathbf{v}^{(m)}$ used at this query position
+  through the external attention softmax — these values are *constants* in the graph, so the
+  gradient terminates there.
+- *Through* the query $\mathbf{q}_t$, which means the model learns to *issue better queries*
+  but cannot learn to *retrieve better keys*. The memory is a fixed function of the model's
+  past forward passes; whatever the model deposited in the past is what later queries see.
+- *Through* the gate $g_h$ via the mixing equation, which means the model learns when to
+  trust retrieval.
+
+The trade is explicit: cheap memory (no autograd buffers), unbounded in size, at the price of
+losing the ability to learn the indexing function itself.
+
+**Step 5 — memory layer placement.** Why only one layer? Two reasons. Memory cost is
+$O(|\mathcal{M}| \cdot 2 d_h)$ scalars; replicating across all $L$ layers multiplies that by
+$L$ for negligible benefit (the layer-wise ablation in
+[Table 5](https://arxiv.org/abs/2203.08913) shows the 9th layer of 12 captures most of the
+gain). And the model only needs to learn *one* gate; multiple memory layers would compete for
+the same "open the gate when retrieval is useful" signal during early training.
+
+**Cost accounting.** Per query in the memory layer, with local window $W$ and retrieval
+budget $k$:
+
+$$\mathrm{FLOPs} \approx (W + k) \cdot d_h \;+\; T_{\mathrm{ANN}}(\mathbf{q}_t, |\mathcal{M}|).$$
+
+With $W = 1024, k = 32$ the dense attention overhead is $\sim 3\%$ on top of the local-window
+attention. The ANN lookup cost depends on the index but scales as $O(\sqrt{|\mathcal{M}|})$ or
+better for ScaNN. Memory footprint: $|\mathcal{M}| = 65$K entries at $d_h = 128$ in fp32 is
+$\sim 64$ MB per head per layer — cheap; $|\mathcal{M}| = 262$K is $\sim 256$ MB, etc.
+
+**Parameter count.** One learnable scalar gate per head per memory layer; negligible vs. the
+base model.
 
 <MemorizingKnn client:visible />
 
-<p class="section-eyebrow">§ 3 · Where it sits in the layer stack</p>
-## A single augmented layer is enough
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## kNN-augmented attention layer in pseudocode
 
-Wu et al.'s ablation (Table 5) checked augmenting different layers. Mid-stack layers (e.g.,
-the 9th of 12 in their setup) give the largest perplexity reduction. Augmenting early layers
-helps less because the queries are too lexical; augmenting the final layer helps less because
-its representations are already specialized for next-token prediction. Augmenting *every* layer
-helps somewhat but at much greater memory cost.
+```python
+# State:
+#   memory_index: an ANN store keyed by past K^(l*), holding (K, V) at the memory layer
+#   gate: learnable scalar per head, init so sigmoid(gate) ~= 0.05
 
-The mid-stack-only design is part of what makes the technique tractable: a single layer's K, V
-to index, not the whole stack.
+def memorizing_attn(q, k_local, v_local, memory_index, gate, k_retrieve=32):
+    # q, k_local, v_local: [B, T, H, d_h]
+    # Local attention over the in-window window
+    o_local = scaled_dot_product_attention(q, k_local, v_local)        # [B, T, H, d_h]
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+    # External retrieval: top-k nearest keys for each query (no gradient through index)
+    with torch.no_grad():
+        retrieved_k, retrieved_v = memory_index.ann_search(q, k_retrieve)
+        # retrieved_*: [B, T, H, k_retrieve, d_h], treated as constants
 
-On PG-19 and arXiv math, Memorizing Transformers cut perplexity by 1.5–2 nats compared to a
-matched-FLOP baseline transformer, with effective context extending to ~64K tokens at training
-length 2K — a 32× extension via retrieval (Wu et al. Table 1). The memory bank during training
-was the rolling buffer of past activations from the current document.
+    # External softmax over only the retrieved set, independent normalization
+    scores = einsum("bthd,bthkd->bthk", q, retrieved_k) / sqrt(d_h)
+    weights = softmax(scores, dim=-1)
+    o_ext = einsum("bthk,bthkd->bthd", weights, retrieved_v)
 
-The technique never made the leap to frontier production decoders, for two reasons:
+    g = sigmoid(gate)[None, None, :, None]                              # [1, 1, H, 1]
+    o = (1 - g) * o_local + g * o_ext
 
-1. **The non-differentiable retrieval is awkward.** The model can learn to *use* retrieved
-   K, V but cannot learn to retrieve better. Retrieval quality is upstream of attention quality.
-2. **Retrieval-augmented generation** (RAG) accomplishes similar goals with a different
-   architecture (retrieve documents into the prompt, run standard attention over the prompt)
-   and is easier to deploy.
+    # Add this chunk's local (K, V) to the memory for future queries
+    memory_index.add(k_local.detach(), v_local.detach())
+    return o
+```
 
-Memorizing Transformers remain a clean reference point: they showed that *attention itself* can
-be wired to an external memory, separately from the question of whether to use one. The
-mechanism survives in research on landmark attention, infinite-context memorization, and certain
-retrieval-from-activations work.
+The sketch elides three production concerns: (1) the ANN index rebuild cadence — Wu et al.
+periodically re-fit the ScaNN partitioning every $N$ tokens written; (2) per-document memory
+isolation (each document's memory is private to avoid cross-document leakage at training
+time, [§3.3](https://arxiv.org/abs/2203.08913)); (3) the rotary or relative-position handling
+for retrieved keys, which lacks a natural "distance" to the current query — Wu et al. simply
+omit position encoding for the retrieved set.
+
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What is and isn't known
+
+**Introducing paper (Wu et al. 2022).**
+
+1. *Perplexity gains across domains.* On four long-document datasets — arXiv math, GitHub
+   code, PG-19 books, C4 web — a 200M-parameter Memorizing Transformer with $|\mathcal{M}| =
+   65{,}536$ entries lowers test perplexity by 1.5–2.7 nats vs. a matched non-memory baseline
+   ([Table 1](https://arxiv.org/abs/2203.08913)). The largest gains come on arXiv math, where
+   citation and notation reuse make retrieval particularly useful.
+2. *Memory-size scaling.* The same architecture's perplexity continues to drop as
+   $|\mathcal{M}|$ grows from $1{,}536$ to $262{,}144$ entries
+   ([Figure 1](https://arxiv.org/abs/2203.08913)) — i.e., the model genuinely uses the bigger
+   memory and is not just absorbing a fixed amount of recent context.
+3. *Parameter-count tradeoff.* At fixed compute, adding kNN memory matches the gain from
+   roughly $5\times$ more parameters; e.g., a 200M memory model rivals an 800M no-memory
+   baseline on arXiv ([Table 2](https://arxiv.org/abs/2203.08913)).
+4. *Layer-placement ablation.* The 9th layer of 12 gives the largest gain; adding memory to
+   every layer adds at most 0.1 nat on top
+   ([Table 5](https://arxiv.org/abs/2203.08913)).
+5. *Generalization across model sizes.* The technique was retested at 1B parameters with a
+   $\sim 1$ nat perplexity gain that holds at scale
+   ([§4.2](https://arxiv.org/abs/2203.08913)).
+
+**Independent follow-up.**
+
+- *Unlimiformer* ([Bertsch et al. 2023,
+  arXiv 2305.01625](https://arxiv.org/abs/2305.01625)) generalizes the memory layer's kNN
+  attention to encoder-decoder summarization, reporting consistent ROUGE improvements at the
+  cost of zero added parameters — direct architectural descendant.
+- *Landmark Attention* ([Mohtashami & Jaggi 2023,
+  arXiv 2305.16300](https://arxiv.org/abs/2305.16300), §2) explicitly positions itself
+  against Memorizing Transformers' non-differentiability: "the retrieval is not learned, so
+  the model cannot improve indexing through training."
+- *RPT / Retrieval-Pretrained Transformer* ([Rubin & Berant 2023,
+  arXiv 2306.13421](https://arxiv.org/abs/2306.13421)) closes the loop the Wu et al. paper
+  leaves open — they make the retrieval differentiable via a Gumbel-softmax over a small
+  candidate set and report further perplexity gains. The headline finding: Wu et al.'s
+  results are a *lower bound* on what kNN memory can do once the indexing is also trained.
+- *Survey coverage.* Routinely cited as the canonical "external-memory" baseline in
+  long-context surveys ([Pawar et al. 2024,
+  arXiv 2402.02244](https://arxiv.org/abs/2402.02244), §3.2).
+
+**Sensitivity studies — what is *not* publicly known.** The introducing paper sweeps memory
+size and layer placement but not (a) the gate's initialization or the gate-vs.-shared-softmax
+tradeoff in detail, (b) the choice of inner product vs. cosine vs. learned similarity inside
+the ANN, or (c) how retrieval quality interacts with RoPE / ALiBi position encodings (the
+paper uses T5-style relative bias). I don't know of an independent reproduction at scales
+$> 1$B parameters; the published results stop there.
+
+**Production adoption.** None recorded in this knowledge base. Memorizing Transformers'
+practical legacy is the broader retrieval-augmented family (RAG-style retrieval into the
+prompt, KV-cache compression with retrieval gates) rather than the specific
+"kNN-from-attention-keys at one layer" mechanism, which was largely superseded by RAG
+architectures that retrieve *documents* into the input rather than $(K, V)$ pairs into the
+attention.
 
 <Summary>
-**Memorizing Transformers in one breath.** Add a non-differentiable kNN memory of past K, V
-pairs at one mid-stack layer. Retrieved entries merge into the layer's attention; effective
-context extends 32× at fixed training length. Lost to RAG and compression-based long-context
-in production, but remains the cleanest demonstration that attention can natively use external
-memory.
+**Memorizing Transformers in one breath.** At one mid-stack attention layer, run an external
+non-differentiable ANN over past keys, retrieve top-$k$ $(K, V)$ pairs, run a second softmax
+over them, and mix into the local attention via a learned per-head sigmoid gate. Gradient
+flows into queries and the gate but not the index. 1.5–2.7 nat perplexity reduction at fixed
+compute on long-document corpora; matches roughly $5\times$-parameter no-memory baselines.
+Direct descendants: Unlimiformer, Landmark Attention, RPT. No frontier production adoption.
 </Summary>

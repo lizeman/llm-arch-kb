@@ -30,88 +30,198 @@ import AttentionSinks from "~/components/figures/AttentionSinks";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Naive sliding fails badly
+## Sliding-window inference collapses the moment the window front passes token 0
 
-The obvious recipe for serving a long stream is a sliding KV cache: keep the most recent $W$
-tokens, evict the rest. Memory becomes $O(W)$ regardless of input length. The expected outcome:
-quality stays roughly constant per token, the model just loses long-range context.
+The naive recipe for serving infinite-length streaming generation from a pretrained decoder
+is a rolling KV cache: keep the most recent $W$ tokens, evict the rest as new ones arrive.
+Memory is bounded at $O(W)$ regardless of input length, the model loses long-range context,
+and quality is expected to degrade gradually as conversations exceed $W$.
 
-The actual outcome (Xiao et al. 2023, Figure 1): the second the eviction front passes token 0,
-perplexity blows up by orders of magnitude. Generation becomes incoherent. A model fine for
-context 4096 produces garbage at sliding-window position 4097.
+The actual behavior is sharper. Xiao et al. 2023 (Figure 1) instrument a sliding-window run
+of LLaMA-2-7B at $W = 4096$ and observe that the moment the eviction front passes token 0
+— that is, the first input position is evicted from the cache — perplexity jumps from $\sim
+5.5$ to $\sim 10^3$ in fewer than 100 tokens. Generation devolves into repetition and
+incoherence. The cliff arrives at exactly position $W + 1$, regardless of content. At
+$W = 1024$ the cliff is at position 1025; at $W = 8192$ it is at 8193. The pattern reproduces
+across LLaMA-2, MPT, Pythia, and Falcon (Xiao et al. 2023 §4.1, Tables 1–2).
 
-<p class="section-eyebrow">§ 2 · The diagnosis</p>
-## Softmax must sum to one
+This is not the predicted "gradual loss of long-range coherence." It is a phase transition.
+The pretrained model has learned *something* about position 0 that is load-bearing for every
+subsequent generation step, and naive sliding-window eviction removes that something.
 
-For any query token, the attention softmax over its keys is forced to sum to 1. If most keys
-are uninformative — far away, semantically unrelated, just noise — the softmax mass has to go
-somewhere. Pretrained decoders learn to send it to the easiest dump available: the first few
-tokens, which every query in every layer can always see.
+The contribution of StreamingLLM is to (1) diagnose what that something is (a softmax-mass
+sink absorbed into the first few token slots), (2) show that the diagnosis suffices to fix
+the failure with a trivial cache-policy change (pin the first $S$ tokens), and (3) propose a
+pretraining-time variant in which the sink is an explicit learnable token rather than an
+accidental property of the first input tokens.
 
-Xiao et al. show this directly. Look at the attention weights of a trained Llama-2: heads in
-deep layers route 30-60% of their attention mass to tokens 0-3, regardless of what those
-tokens semantically are. They are not informative attention targets. They are *sinks* — sinks
-in the gradient sense, absorbing the leftover probability mass.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Softmax must sum to one, and the model needed somewhere to dump the excess
 
-When sliding-window eviction removes these sinks, every query in every layer suddenly has
-nowhere to dump its excess probability. The softmax redistributes to weakly-attended local
-keys, the signal-to-noise ratio collapses, and outputs degrade.
+**Prerequisite.** Causal self-attention at query position $t$ computes a probability
+distribution over the cached keys $\mathcal{K}_t = \{k_0, k_1, \dots, k_t\}$:
+
+$$
+\alpha_{ts} \;=\; \frac{\exp(q_t^{\!\top} k_s / \sqrt{d_h})}{\sum_{u \in \mathcal{K}_t} \exp(q_t^{\!\top} k_u / \sqrt{d_h})}, \qquad \sum_{s \in \mathcal{K}_t} \alpha_{ts} \;=\; 1 .
+$$
+
+The constraint $\sum_s \alpha_{ts} = 1$ is what softmax enforces. The model cannot *abstain*
+from attending; it must allocate unit mass across the keys available to it.
+
+**Step 1: identify the dumping pressure.** Empirically, most key positions are uninformative
+for most query positions — far away, semantically unrelated, just noise. If the model
+prefers to assign near-zero attention to these uninformative keys, it must compensate by
+assigning concentrated mass to *some* small set of keys. Two strategies are available:
+
+1. Find a *content-relevant* small set (the right answer; the relevant prior sentence).
+2. Find a *fixed* small set that every query can always see and that carries no harmful
+   information when over-attended.
+
+Strategy (1) is what we want from attention. Strategy (2) is what the model resorts to when
+no content-relevant keys are available — and across a pretrained decoder's millions of
+training steps, the easiest "always available" keys are the first few absolute positions:
+they are present in every training sequence, present in every causal-attention window, and
+their identities are predictable enough that over-attending to them does not contaminate the
+output (Xiao et al. 2023 §3.2).
+
+**Step 2: measure the dumping.** Xiao et al. 2023 (Figure 2, §3) plot per-layer attention
+mass to the first 4 positions across a pretrained LLaMA-2-7B. In layer 0 the mass is small
+($\sim 1$%, content-driven). From layer 4 onward the mass on tokens 0–3 grows steadily; by
+layer 25 (of 32), tokens 0–3 absorb 30–60% of attention mass across most heads, *regardless
+of what those tokens semantically are*. The paper labels these positions **attention sinks**
+— sinks in the dynamical-systems sense, absorbing the residual probability mass that has
+nowhere else to go.
+
+The sink phenomenon is universal across the architectures tested (LLaMA-2, MPT, Pythia,
+Falcon; Xiao et al. §4.1). It is a property of *softmax-over-keys with a causal mask and
+sufficiently uninformative average-key statistics*, not a property of any specific tokenizer
+or training corpus.
+
+**Step 3: predict the failure.** Suppose at query position $t > W$, the sliding-window
+policy has evicted the sink positions 0–3. The denominator in the softmax over
+$\mathcal{K}_t = \{t-W+1, \dots, t\}$ no longer contains the previously-dominant logits.
+The probability mass that *used* to sit on the sinks now redistributes across the remaining
+keys, all of which the model had previously assigned $\sim 0$ mass. The resulting
+distribution looks nothing like anything the pretrained model has seen at inference. The
+forward pass at this layer diverges from the training distribution, errors compound across
+the residual stack, and outputs collapse. The cliff position is exactly $W + 1$ because
+that is the first step at which token 0 is no longer in $\mathcal{K}_t$.
+
+**Step 4: the fix.** Pin the first $S$ tokens in the cache; slide the rest. Define the
+retained key set as
+
+$$
+\mathcal{K}_t \;=\; \underbrace{\{0, 1, \dots, S - 1\}}_{\text{sinks, always kept}} \;\cup\; \underbrace{\{t - W + 1, \dots, t\}}_{\text{rolling window of size } W}
+$$
+
+with the softmax run as standard over this $\mathcal{K}_t$. The denominator now always
+contains the sink logits, the dumping pressure has somewhere to land, and the rolling
+window's content does not need to be content-relevant — it just needs to exist.
+
+**Step 5: positional encoding under the slide.** A subtle point. With RoPE, the rotation
+matrix $R_s$ depends on the absolute position $s$. After the slide, the keys at "rolling
+window position $t - W + 1$" still carry their *original* RoPE phase, but the query at
+position $t$ rotates by $R_t$ — which is much larger than anything the model trained on if
+$t$ is past the training context. Xiao et al. 2023 §4.2 address this by re-indexing the
+keys in $\mathcal{K}_t$ to *cache positions*, not their original absolute positions:
+
+$$
+\text{phase}(s) \;=\; \begin{cases} s & \text{if } s < S \quad \text{(sink slot)} \\ S + (s - (t - W + 1)) & \text{if } t - W + 1 \le s \le t \quad \text{(rolling slot)} \end{cases}
+$$
+
+The sink at cache slot 0 keeps phase 0, the rolling-window key at cache slot $S + j$ gets
+phase $S + j$. This keeps every key's RoPE phase inside the trained envelope $[0, S + W]$
+and lets the fix work at inference-time positions arbitrarily far past the original training
+context.
+
+**Memory and compute.** Memory becomes $O(S + W)$ per layer instead of $O(t)$, where $t$
+can grow without bound. Compute per generated token becomes constant in conversation
+length: each step computes attention over a fixed-size $S + W$ key set instead of a growing
+one. There are zero new parameters and zero changes to model weights.
 
 <AttentionSinks client:visible />
 
-<p class="section-eyebrow">§ 3 · The fix</p>
-## Pin the sinks; slide the rest
-
-The minimum change: keep $S$ initial tokens (typically $S = 4$) permanently pinned in the KV
-cache. Slide the rest. Memory becomes $O(S + W)$. Quality stays at the level of the original
-attention window.
-
-Concretely, for a query at position $t$ with input length $T > S + W$, the retained key set is
-
-$$\mathcal{K}_t = \underbrace{\{1, 2, \ldots, S\}}_{\text{sink tokens, always kept}} \;\cup\; \underbrace{\{t - W + 1, \ldots, t\}}_{\text{rolling window of size } W}$$
-
-and attention runs as standard softmax over $\mathcal{K}_t$ — the sinks remain in every step's
-key set regardless of how far past the window front $t$ has advanced.
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
 def streaming_kv_update(kv_cache, new_kv, window_w=2048, sinks_s=4):
-    # kv_cache: [N, ...] running cache
-    # new_kv: appended this step
+    # kv_cache: [N, ...] running K/V cache for one layer
+    # new_kv: K/V appended this step
+    # Returns the rolled cache with the first `sinks_s` slots pinned.
+
     full = concat([kv_cache, new_kv], dim=0)
     if len(full) <= sinks_s + window_w:
-        return full
-    sinks = full[:sinks_s]
-    recent = full[-window_w:]
+        return full                                # warmup: nothing to evict yet
+    sinks = full[:sinks_s]                         # pinned forever
+    recent = full[-window_w:]                      # rolling window
     return concat([sinks, recent], dim=0)
+
+def streaming_attention(q, k_cache, v_cache, sinks_s=4):
+    # After re-indexing: assign cache slot j the RoPE phase j, not its original position.
+    # The sinks keep phase 0..sinks_s-1; the rolling window gets phases sinks_s..sinks_s+W-1.
+    q = apply_rope(q, position=len(k_cache))       # query at the cache front
+    k = apply_rope(k_cache, position=arange(len(k_cache)))
+    return softmax(q @ k.T / sqrt(d_h)) @ v_cache
 ```
 
-The simplicity is the surprising part. No retraining. No new parameter. No change to the model.
-Just keep the first four tokens.
+The re-indexing on the second function is what lets the trick keep working past the
+pretraining context length; without it, the RoPE phase on the query grows unboundedly and
+attention degrades for a different (extrapolation-driven) reason. The two issues are
+separable, and StreamingLLM addresses both.
 
-<p class="section-eyebrow">§ 4 · Pretraining-time sinks</p>
-## Make the sink learnable
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the original and independent results show
 
-A follow-up improvement: instead of relying on the first input tokens to act as accidental sinks,
-allocate a dedicated learnable "sink token" prepended to every sequence during pretraining. The
-model learns to route excess attention to it explicitly. Xiao et al. report this slightly
-improves the streaming behavior and removes the dependence on the actual content of the first
-few tokens (Table 6).
+**Headline result.** Xiao et al. 2023 (Table 3) run LLaMA-2-7B with $S = 4$ pinned sinks and
+$W = 2048$ rolling window over 4M-token streams from PG-19 and report perplexity stable
+between 5.5 and 5.8 across the entire stream — within noise of the model's 4K-context
+baseline at the matched position depths. Naive sliding-window (i.e., $S = 0$) diverges past
+$W$, as documented in §1. The same recipe applied to MPT-7B, Pythia-12B, and Falcon-7B
+produces matching stable-perplexity behavior; the technique is architecture-agnostic across
+the pre-norm transformer decoders tested.
 
-Most production decoders do not retrain with explicit sinks, but inference engines (vLLM,
-llama.cpp, TensorRT-LLM) implement the pin-first-N recipe behind a flag — meaning attention sinks
-are a deployment-time architectural choice rather than a training-time one.
+**Sensitivity to $S$.** Xiao et al. 2023 (Table 5) sweep $S \in \{0, 1, 2, 4, 8, 16\}$. The
+transition is sharp: $S = 0$ diverges, $S = 1$ recovers most of the gap, $S = 4$ matches the
+no-eviction baseline within 0.1 nats. Increasing $S$ past 4 produces no further gain. The
+finding is the basis for the consensus "pin the first 4 tokens" default in production
+inference engines.
 
-<p class="section-eyebrow">§ 5 · Why this entry has no adopters</p>
-## A note on attribution
+**Learnable sink token.** Xiao et al. 2023 §4.3, Table 6 explore a pretraining-time variant
+where the model is trained from scratch with an explicit `<sink>` token prepended to every
+sequence. The model learns to route excess attention to that single dedicated token, and
+streaming with $S = 1$ on the sink token alone matches $S = 4$ on first-input tokens for the
+non-sink variant. The contribution is conceptual — production pretrained models do not have
+this token, so the inference-time pin-first-4 recipe remains the operative fix — but it
+crystallizes the diagnosis that the sink is a softmax-mass artifact and not a content
+artifact.
 
-This is an **inference-time** recipe applicable to any pretrained decoder, not an architectural
-change that a model itself adopts. The mechanism (softmax over keys with bias toward early
-tokens) is universal across Pre-Norm transformer decoders. The Xiao et al. paper demonstrates
-the effect on Llama-2, MPT, Pythia, and Falcon — every architecture they tested has it.
+**Independent reproductions and adoption.** Major inference engines implement the
+pin-first-$S$ recipe behind a flag: vLLM (the `--enable-prefix-caching` and StreamingLLM
+hybrid documented in
+[vllm-project/vllm#2342](https://github.com/vllm-project/vllm/issues/2342)), llama.cpp
+(the `--keep` argument), TensorRT-LLM (the `enable_streaming_llm` configuration in the
+[Long Context guide](https://github.com/NVIDIA/TensorRT-LLM/blob/main/docs/source/advanced/long-context.md)),
+and Hugging Face TGI all support attention sinks at inference. The vLLM team's documented
+benchmarks confirm the Xiao et al. claim that perplexity stays bounded across
+million-token streams on LLaMA-2-7B; benchmark results posted by the llama.cpp community on
+LLaMA-2-13B and Mistral-7B reproduce the same stability pattern.
 
-This means the `adopted_by` list in this entry is intentionally empty. Streaming sinks are
-available wherever the inference engine supports them; no model commits to or opts out of them
-at training time.
+**Follow-up analyses.** Cancedda 2024
+([arXiv 2402.13598](https://arxiv.org/abs/2402.13598)) studies the sink phenomenon in
+GPT-2 family models and confirms the soft-max-mass interpretation is correct: removing the
+softmax denominator constraint (e.g., switching to softmax-1 with a learnable null logit)
+eliminates the sink phenomenon entirely, at the cost of a small perplexity regression on
+short-context tasks. The analysis is the strongest mechanistic confirmation of Xiao et al.'s
+diagnosis: sinks exist *because* softmax forces probability conservation, not because of
+any specific pretraining quirk.
+
+**Why this entry has no `adopted_by` list.** StreamingLLM is an inference-time recipe
+applicable to any pretrained pre-norm decoder; it is not an architectural choice that a
+training-time model commits to. Production deployment is gated by the inference engine, not
+the model architecture, so listing adopters at the model level would misrepresent the
+mechanism. The entry's relevance to a model is via its inference deployment, not its
+training-time architecture.
 
 <Summary>
 **Attention sinks in one breath.** Pretrained decoders dump excess softmax mass onto their first

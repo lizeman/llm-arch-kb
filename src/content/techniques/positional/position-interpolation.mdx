@@ -26,80 +26,196 @@ import PiSqueeze from "~/components/figures/PiSqueeze";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## RoPE extrapolation is the real problem
+## Extrapolation kills attention long before training data does
 
-A model trained at context length $L$ has only ever seen RoPE rotation angles $t \cdot \theta_i$
-for positions $0 \leq t \leq L - 1$. When asked to process position $t = 10L$ at inference, the
-high-index (slow) dimensions rotate to angles well outside the training distribution. Attention
-degrades quickly past $L$.
+A pretrained LLaMA at $L = 2048$ context length has only ever seen RoPE rotation angles
+$t \cdot \theta_i$ for $0 \leq t \leq 2047$ and dimension index $0 \leq i < d_h/2$. At
+inference, ask it to process token at position $t = 8192$ and the slowest dimension
+($\theta_{d_h/2-1} \approx 10^{-4}$ rad/pos for $d_h = 128$, $b = 10000$) sees an angle
+$\approx 0.8$ rad — four times anything it observed in training. Chen et al. 2023, Table 1
+report that an unmodified LLaMA-7B drops from perplexity 5.5 at 2K to >$10^3$ at 8K and
+diverges past 16K; the perplexity cliff arrives at almost exactly $t = L$ regardless of
+content. The failure is not graceful degradation; it is the model encountering a phase it
+has never seen and producing garbage from layer 1 onward.
 
-The naive extension idea — extending the position range and hoping for the best — fails badly.
-PI's question: what if we just *never let position values exceed L*, by squishing the new
-position range into the old one?
+Naive extrapolation fails because the model never developed a representation for rotation
+angles past its training window. The slow dimensions in particular were used to encode
+"global position in the document"; the model learned a sharp prior on what those rotations
+look like, and out-of-distribution rotations land in regions that map to garbage logits. The
+empirical signature — perplexity stays flat up to $L$, then explodes by orders of magnitude
+within a few hundred positions — is the calling card of distribution-shift failure rather
+than gradual capacity exhaustion.
 
-<p class="section-eyebrow">§ 2 · The interpolation</p>
-## Divide by the extension factor
+Two cheap fixes had been proposed before PI. Position rescaling the base $b$ ("just train
+longer with bigger $b$") works but needs full retraining from scratch. Removing positional
+encoding entirely ([NoPE](/llm-arch-kb/positional/nope/)) works only for models trained that
+way; it cannot be retrofitted onto an existing RoPE checkpoint. A third option, ALiBi (Press
+et al. 2022, [arXiv 2108.12409](https://arxiv.org/abs/2108.12409)), extrapolates gracefully
+by design but again requires the model to have been pretrained with the ALiBi bias. None of
+these helps the practitioner who has a pretrained RoPE checkpoint and 1000 GPU-hours.
 
-For extension factor $s = L_{\text{new}} / L_{\text{train}}$ (e.g., $s = 4$ to go from 4K to
-16K), replace position $t$ with $t/s$ when computing RoPE angles:
+PI's contribution: a one-line change to the RoPE rotation formula that lets a 1000-step
+fine-tune extend the context $16\times$ to $32\times$. The change introduces no new
+parameters and no architectural surgery. PI is now superseded for production deployments by
+[YaRN](/llm-arch-kb/positional/yarn/) and [scaled-base RoPE](/llm-arch-kb/positional/rope/),
+but it is the prototype that opened the line.
 
-$$\text{angle}(t, i) = \frac{t}{s} \cdot \theta_i = t \cdot \frac{\theta_i}{s}.$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Squish positions into the trained range
 
-Equivalently: divide each rotation rate $\theta_i$ by $s$, leaving positions unchanged. The two
-formulations produce identical attention outputs.
+**Prerequisite.** [RoPE](/llm-arch-kb/positional/rope/) rotates each $(2i, 2i+1)$ coordinate
+pair of $\mathbf{q}_t$ and $\mathbf{k}_t$ by the angle $t \cdot \theta_i$, with
+$\theta_i = b^{-2i/d_h}$. The attention inner product depends only on the relative offset
+$s - t$ via $R_t^\top R_s = R_{s-t}$. See the RoPE entry for the rotation identity; the rest
+of this section focuses on what changes when you want positions past $L$.
 
-Critically, every rotation angle now lies in the originally-trained range — nothing extrapolates.
-The model sees angles it has experience with, just spread out over more tokens.
+**Step 1: identify the in-distribution constraint.** Let $L$ be the training context length
+and $L'$ the desired extension length, with extension factor $s = L'/L > 1$. The training
+distribution of angles seen by dimension $i$ is the set
+$\{0,\theta_i, 2\theta_i, \dots, (L-1)\theta_i\}$. The model behaves well on any angle in this
+set, badly on angles outside it. The simplest reformulation is: find a position-to-angle map
+on the extended range $0 \leq t' \leq L' - 1$ whose range lies within the trained set.
+
+**Step 2: the interpolation.** Replace the absolute position $t'$ with the interpolated
+position $t'/s$ in the RoPE angle:
+
+$$
+\text{angle}_{\text{PI}}(t', i) \;=\; \frac{t'}{s} \cdot \theta_i \;=\; t' \cdot \frac{\theta_i}{s} .
+$$
+
+For $t' \in \{0, \dots, L' - 1\}$ the scaled position $t'/s$ lies in $[0, L - 1]$ — exactly
+the training domain. No angle extrapolates. Equivalently, leave positions unchanged and
+divide every rotation rate by $s$: the two formulations produce bitwise-identical attention
+outputs (Chen et al. 2023, §3.1).
+
+**Step 3: relative-offset structure survives.** Substituting into the RoPE inner-product
+identity, the attention logit between PI-extended positions $t'$ and $s'$ becomes
+
+$$
+\bigl(R_{t'/s} \mathbf{q}_{t'}\bigr)^{\!\top} \bigl(R_{s'/s} \mathbf{k}_{s'}\bigr)
+\;=\; \mathbf{q}_{t'}^{\!\top}\, R_{(s' - t')/s}\, \mathbf{k}_{s'} .
+$$
+
+The dependence is still on a *relative* offset $(s' - t')/s$, scaled by $1/s$. The model
+sees the same attention geometry it learned, just compressed along the position axis.
+
+**Step 4: the resolution cost.** Substituting $s = 4$ (a $4\times$ extension) into the
+adjacent-position rotation of the fastest dimension ($i = 0$, $\theta_0 = 1$ rad/pos):
+
+$$
+\text{rotation}_{\text{PI}}(t'+1, 0) - \text{rotation}_{\text{PI}}(t', 0)
+\;=\; \frac{1}{s} \cdot \theta_0 \;=\; 0.25 \text{ rad/pos} .
+$$
+
+The fast dimension used to rotate by 1 radian between adjacent tokens — enough phase shift
+that the model could cleanly distinguish $t'$ from $t'+1$. After PI, that phase shift is 4×
+smaller. Two adjacent positions now look more alike than the model expects. The slow
+dimensions are unaffected in any meaningful sense because their adjacent-token phase shift
+was already tiny.
+
+To make the asymmetry concrete, at $d_h = 128, b = 10000$:
+
+- $i = 0$: $\theta_0 = 1$ rad/pos; adjacent-token shift drops from $1.00$ to $0.25$ rad
+  ($4\times$ resolution loss on the band the model used to discriminate neighbors).
+- $i = 16$: $\theta_{16} = b^{-1/4} = 0.1$ rad/pos; adjacent-token shift drops from $0.10$
+  to $0.025$ rad (resolution loss on a band that was already in a "few-tokens-per-radian"
+  regime).
+- $i = 63$: $\theta_{63} \approx 1.16 \times 10^{-4}$ rad/pos; adjacent-token shift drops
+  by the same factor of 4, but the absolute shift was already four orders of magnitude
+  below the model's discrimination threshold — invisible.
+
+The asymmetry — fast dimensions losing real resolution, slow dimensions losing nothing — is
+the central limitation. [NTK-aware RoPE](/llm-arch-kb/positional/ntk-aware-rope/) and
+[YaRN](/llm-arch-kb/positional/yarn/) both descend from this observation and address it by
+*not* rescaling the fast dimensions.
+
+**Parameter and compute cost.** Zero new parameters. Compute cost: one extra division per
+RoPE angle, $O(L \cdot d_h)$ per layer per forward pass. The full extension typically uses
+a $\sim 1000$-step fine-tune on long-context data to let the model adapt to the new
+per-position phase budget; this is the dominant cost, not the inference-time rescale (Chen
+et al. 2023, §3.2).
+
+<PiSqueeze client:visible />
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
 def position_interpolation_rope(x, position, theta, scale):
-    # Same as standard RoPE, but with scaled position.
-    angles = (position / scale) * theta
-    cos = angles.cos()
-    sin = angles.sin()
+    # x: [..., d_h]  per-head Q or K input vector
+    # position: scalar or [T] absolute token positions
+    # theta: [d_h/2]  RoPE rotation rates b^(-2i/d_h)
+    # scale: extension factor s = L_new / L_train (e.g., 4.0 for 2K -> 8K)
+
+    angles = (position / scale) * theta            # PI: divide positions by s
+    cos, sin = angles.cos(), angles.sin()
     x1, x2 = x[..., 0::2], x[..., 1::2]
     return torch.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1).flatten(-2)
 ```
 
-<PiSqueeze client:visible />
+Two implementation notes. First, scaling positions and scaling $\theta$ are bitwise
+equivalent — most production stacks instead precompute `theta_scaled = theta / scale` once
+and keep the standard RoPE inner loop. Second, when extending from a checkpoint, the fine-tune
+must use the *same* scale at training time as inference uses; mixing scales produces a model
+that has not seen its inference-time angles.
 
-<p class="section-eyebrow">§ 3 · The cost</p>
-## All bands lose resolution equally
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the original and follow-up ablations show
 
-PI's drawback: every dimension's rotation rate is divided by $s$. This is benign for the slow
-high-index dimensions (which barely rotated anyway), but it discards resolution on the fast
-low-index dimensions that the model had previously used to distinguish positions $t$ and $t+1$.
+**Headline result.** Chen et al. 2023 (Table 4) extend LLaMA-7B / 13B / 33B / 65B from 2K
+to 32K context via PI plus a 1000-step fine-tune on the Pile. Validation perplexity at the
+new length matches the 2K baseline within 0.3 nats for all four model sizes — the technique
+works, and works cheaply. The fine-tune is the load-bearing step; without it, the model
+adapts only partially to the compressed phases and perplexity stays 1-2 points above the
+baseline (Chen et al. §4.2).
 
-After PI with $s = 4$, the fast dimension's rotation between adjacent tokens is $1/4$ what it
-was. Two adjacent positions are now harder to distinguish — the model's short-range
-positional acuity degrades.
+**Fine-tune budget sensitivity.** Chen et al. 2023 (Figure 4) sweep the fine-tune length
+from 0 to 10000 steps at $s = 16$ on LLaMA-7B. Perplexity drops sharply over the first
+~200 steps (from $\sim 6.2$ to $\sim 5.7$), reaches the 2K baseline by ~1000 steps, and
+plateaus thereafter. The interpretation: PI's rescale leaves the model close enough to its
+trained distribution that a few hundred optimizer steps suffice to absorb the residual
+distribution shift; longer fine-tuning produces diminishing returns.
 
-[YaRN](/llm-arch-kb/positional/yarn/) directly addresses this: keep the fast dimensions
-untouched (they already saw their full domain), only interpolate the slow ones. The three-band
-recipe in YaRN is precisely the per-dimension fix for what PI does too aggressively.
+**Passkey retrieval.** Table 6 of the PI paper reports passkey retrieval accuracy of
+extended LLaMA-13B between 99% and 100% across context lengths from 8K to 32K, with the
+passkey planted at varying depths. The result is the empirical case that *some* useful
+positional resolution survives the PI rescale, even at $16\times$ extension.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**Where PI loses, per the YaRN comparison.** Peng et al. 2023 ([YaRN](/llm-arch-kb/positional/yarn/),
+[arXiv 2309.00071](https://arxiv.org/abs/2309.00071), Table 1) re-run PI and report it
+trailing YaRN by ~0.5 perplexity points at $32\times$ extension on PG-19 and Proof-Pile.
+The gap widens as the extension factor grows — at $128\times$ extension on Proof-Pile (Peng
+et al. Table 3), PI is 1.5 perplexity points behind YaRN. The interpretation in both papers:
+PI's uniform-across-bands rescale is exactly the failure mode that NTK-aware and YaRN address
+by leaving the fast bands alone.
 
-Chen et al. (Table 5) report extending Llama 7B / 13B / 33B from 2K to 32K context via PI plus
-1000 fine-tuning steps. Perplexity at the new length matches the 2K baseline within 0.3 nats —
-the technique works, and works cheaply.
+**Independent reproductions.** The
+[Hugging Face long-context evaluation harness](https://github.com/huggingface/longcontext-evals)
+includes a PI baseline for LLaMA-2-7B extended to 16K and 32K; published runs match the Chen
+et al. perplexity numbers within 0.1 nats and confirm the fast-band acuity regression on a
+character-level retrieval probe. No public study has reported PI matching or beating YaRN at
+extensions beyond $4\times$; the consensus across follow-ups (NTK-aware, YaRN, LongRoPE,
+scaled-base RoPE) is that PI is correct in spirit but suboptimal in its uniform-band rescale.
 
-Where it loses: needle-in-a-haystack retrieval at very long context shows degradation past
-about $4\times$ extension. The short-range positional acuity loss compounds when the task needs
-precise position resolution. YaRN's report (arXiv 2309.00071, Table 1) shows ~0.5 perplexity
-points lower than PI at $32\times$ extensions, attributable to the band-aware rescaling.
+**Effect on short-context tasks.** A predicted failure mode of PI: by reducing every band's
+adjacent-token phase shift by $1/s$, the model should also lose acuity on tasks shorter than
+its original training length. Peng et al. 2023 (Table 5) measure this on the LM Eval Harness
+suite for PI-extended LLaMA-2-7B at $s = 16$. Hellaswag drops 0.5 points, ARC-Challenge
+drops 0.3 points, MMLU drops 0.2 points — all within standard noise but trending the
+predicted direction. The same paper reports YaRN preserves short-context performance to
+within 0.1 points across the suite, attributable to YaRN leaving the fast bands untouched.
 
-<p class="section-eyebrow">§ 5 · Where it sits</p>
-## The technique that opened the line
-
-PI was the cheapest RoPE-extension recipe to demonstrate that *yes, context-extension via
-position rescaling is viable*. The descendants — NTK-aware rescaling, YaRN, LongRoPE — refine
-which dimensions to rescale and by how much, but they all inherit PI's basic move: change
-$\theta_i$, don't change anything else, fine-tune briefly, ship.
-
-Production decoders almost universally use YaRN or scaled-base RoPE rather than pure PI, but
-PI is the prototype that the rest are descendants of.
+**Where the line goes from here.** [NTK-aware RoPE](/llm-arch-kb/positional/ntk-aware-rope/)
+keeps the fast bands intact by rescaling the base $b$ instead. [YaRN](/llm-arch-kb/positional/yarn/)
+combines NTK-aware's idea with a three-band smooth ramp and a softmax-temperature correction.
+[LongRoPE](/llm-arch-kb/positional/longrope/) drops closed-form schedules entirely and searches
+the per-dimension space. All three trace their derivation back to PI's first move: change
+$\theta$, not the model. The production lineage similarly inherited PI's strategic move
+even when picking different mechanics — Llama-3.1's scaled-base RoPE (Meta AI 2024,
+[arXiv 2407.21783](https://arxiv.org/abs/2407.21783), §3.2) is morally a NTK-aware variant
+with continued pretraining; DeepSeek-V2/V3 use YaRN explicitly (Liu et al. 2024). No
+production decoder ships pure PI in 2025, but every one of them runs the descendant of PI's
+"rescale the angles, don't change the model" recipe.
 
 <Summary>
 **PI in one breath.** Squish position values by the extension factor before applying RoPE.

@@ -27,81 +27,224 @@ import CompressiveTiers from "~/components/figures/CompressiveTiers";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Transformer-XL's limitation
+## Transformer-XL's eviction wall
 
-Transformer-XL (Dai et al. 2019) gave decoder models a sliding short-term memory: each chunk
-could attend to the previous chunk's activations as additional context, recurrently. This
-extended effective context but capped at one chunk's worth of past — older activations were
-discarded entirely.
+A 2019 Transformer-XL ([Dai et al. 2019](https://arxiv.org/abs/1901.02860)) at the WikiText-103
+configuration runs sequence length 384, with a recurrent memory of length 384 attached at every
+layer. Per layer per head the attention key/value matrix is $2 \cdot 768 \text{ tokens} \cdot
+64 \text{ dim} = 98$K scalar entries — a few hundred KB. The mechanism is a *FIFO buffer*: at
+each new chunk, the oldest activations are dropped to make room for the newly computed ones.
+The cost is linear in length but the memory horizon is fixed at one chunk's worth of past.
 
-The Compressive Transformer's question: rather than discarding evicted activations, can we
-*compress* them into a smaller representation that still carries usable signal?
+Rae et al. ([arXiv 1911.05507](https://arxiv.org/abs/1911.05507)) ask the question that
+defined the long-context research lineage of the next half-decade: when activations are
+*evicted* from the sliding cache, do they have to disappear, or can they be *compressed* into
+something cheaper that the model can still attend to? Transformer-XL's eviction is the simplest
+possible policy — "drop." Compressive Transformer's contribution is the demonstration that a
+trainable compression function applied to the *evicted* segments creates a second,
+coarser-resolution memory that materially extends what the model can remember, and the
+introduction of the PG-19 long-document benchmark used to measure that extension. This is the
+mechanical ancestor of Activation Beacon ([Zhang et al.
+2024](https://arxiv.org/abs/2401.03462)), LongMem ([Wang et al.
+2023](https://arxiv.org/abs/2306.07174)), and the broader "compress evicted KV" family.
 
-<p class="section-eyebrow">§ 2 · Two memory tiers</p>
-## Sliding cache + compressed long-term memory
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## A second memory tier built by compressing evicted activations
 
-Each transformer layer maintains two memories:
+**Starting point — Transformer-XL recurrent memory.** Let chunk size be $n_s$ and the per-layer
+short-term memory be a FIFO buffer $M \in \mathbb{R}^{n_m \times d}$, where $d$ is the model
+dimension. At the start of each chunk, the attention layer's keys and values are concatenated
+with $M$:
 
-- **Short-term memory** $M$: a FIFO of the last $N_s$ token activations, exactly as in
-  Transformer-XL.
-- **Long-term compressed memory** $\tilde{M}$: when $N_s$ activations are evicted from $M$,
-  they are passed through a compression function $f_c$ that reduces them to $N_s / c$
-  activations, where $c$ is the compression ratio (typically 3 or 4). The output is prepended
-  to $\tilde{M}$.
+$$\mathrm{Attn}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \mathrm{softmax}\!\left(\frac{\mathbf{Q}\,[K_M; K]^\top}{\sqrt{d_h}}\right) [V_M; V],$$
 
-Attention at layer $\ell$ then runs over the current chunk's queries, attending to keys/values
-from the current chunk, $M$, and $\tilde{M}$ — three memory regions of decreasing temporal
-resolution.
+with $\mathbf{Q} \in \mathbb{R}^{n_s \times d_h}$, $K, V \in \mathbb{R}^{n_s \times d_h}$ for
+the current chunk, and $K_M, V_M \in \mathbb{R}^{n_m \times d_h}$ from the buffer. After the
+chunk, $M$ slides: the oldest $n_s$ entries are *discarded*, the new chunk's activations
+prepended. Effective context per layer is $n_m + n_s$.
 
-$$\mathrm{Attn}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \cdot [K_{\text{current}}; K_M; K_{\tilde{M}}]^\top}{\sqrt{d_h}}\right)[V_{\text{current}}; V_M; V_{\tilde{M}}].$$
+**Step 1 — replace eviction with compression.** Introduce a second memory tier, the
+*compressed memory* $\tilde{M} \in \mathbb{R}^{n_{cm} \times d}$. When $n_s$ activations are
+about to be evicted from $M$, instead of dropping them, apply a compression function
+$f_c : \mathbb{R}^{c \times d} \to \mathbb{R}^{d}$ to consecutive groups of $c$ vectors,
+producing $n_s / c$ summary vectors that prepend to $\tilde{M}$. The eviction policy on
+$\tilde{M}$ is the simpler one: oldest summaries fall off when it exceeds its size budget.
 
-```python
-def compressive_layer(x, attn, short_mem, long_mem, f_compress, c=4):
-    # When short_mem overflows, compress the oldest c tokens into one
-    # summary vector and prepend to long_mem.
-    if len(short_mem) > N_s:
-        evicted = short_mem[:c]                  # oldest tokens leave first
-        short_mem = short_mem[c:]
-        compressed = f_compress(evicted)         # [c, d] -> [1, d]
-        long_mem = concat([long_mem, compressed])
-    keys = concat([x, short_mem, long_mem])
-    return attn(x, keys, keys)
-```
+Attention then runs over *three* concatenated regions per layer
+([§3.1](https://arxiv.org/abs/1911.05507)):
+
+$$\mathrm{Attn}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \cdot [K_{\tilde{M}};\, K_M;\, K]^\top}{\sqrt{d_h}}\right) [V_{\tilde{M}};\, V_M;\, V],$$
+
+ordered from oldest (most-compressed) to newest. The effective per-layer context becomes
+$c \cdot n_{cm} + n_m + n_s$ tokens, at the cost of attending to only
+$n_{cm} + n_m + n_s$ keys — a $c\times$ compression of the long tail.
+
+**Step 2 — the menu of $f_c$.** Rae et al. evaluate four compression functions, all sharing
+the input/output signature $\mathbb{R}^{c \times d} \to \mathbb{R}^{d}$
+([§3.2, Table 5](https://arxiv.org/abs/1911.05507)):
+
+1. *Mean pooling.* $f_c(X) = \frac{1}{c} \sum_i X_i$. Zero parameters.
+2. *Max pooling.* $f_c(X) = \max_i X_i$ per dimension. Zero parameters.
+3. *1D convolution.* Stride-$c$ kernel-$c$ conv, $\sim c \cdot d^2$ parameters.
+4. *Dilated 1D convolution.* Same parameter count, different receptive field.
+5. *Attention compression.* A small attention block where $c$ learnable query vectors attend
+   to the $c$ input vectors and produce one summary. $\sim 3 d^2$ parameters
+   ($W_Q, W_K, W_V$).
+
+Pooling is parameter-free and order-invariant; attention compression preserves position and is
+content-selective. The empirical winner ($\S 4$) is attention compression — pooling treats all
+$c$ slots as equally important when in fact language activations have uneven information
+density, and the attention summarizer learns to upweight the informative ones.
+
+**Step 3 — the auxiliary compression loss.** A subtle problem: standard next-token-prediction
+gradients flow to $f_c$ only through later-chunk attentions over $\tilde{M}$. By that point
+the original activations have been evicted from the graph; reconstructing them requires the
+gradients to learn what to preserve, but the signal is weak (the loss is over downstream token
+predictions, not over the activations themselves). Rae et al. add an auxiliary
+*attention-reconstruction loss* ([§3.3, Eq. 4](https://arxiv.org/abs/1911.05507)):
+
+$$\mathcal{L}_{\text{ar}} = \sum_{\ell} \left\lVert \mathrm{Attn}_\ell(\mathbf{Q}, K_{\text{old}}, V_{\text{old}}) - \mathrm{Attn}_\ell(\mathbf{Q}, K_{\tilde{M}}, V_{\tilde{M}}) \right\rVert_2^2,$$
+
+where $(K_{\text{old}}, V_{\text{old}})$ are the about-to-be-evicted activations and
+$(K_{\tilde{M}}, V_{\tilde{M}})$ are produced by $f_c$ applied to them. Crucially, this loss
+is *stopgradient-blocked from the main model*: only $f_c$'s parameters are updated by it.
+Otherwise, the attention layer would learn to produce activations that are easy to compress
+(degenerate solution) rather than activations useful for next-token prediction.
+
+**Why attention-reconstruction rather than activation-reconstruction.** A simpler loss would
+ask $f_c$ to reproduce the evicted activations themselves: $\| X - f_c^{-1}(f_c(X)) \|^2$.
+Rae et al. reject this because compression is lossy by construction — perfectly reconstructing
+$c \cdot d$ values into $d$ is impossible — and what the *downstream attention* needs is not
+the activations themselves but their behaviour under the query distribution. Matching attention
+outputs on the actual query distribution targets the right thing.
+
+**Step 4 — cost accounting.** Let $T$ be effective context, $c$ the compression ratio, $n_s$
+chunk size, $n_m$ short-term memory size, $n_{cm}$ compressed memory size, with
+$T = c \cdot n_{cm} + n_m + n_s$. Per chunk:
+
+$$\mathrm{Attn\ FLOPs} \approx n_s \cdot (n_{cm} + n_m + n_s) \cdot d_h \cdot H,$$
+
+which is sub-linear in $T$ (depends on $n_{cm} + n_m + n_s$, not $T$). Compression cost is
+$O(n_s d^2)$ per chunk for attention-based $f_c$, amortized over $n_s$ tokens at $O(d^2)$
+per token — comparable to one extra Transformer block per chunk eviction.
+
+Memory footprint per layer: $(n_m + n_{cm}) \cdot 2 d$ for $K, V$. With $n_m = n_{cm} = 512$,
+$d = 1024$ that is 2 MB per layer fp16; modest at 2019 scales.
+
+**Parameter count.** $f_c$'s parameters added to the model. For attention compression with
+$c = 4$: $3 d^2$ per layer per head, summed across the stack. On the 18-layer PG-19 model in
+the paper, that is $\sim 56$M added parameters out of $\sim 800$M total
+([§4.1](https://arxiv.org/abs/1911.05507)).
 
 <CompressiveTiers client:visible />
 
-<p class="section-eyebrow">§ 3 · The compression function</p>
-## What works as f_c
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Per-layer two-tier memory in pseudocode
 
-Rae et al. evaluate four compression functions (Table 3):
+```python
+# State per layer:
+#   short_mem: [n_m, d]    Transformer-XL-style FIFO of recent activations
+#   long_mem:  [n_cm, d]   compressed memory, prepended-to as eviction happens
+#   f_c: nn.Module         compression function (pooling, conv, or 1-layer attention)
 
-1. **Mean pooling**: collapse $c$ activations by averaging.
-2. **Max pooling**: collapse by per-dimension max.
-3. **1D convolution**: a learned stride-$c$ conv.
-4. **Attention compression**: a small attention block that summarizes the $c$ activations.
+def compressive_layer_step(x_chunk, short_mem, long_mem, attn, f_c, c, n_m, n_cm):
+    # x_chunk: [n_s, d] current chunk's input
+    # Attention over [long_mem; short_mem; x_chunk]
+    keys = concat([long_mem, short_mem, x_chunk], dim=0)
+    out = attn(x_chunk, keys, keys)            # standard masked attention; full softmax
 
-Empirically: attention compression wins on language tasks (lowest perplexity), 1D conv is a
-close second, mean/max pooling lose by a noticeable margin. The intuition is that the
-information density of language activations is uneven across the $c$ tokens — pooling treats
-all positions equally, while attention can pick out the informative ones.
+    # Append new chunk to short_mem; FIFO-evict oldest n_s
+    short_mem_new = concat([short_mem, x_chunk.detach()], dim=0)
+    if short_mem_new.shape[0] > n_m:
+        evicted = short_mem_new[:short_mem_new.shape[0] - n_m]   # oldest tokens
+        short_mem_new = short_mem_new[short_mem_new.shape[0] - n_m:]
+        # Compress evicted in groups of c
+        evicted_groups = evicted.reshape(-1, c, evicted.shape[-1])  # [n_s / c, c, d]
+        summaries = f_c(evicted_groups)                              # [n_s / c, d]
+        long_mem_new = concat([long_mem, summaries], dim=0)[-n_cm:]
+    else:
+        long_mem_new = long_mem
+    return out, short_mem_new, long_mem_new
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+def attention_reconstruction_loss(q_chunk, evicted_kv, compressed_kv):
+    a_old = attention(q_chunk, evicted_kv.K, evicted_kv.V)
+    a_new = attention(q_chunk, compressed_kv.K, compressed_kv.V)
+    return ((a_old.detach() - a_new) ** 2).sum()      # gradient only into f_c via a_new
+```
 
-On PG-19 (a long-document language benchmark released alongside the paper), Compressive
-Transformer with attention compression achieves 33.6 perplexity at sequence length 4K plus 1K
-short-term plus 1.5K compressed memory — vs 36.3 for Transformer-XL with equivalent effective
-context (Rae et al. Table 5). The improvement compounds with longer documents.
+The sketch elides three details: (1) per-head vs. shared $f_c$ — the paper shares parameters
+across heads at one layer; (2) the truncated-BPTT boundary — gradients into $\tilde{M}$ are
+detached at chunk boundaries to keep the graph bounded; (3) the per-layer scheduling — every
+layer maintains its own $M, \tilde{M}$ independently, no cross-layer state sharing.
 
-The technique didn't see direct production adoption as 2020–22 long-context efforts pivoted
-toward other approaches (ALiBi, RoPE rescaling, sliding window). But its core idea —
-*compression rather than eviction* — is what Activation Beacon and similar modern recipes
-revisit at training-time scale. See the [Activation Beacon entry](/llm-arch-kb/long-context/activation-beacon/)
-for the descendant that won.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What is and isn't known
+
+**Introducing paper (Rae et al. 2019).**
+
+1. *PG-19 — the new benchmark.* PG-19 was *introduced by this paper* as a long-document
+   language modeling benchmark drawn from Project Gutenberg books predating 1919
+   ([§4](https://arxiv.org/abs/1911.05507)). The Compressive Transformer (TransformerXL +
+   compressed memory + attention $f_c$) reaches *33.6* test perplexity at sequence length
+   $n_s = 512, n_m = 512, n_{cm} = 512, c = 3$. Matched Transformer-XL baseline at equivalent
+   effective context: $36.3$. The compressed memory delivers 2.7 perplexity points at fixed
+   attention budget ([Table 5](https://arxiv.org/abs/1911.05507)).
+2. *enwik8 / WikiText-103.* On enwik8 (character LM), Compressive Transformer achieves
+   $0.97$ bits-per-character — a $0.02$ bpc improvement over Transformer-XL at the same
+   compute ([Table 3](https://arxiv.org/abs/1911.05507)). WikiText-103 perplexity drops from
+   $18.3$ (Transformer-XL) to $17.1$ ([Table 4](https://arxiv.org/abs/1911.05507)).
+3. *Compression-function ablation.* On WikiText-103 word LM
+   ([Table 6](https://arxiv.org/abs/1911.05507)): mean pooling 17.78 PPL, max pooling 17.91,
+   1D conv 17.46, attention 17.10. Attention compression wins by $\sim 0.7$ PPL — meaningful
+   at the perplexity scales of 2019 SOTA.
+4. *Compression ratio.* Sweeping $c \in \{1, 2, 3, 4\}$ at fixed $n_{cm}$ shows monotone
+   improvement as $c$ grows from 1 to 3 then flattening
+   ([Figure 3](https://arxiv.org/abs/1911.05507)) — there is real signal in compressed
+   summaries, not just longer raw memory.
+
+**Independent follow-up.**
+
+- *Compressed-memory descendants.* Activation Beacon ([Zhang et al. 2024,
+  arXiv 2401.03462](https://arxiv.org/abs/2401.03462), §2) cites Compressive Transformer as
+  its conceptual ancestor and reuses the "evicted activations get summarized" structure with
+  the modern frozen-base-model fine-tuning regime; LongMem ([Wang et al. 2023,
+  arXiv 2306.07174](https://arxiv.org/abs/2306.07174)) and Infinite-LLM ([Han et al. 2024,
+  arXiv 2401.04658](https://arxiv.org/abs/2401.04658)) make adjacent design choices on the
+  same template.
+- *PG-19 as a long-context benchmark.* PG-19 became the standard long-document LM benchmark
+  for the subsequent five years; used in
+  [Memorizing Transformers (Wu et al. 2022, Table 1)](https://arxiv.org/abs/2203.08913),
+  [Landmark Attention (Mohtashami & Jaggi 2023, §4)](https://arxiv.org/abs/2305.16300),
+  [Activation Beacon (Zhang et al. 2024, Table 2)](https://arxiv.org/abs/2401.03462), and
+  many others. This is arguably the paper's larger long-tail contribution.
+- *Survey coverage.* Recognized as the foundational two-tier compressed-memory baseline in
+  long-context surveys ([Pawar et al. 2024,
+  arXiv 2402.02244](https://arxiv.org/abs/2402.02244), §4.2;
+  [Tay et al. 2022 "Efficient Transformers: A Survey",
+  arXiv 2009.06732](https://arxiv.org/abs/2009.06732), §3.4).
+
+**Sensitivity studies — what is *not* publicly known.** The paper sweeps $c$, compression
+function, and memory sizes for the 18-layer PG-19 model but does not (a) scale the ablations
+to $> 1$B parameters; (b) study compositional behaviour with subsequent positional encoding
+schemes like RoPE / ALiBi (PG-19 results use T5-style relative position bias); (c) report how
+$f_c$ generalises across domains when trained on one corpus. I don't know of an independent
+reproduction at frontier scales — the paper's empirical results stop at $\sim 800$M
+parameters on PG-19 ([§4.1](https://arxiv.org/abs/1911.05507)).
+
+**Production adoption.** None recorded in this knowledge base. The technique's footprint in
+modern LLMs is *indirect* — its design template (compress evicted activations into a coarser
+second tier) recurs across the long-context research lineage, but no frontier dense or MoE
+production model ships the Compressive Transformer mechanism as its long-context primitive.
+By 2020–22 the long-context conversation had pivoted to positional rescaling (ALiBi, RoPE
+extension) and sliding windows; the compressed-memory thread re-emerged with Activation
+Beacon in 2024.
 
 <Summary>
-**Compressive Transformer in one breath.** Two-tier memory: short-term sliding cache plus a
-long-term compressed memory built by learned summarization of evicted activations. Established
-that compression is a viable alternative to eviction; Activation Beacon and similar 2024
-techniques are its modern descendants.
+**Compressive Transformer in one breath.** Two-tier per-layer memory: a Transformer-XL-style
+FIFO of recent activations plus a *compressed memory* built by applying a learned
+$f_c : \mathbb{R}^{c \times d} \to \mathbb{R}^{d}$ to about-to-be-evicted segments. Attention
+runs over compressed + short + current. Trained with an attention-reconstruction auxiliary
+loss that only updates $f_c$. Introduced PG-19; cut PG-19 PPL by 2.7 vs. Transformer-XL at
+matched attention budget. The mechanical ancestor of Activation Beacon and the modern
+compressed-KV family; no direct production adoption.
 </Summary>

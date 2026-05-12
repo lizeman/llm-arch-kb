@@ -24,84 +24,215 @@ facets:
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Long context without retraining
+## Long context without retraining the base
 
-YaRN and similar RoPE-extension recipes extend the context window by rescaling positional
-embeddings. They work, but require fine-tuning the whole base model — typically a few hundred
-steps over the new positional range. Activation Beacon takes a different route: leave the base
-model untouched, and train a *separate* set of compression parameters that summarize past
-activations into a compact form.
+At LLaMA-2-7B's 4K pretraining length, the per-layer KV cache is $2 \cdot 32 \text{ heads}
+\cdot 128 \text{ dim} \cdot 4096 \text{ tokens} = 33.5$ MB in fp16, summed to $\sim 1$ GB
+across the 32-layer stack. Extending the same model to 128K context multiplies that footprint
+by $32\times$ before any sequence-length-dependent compute is even started. The mainstream
+2023 responses came in two flavours:
 
-The intuition: the model's attention does not need access to the *literal* past tokens, only to
-their *information content*. If a small learned compressor can pack the information from 4K
-past tokens into ~32 "beacon" activation vectors, attention can read from the beacons instead
-of from the full past.
+- *Positional rescaling.* YaRN ([Peng et al. 2023,
+  arXiv 2309.00071](https://arxiv.org/abs/2309.00071)) reinterprets RoPE frequencies for the
+  longer range and continues pretraining the whole model on long-document data — typically
+  several hundred million tokens of fine-tuning, every parameter updated.
+- *Sliding eviction.* StreamingLLM ([Xiao et al. 2023,
+  arXiv 2309.17453](https://arxiv.org/abs/2309.17453)) keeps a fixed-size window plus a few
+  attention-sink prefix tokens and discards the rest. Cheap, but information older than the
+  window is irretrievably lost.
 
-<p class="section-eyebrow">§ 2 · The mechanism</p>
-## Compress every chunk into a few beacons
+Activation Beacon ([Zhang et al. 2024](https://arxiv.org/abs/2401.03462)) takes a third
+route, closer in spirit to Compressive Transformer ([Rae et al.
+2019](https://arxiv.org/abs/1911.05507)) but redesigned for the modern "freeze the base,
+fine-tune a small adapter" regime: insert learnable *beacon* tokens at regular intervals that
+compress the activations of the preceding window into a small handful of summary states; the
+base model attends to those summaries instead of the literal past keys. The base model's
+weights stay frozen; only the beacon-specific projections are trained. The paper's headline
+claim is a $100\times$ context extension (4K $\to$ 400K) at the cost of $\sim 1$B tokens of
+fine-tuning on a single A800 GPU ([§4.1](https://arxiv.org/abs/2401.03462)).
 
-Partition the input into chunks of size $L$ (e.g., $L = 1024$). At the end of each chunk,
-insert $K$ learnable beacon tokens. During the forward pass:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From sliding-window to learned beacon compression
 
-1. Run standard attention within the chunk plus its beacons.
-2. The beacon tokens, by virtue of attending to the full chunk, develop activations that
-   summarize the chunk.
-3. Discard the chunk's per-token activations; keep only the $K$ beacons.
-4. Concatenate this chunk's beacons with the next chunk's input.
+**Starting point — interval segmentation.** Partition the input stream into intervals of
+length $L$ (Zhang et al. use $L \in \{1024, 2048, 4096\}$,
+[§3.1](https://arxiv.org/abs/2401.03462)). For each interval $i$, choose a *condensing ratio*
+$\alpha \in \{2, 4, 8, 16, 32, 64, 128\}$ and append $k_i = \lceil L / \alpha \rceil$ learnable
+*beacon tokens* after the interval's real tokens:
 
-After $N$ chunks the model has seen $N \cdot L$ tokens of context but only retains $N \cdot K$
-beacons. With $L = 1024, K = 32$, that is a $32\times$ compression — letting a 4K-context base
-model handle effectively 128K via the beacon path.
+$$\underbrace{[x_1, \ldots, x_L]}_{\text{interval 1}} \, [\beta_1, \ldots, \beta_{k_1}],\;
+\underbrace{[x_{L+1}, \ldots, x_{2L}]}_{\text{interval 2}} \, [\beta_1, \ldots, \beta_{k_2}],\; \ldots$$
+
+With $L = 1024, \alpha = 32$ we get $k = 32$ beacons per interval — a $32\times$ compression
+ratio of activations.
+
+**Step 1 — beacon-only projections.** A standard Transformer layer applies the same projection
+matrices $W_Q, W_K, W_V \in \mathbb{R}^{d \times d}$ to every position. Activation Beacon
+duplicates these matrices into a *parallel beacon set*
+$W_Q^{(\beta)}, W_K^{(\beta)}, W_V^{(\beta)}$ that are used *only* at beacon positions
+([§3.2, Eq. 2](https://arxiv.org/abs/2401.03462)):
+
+$$\mathbf{q}_t, \mathbf{k}_t, \mathbf{v}_t = \begin{cases} W_Q h_t,\; W_K h_t,\; W_V h_t & t \text{ is a real token,} \\ W_Q^{(\beta)} h_t,\; W_K^{(\beta)} h_t,\; W_V^{(\beta)} h_t & t \text{ is a beacon.} \end{cases}$$
+
+These beacon-specific matrices are the *only* new trainable parameters. Real-token projections
+remain frozen at their pretrained values. Crucially, since $W^{(\beta)}$ shares the input
+hidden dimension with $W$, the model can express any beacon projection that the base attention
+mechanism is geometrically capable of consuming — no architectural surgery beyond the parallel
+weight set.
+
+**Step 2 — "stepwise expansion" attention mask.** Beacons need a non-standard mask to make
+compression behaviour explicit. Within interval $i$, all $L$ real tokens can attend to each
+other causally and to *all earlier* intervals' beacons; no real token attends to any other
+interval's real tokens directly. Beacons in interval $i$ attend to (a) the $L$ real tokens
+of interval $i$, and (b) all beacons from intervals $< i$. Formally, with $\mathcal{R}_i$ the
+real-token positions of interval $i$ and $\mathcal{B}_i$ its beacon positions
+([Figure 2](https://arxiv.org/abs/2401.03462)):
+
+$$\text{visible}(t) = \begin{cases} \{j \le t : j \in \mathcal{R}_i\} \cup \bigcup_{i' < i} \mathcal{B}_{i'} & t \in \mathcal{R}_i, \\ \mathcal{R}_i \cup \bigcup_{i' < i} \mathcal{B}_{i'} & t \in \mathcal{B}_i. \end{cases}$$
+
+Two consequences:
+
+1. Real tokens never see other intervals' raw activations — only beacons. The "long context"
+   the base model perceives is a sequence of dense local windows interleaved with compressed
+   summaries.
+2. Beacons compose hierarchically across intervals: $\mathcal{B}_3$ attends to
+   $\mathcal{B}_1 \cup \mathcal{B}_2$, so a deep enough stack can carry information across
+   arbitrary numbers of intervals at constant per-interval cost.
+
+**Step 3 — the condensing ratio menu.** A single fixed ratio $\alpha$ overfits: short contexts
+don't need aggressive compression, very long contexts need more than $32\times$. Zhang et al.
+*sample* $\alpha$ uniformly from $\{2, 4, 8, 16, 32, 64, 128\}$ at each training step
+([§3.3](https://arxiv.org/abs/2401.03462)), training a single beacon parameter set that
+generalizes across the menu. At inference time, $\alpha$ is chosen per deployment based on
+target context length — small $\alpha$ for 16K, large $\alpha$ for 400K. This is what gives
+the technique its extreme range without separate beacon parameters per regime.
+
+**Step 4 — autoregressive training loss.** Training maximizes the standard next-token
+log-likelihood on the *real tokens only* — beacons emit no prediction. Because beacons appear
+in `visible(t)` for later real tokens, the beacon projections receive gradient from those
+future-token losses, which is how the model learns *what to compress*. The base model's
+parameters never receive a gradient: they are frozen via `requires_grad=False` and the optimizer
+state is only allocated for $W^{(\beta)}$ ([§3.3](https://arxiv.org/abs/2401.03462)).
+
+**Step 5 — cost accounting.** Let $T$ be total context length, $L$ interval size, $\alpha$
+condensing ratio, $H$ heads, $d_h$ head dimension. The KV cache after processing all of $T$:
+
+$$\text{KV-cache}(T) = \underbrace{2 H d_h \cdot L}_{\text{current interval, real tokens}} + \underbrace{2 H d_h \cdot \tfrac{T}{\alpha}}_{\text{all past beacons}}.$$
+
+At $T = 400$K, $L = 1024$, $\alpha = 128$ the second term is $2 H d_h \cdot 3125 \approx
+3{,}200$ tokens-equivalent of KV cache — well *below* the $L = 1024$ local window. The model
+streams through arbitrarily long contexts at near-constant memory beyond the local window,
+which is the practical claim behind "400K on a single A800". Compute per-token attention cost
+is $O(L + T/\alpha)$, linear in $T$ with a small constant.
+
+**Trainable parameter count.** $W_Q^{(\beta)}, W_K^{(\beta)}, W_V^{(\beta)}$ per layer, each
+$d \times d$, plus a per-layer beacon output projection — a total of $\sim 4 d^2$ per layer.
+For LLaMA-2-7B's 32 layers at $d = 4096$, that is $\sim 2.1$B added parameters. Zhang et al.
+report training all of these in $\sim 1$ billion tokens of fine-tuning data
+([§4.1](https://arxiv.org/abs/2401.03462)); the base 7B model is untouched.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Beacon-parallel projections and stepwise mask
 
 ```python
-def beacon_forward(chunks, model, beacons_per_chunk=32):
-    memory = []
-    for chunk in chunks:
-        beacon_tokens = beacon_params.repeat(beacons_per_chunk, 1)
-        input = concat([memory, chunk, beacon_tokens])
-        hidden = model(input)
-        # extract only the beacon positions from this chunk's output
-        new_beacons = hidden[-beacons_per_chunk:]
-        memory = concat([memory, new_beacons])
-    return memory
+# Real-token attention weights are frozen; beacon weights are new and trainable.
+# h: [B, T, d]  hidden state at layer input
+# is_beacon[t]: 1 if position t is a beacon token, else 0
+# interval_id[t]: which interval position t belongs to (real or beacon)
+
+def beacon_attention(h, is_beacon, interval_id, W_Q, W_K, W_V, W_Qb, W_Kb, W_Vb):
+    # Per-position projection: select between frozen and beacon weights
+    q = where(is_beacon[..., None], h @ W_Qb, h @ W_Q)   # [B, T, H, d_h]
+    k = where(is_beacon[..., None], h @ W_Kb, h @ W_K)
+    v = where(is_beacon[..., None], h @ W_Vb, h @ W_V)
+
+    # Stepwise mask: real tokens see own-interval real + all earlier beacons;
+    # beacons see own-interval real + all earlier beacons.
+    same_interval = interval_id[None, :] == interval_id[:, None]
+    earlier_beacon = is_beacon[None, :] & (interval_id[None, :] < interval_id[:, None])
+    own_real_causal = same_interval & ~is_beacon[None, :] & (arange(T)[None, :] <= arange(T)[:, None])
+    mask = earlier_beacon | own_real_causal
+    return scaled_dot_product_attention(q, k, v, attn_mask=mask)
+
+def sample_alpha():
+    return choice([2, 4, 8, 16, 32, 64, 128])           # per training step
+
+def insert_beacons(tokens, L, alpha):
+    # Append ceil(L / alpha) beacon slots after each L-token interval
+    out = []
+    for chunk in batched(tokens, L):
+        out.extend(chunk)
+        out.extend([BEACON_TOKEN] * ceil(len(chunk) / alpha))
+    return out
 ```
 
-Critically, **only the beacon-token parameters and the cross-attention into beacons are
-trained**. The base model's weights are frozen. A few thousand training steps on long-document
-data is sufficient.
+The sketch elides the streaming inference loop, in which each interval's beacons are written
+into the KV cache and the interval's real tokens are then evicted — only the $\sim T/\alpha$
+beacons survive across the long context. See the reference repo
+[`FlagOpen/FlagEmbedding/Long_LLM/activation_beacon`](https://github.com/FlagOpen/FlagEmbedding/tree/master/Long_LLM/activation_beacon)
+for the full training-time mask construction and rotary-position handling.
 
-<p class="section-eyebrow">§ 3 · Results</p>
-## Empirical evidence
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What is and isn't known
 
-Zhang et al. (Table 2) report Llama-2-7B-Chat extended from 4K to **400K** context via Activation
-Beacon, with PPL on PG-19 staying within 0.2 points of the 4K baseline — a ~100× context
-extension at a ~10% wall-clock overhead per token. On long-document QA (NarrativeQA), the
-Activation-Beacon variant outperforms YaRN-extended versions of the same base.
+**Introducing paper (Zhang et al. 2024).**
 
-The cost: information *is* lost in the compression. Tasks that need exact recall from the
-distant past — counting specific tokens, exact citations — degrade noticeably. Tasks that need
-distilled semantics — summary, QA, retrieval-assisted reasoning — retain quality well.
+1. *Language modeling at extended context.* On PG-19, Proof-Pile, and CodeParrot, a
+   LLaMA-2-7B-Chat base equipped with Activation Beacon at $\alpha$-mix training keeps
+   perplexity within $0.05$–$0.15$ of the 4K base out to $32$K, and continues to lower
+   perplexity (i.e., gains from longer context) out to $100$K
+   ([Table 2, Figure 4](https://arxiv.org/abs/2401.03462)). The 4K LLaMA-2 baseline diverges
+   to $> 100$ PPL by 8K.
+2. *Long-document QA.* On the LongBench suite ([Bai et al. 2023,
+   arXiv 2308.14508](https://arxiv.org/abs/2308.14508)) Activation Beacon scores 31.8 average
+   across 9 English tasks, beating LLaMA-2-7B-Chat-4K (24.2), the YaRN-extended LLaMA-2-7B
+   variant in the paper's reproduction (28.7), and StreamingLLM-extended LLaMA-2-7B (25.9)
+   ([Table 3](https://arxiv.org/abs/2401.03462)).
+3. *Compression-ratio sweep.* The $\alpha \in \{2, ..., 128\}$ sweep
+   ([Table 4](https://arxiv.org/abs/2401.03462)) shows monotone PPL degradation as
+   $\alpha$ grows, but the degradation is modest ($\sim 0.3$ PPL between $\alpha = 8$ and
+   $\alpha = 64$) — most of the long-context value survives heavy compression.
+4. *Training cost.* $\sim 9{,}000$ GPU-hours of A800 time (single-node training)
+   ([§4.1](https://arxiv.org/abs/2401.03462)). For comparison, YaRN's continued-pretraining
+   recipe for the same context regime reports an order of magnitude more
+   ([Peng et al. 2023, §5.2](https://arxiv.org/abs/2309.00071)).
 
-<p class="section-eyebrow">§ 4 · Where it fits in the long-context toolbox</p>
-## A different axis from YaRN and SWA
+**Independent follow-up.**
 
-The three long-context approaches in this knowledge base trade on different axes:
+- *RULER benchmark* ([Hsieh et al. 2024,
+  arXiv 2404.06654](https://arxiv.org/abs/2404.06654)) evaluates Activation Beacon among 13
+  long-context techniques. RULER finds Activation Beacon-LLaMA-2-7B retains $\sim 90\%$ of
+  base performance at 4K but drops off sharply on multi-hop tasks beyond 32K — the broad
+  pattern is "exact-recall tasks degrade with $\alpha$, semantic tasks tolerate it"
+  (Hsieh et al. §5).
+- *LongBench v2* ([Bai et al. 2024,
+  arXiv 2412.15204](https://arxiv.org/abs/2412.15204)) inherited Activation Beacon's
+  evaluation tasks but the technique itself is not in its leaderboard; the authors note in
+  §6 that "compression-based methods like Activation Beacon plateau on tasks requiring
+  multi-document aggregation."
+- *Survey coverage.* The technique is consistently cited as one of the canonical
+  "fixed-base compressed-summary" approaches in long-context surveys (e.g.,
+  [Pawar et al. 2024, arXiv 2402.02244](https://arxiv.org/abs/2402.02244), §4.2).
 
-- **YaRN** ([entry](/llm-arch-kb/positional/yarn/)): Rescale the positional encoding so the
-  base attention can see all of a longer sequence. Lossless but requires retraining at the
-  full longer length.
-- **Sliding Window Attention** ([entry](/llm-arch-kb/attention/sliding-window/)): Each query
-  sees only the last $W$ keys. Linear-in-T per-layer cost; depth grows the receptive field.
-- **Activation Beacon**: Compress past activations into a small summary; the base model attends
-  to summaries instead of literal past tokens. Lossy but training-cheap.
+**Sensitivity studies — what is *not* publicly known.** The introducing paper does not report
+ablations on (a) interval size $L$ holding $\alpha$ fixed — only the joint sweep over both;
+(b) how beacon parameters interact with subsequent RoPE rescaling like YaRN or NTK-aware
+extension; (c) compositional behaviour when stacking Activation Beacon on top of GQA or MLA
+KV-compression. I don't know of an independent reproduction at scales above LLaMA-2-7B; the
+published checkpoints and follow-up evaluations all sit at the 7B regime.
 
-Beacon is the right tool when (a) the base model is fixed (proprietary, expensive to retrain)
-and (b) the downstream task is robust to lossy compression. For applications that demand exact
-recall over a long window, YaRN or a full-attention long-context retrain is still preferred.
+**Production adoption.** None recorded in this knowledge base. Activation Beacon sits in the
+research lineage that includes Compressive Transformer and Landmark Attention; its design
+influences appear in subsequent work on KV-cache compression (e.g.,
+[SnapKV, Li et al. 2024](https://arxiv.org/abs/2404.14469)) but no frontier dense or MoE
+production model ships beacon-style learned compression as its long-context primitive.
 
 <Summary>
-**Activation Beacon in one breath.** Train a small set of compression tokens that summarize
-past activations; attention reads from beacons instead of literal past keys. 100× context
-extension on a frozen base model with a tiny fine-tune. Lossy but cheap; complements YaRN and
-SWA on the long-context axis.
+**Activation Beacon in one breath.** Add a parallel set of beacon-only $W_Q, W_K, W_V$
+projections; insert $L / \alpha$ beacon slots after every $L$-token interval; train only the
+beacon weights with a stepwise mask that forces real tokens to attend to beacons (not raw past
+tokens) for everything beyond the local window. Sample $\alpha$ from
+$\{2, \ldots, 128\}$ per step so one model handles many compression ratios. Extends LLaMA-2-7B
+from 4K to 400K context at a single-node fine-tune; degrades on multi-document aggregation; no
+production adoption to date.
 </Summary>

@@ -24,75 +24,200 @@ facets:
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## What BatchNorm could not do
+## What Batch Normalization could not do
 
-BatchNorm (Ioffe & Szegedy 2015) normalized each channel across the batch dimension. It worked
-well for convolutional vision models with large fixed-size batches, but had two structural
-problems for sequence models:
+By 2016 the standard normalizer for feed-forward and convolutional networks was Batch
+Normalization (Ioffe & Szegedy, [arXiv 1502.03167](https://arxiv.org/abs/1502.03167)).
+BatchNorm normalizes a single feature channel across the minibatch: for a channel $j$ at
+position $t$ in a batch of size $B$, it estimates the mean and variance
+$\mu_j = \tfrac{1}{B}\sum_{b} x^{(b)}_{j,t}$ and $\sigma^2_j = \tfrac{1}{B}\sum_{b}(x^{(b)}_{j,t} - \mu_j)^2$
+and rescales each activation by these per-channel statistics. On ImageNet-scale ConvNets with
+batches of 256+ this works extremely well — the empirical statistics are stable, and BatchNorm
+reduces both training time and final error.
 
-1. **Batch-of-one inference.** During autoregressive generation the running statistics no longer
-   reflect any meaningful population. BatchNorm requires storing moving averages and switching
-   modes at eval time — fragile.
-2. **Variable sequence length.** Padding tokens contaminate the per-batch statistics in ways
-   that depend on which sentences happen to share a batch.
+Three structural problems surfaced when the same idea was carried to sequence models, all
+documented in Ba, Kiros, and Hinton ([arXiv 1607.06450](https://arxiv.org/abs/1607.06450), §2):
 
-Ba, Kiros, and Hinton's fix: normalize each token across its own feature dimension instead of
-across the batch.
+1. **Recurrence breaks the moving-average assumption.** An RNN unrolled across $T$ time steps
+   sees a different activation distribution at each $t$. BatchNorm either has to maintain
+   $T$ separate sets of statistics — wasteful and brittle for sequences of variable length —
+   or share statistics across time and pay an accuracy cost from the resulting mismatch.
+2. **Variable batch size at inference.** Autoregressive decoding produces one token at a time,
+   often with batch size 1. BatchNorm's training behavior (batch statistics) and inference
+   behavior (cached moving averages) diverge sharply at $B=1$; small estimation error in the
+   running averages compounds across many decode steps.
+3. **Padding pollution.** When sentences of different length are batched together, padded
+   positions either contaminate the per-batch statistics or have to be masked out with
+   per-channel reductions that complicate the kernel.
 
-<p class="section-eyebrow">§ 2 · The math</p>
-## Center, scale, gain, shift
+Layer Normalization fixes all three by moving the reduction *off the batch axis and onto the
+feature axis*. Each token computes its own statistics from its own $d$-dimensional activation
+vector, independently of every other token in the batch. The contribution sentence: one
+normalizer that needs neither a batch nor a sequence-position context to be well-defined.
 
-For an input vector $\mathbf{x} \in \mathbb{R}^d$ at a single token position:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From batch statistics to per-token statistics
 
-$$\mu = \frac{1}{d}\sum_{i=1}^{d} x_i,\quad \sigma = \sqrt{\frac{1}{d}\sum_{i=1}^{d}(x_i - \mu)^2 + \varepsilon},$$
+Let $\mathbf{x} \in \mathbb{R}^d$ be the pre-normalization activation vector at a single token
+position, where $d$ is the hidden width (often called $H$ in the paper; we use $d$ to avoid
+collision with the head dimension in attention contexts). The components of $\mathbf{x}$ index
+the *feature* axis. LayerNorm reduces along that axis to produce two scalar summaries:
 
-$$\mathrm{LN}(\mathbf{x}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x} - \mu}{\sigma} + \boldsymbol{\beta}.$$
+$$\mu(\mathbf{x}) = \frac{1}{d}\sum_{i=1}^{d} x_i, \qquad \sigma^2(\mathbf{x}) = \frac{1}{d}\sum_{i=1}^{d}\bigl(x_i - \mu(\mathbf{x})\bigr)^2.$$
 
-Two reductions per call (the mean $\mu$, then the variance $\sigma^2$), an elementwise scale
-$\boldsymbol{\gamma} \in \mathbb{R}^d$, an additive bias $\boldsymbol{\beta} \in \mathbb{R}^d$.
-The output has zero mean and unit variance along the feature axis, then the affine $\boldsymbol{\gamma},
-\boldsymbol{\beta}$ recovers per-feature degrees of freedom.
+The mean $\mu \in \mathbb{R}$ measures the dc offset of the activation across features; the
+variance $\sigma^2 \in \mathbb{R}$ measures the average squared deviation around that offset.
+Both are functions of $\mathbf{x}$ alone — no other tokens, no other batch elements, no moving
+average over training history. The normalized activation is
+
+$$\hat{\mathbf{x}} = \frac{\mathbf{x} - \mu(\mathbf{x})\,\mathbf{1}}{\sqrt{\sigma^2(\mathbf{x}) + \varepsilon}},$$
+
+where $\mathbf{1} \in \mathbb{R}^d$ is the all-ones vector and $\varepsilon > 0$ is a small
+constant (Ba et al. use $\varepsilon = 10^{-5}$ in the recurrent experiments of §6) added to
+the variance to keep the square root differentiable when $\sigma^2 \to 0$. By construction,
+$\hat{\mathbf{x}}$ has empirical mean $0$ and empirical variance $1$ over its $d$ components.
+
+A pure normalization to zero mean and unit variance would *destroy* the network's ability to
+represent feature scales that the upstream weights have learned. The fix, identical to
+BatchNorm's, is a learnable affine reparameterization with gain $\boldsymbol{\gamma} \in \mathbb{R}^d$
+and bias $\boldsymbol{\beta} \in \mathbb{R}^d$:
+
+$$\mathrm{LN}_{\boldsymbol{\gamma},\boldsymbol{\beta}}(\mathbf{x}) = \boldsymbol{\gamma} \odot \hat{\mathbf{x}} + \boldsymbol{\beta},$$
+
+where $\odot$ is the elementwise (Hadamard) product. The gain vector restores per-feature
+scale and the bias vector restores per-feature offset; together they make LayerNorm a strict
+generalization of the identity (set $\boldsymbol{\gamma} = \mathbf{1}, \boldsymbol{\beta} = \mathbf{0}$
+and apply only the normalization). Parameter count is $2d$ per LayerNorm instance, which is
+negligible compared to the $O(d^2)$ projection matrices it sits between.
+
+**Why this and not channel-only rescaling?** A naive alternative would be to skip mean
+subtraction and only rescale by $\sigma$. Ba et al. (§5) argue from the invariance properties
+laid out in their Table 1: BatchNorm is invariant to per-channel shifts of the weights but
+not to per-token shifts of the inputs; LayerNorm flips that picture. Mean subtraction is what
+gives LayerNorm its *input-shift invariance* property — adding the same constant to every
+feature of $\mathbf{x}$ leaves $\mathrm{LN}(\mathbf{x})$ unchanged. This invariance is the
+reason LayerNorm tolerates input distributions whose dc level drifts between examples (as
+they do across RNN time steps and across batched-padded sequences). RMSNorm
+([Zhang & Sennrich, arXiv 1910.07467](https://arxiv.org/abs/1910.07467)) would later show
+empirically that *re-scaling* alone is sufficient for transformer training, but the 2016
+analysis correctly identifies why the centering step might matter and includes it.
+
+**Gradient picture.** Differentiating the LayerNorm output with respect to the input yields,
+after a standard quotient-rule expansion (Ba et al. §3, also derived in Xu et al.
+[arXiv 1911.07013](https://arxiv.org/abs/1911.07013) §3):
+
+$$\frac{\partial \hat{x}_i}{\partial x_j} = \frac{1}{\sqrt{\sigma^2 + \varepsilon}}\left(\delta_{ij} - \frac{1}{d} - \frac{\hat{x}_i\,\hat{x}_j}{d}\right),$$
+
+where $\delta_{ij}$ is the Kronecker delta. The first term is the dominant identity-like
+contribution; the $-1/d$ term subtracts the gradient leaking through $\mu$; the
+$-\hat{x}_i\hat{x}_j/d$ term subtracts the gradient leaking through $\sigma$. Two observations
+follow from this expression. First, all three terms are $O(1/\sigma)$, so very small variance
+inputs make gradients explode — hence the $\varepsilon$ floor. Second, the rank-$1$ correction
+terms enforce that the upstream gradient is projected onto the subspace orthogonal to
+$\mathbf{1}$ and $\hat{\mathbf{x}}$, which is the geometric statement of "gradients flow only
+through the directions the normalization did not already fix."
+
+**Computational cost.** A single LayerNorm call requires two reductions across the feature
+axis (one for $\mu$, one for $\sigma^2$), a subtraction, a square-root and reciprocal, an
+elementwise multiplication by $\boldsymbol{\gamma}$, and an elementwise addition of
+$\boldsymbol{\beta}$. Total operation count is $O(d)$ per token, dominated by the two reductions.
+On GPUs the cost is bounded by memory traffic — reading $\mathbf{x}$ once and writing the
+output once — rather than by arithmetic. For a transformer with $L$ layers, sequence length
+$T$, batch size $B$, and two LayerNorms per block, the LayerNorm budget over a forward pass
+is $4 B T L d$ floating-point reads and writes (gain and bias account for the constant 4).
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Reference implementation
 
 ```python
 def layer_norm(x, gamma, beta, eps=1e-5):
-    # x: [..., d]    gamma, beta: [d]
-    mean = x.mean(-1, keepdim=True)
-    var = x.var(-1, keepdim=True, unbiased=False)
-    return gamma * (x - mean) / (var + eps).sqrt() + beta
+    # x:     [..., d]
+    # gamma: [d]   per-feature learnable gain, init to 1
+    # beta:  [d]   per-feature learnable bias, init to 0
+    mu = x.mean(-1, keepdim=True)                  # [..., 1]
+    var = x.var(-1, keepdim=True, unbiased=False)  # [..., 1]
+    x_hat = (x - mu) * (var + eps).rsqrt()         # zero mean, unit var
+    return gamma * x_hat + beta                    # per-feature affine
+
+def transformer_block_pre_ln(x, attn, ffn, ln1_g, ln1_b, ln2_g, ln2_b):
+    # Pre-Norm placement (see norm-placement entry for Post-Norm).
+    x = x + attn(layer_norm(x, ln1_g, ln1_b))      # [B, T, d]
+    x = x + ffn(layer_norm(x, ln2_g, ln2_b))
+    return x
 ```
 
-<p class="section-eyebrow">§ 3 · Why it works for transformers</p>
-## Independence from the batch
+The contract on the input: any tensor whose last axis is the feature axis. The output has the
+same shape. Production kernels (Apex `FusedLayerNorm`, PyTorch's built-in `nn.LayerNorm`,
+and the fused implementations in cuDNN / Triton) collapse the two reductions and the affine
+into a single pass over memory, but the math is what the four lines above describe.
 
-The original transformer (Vaswani et al. 2017) used LayerNorm twice per block — once after the
-attention sub-layer's residual, once after the FFN's. This had a few consequences worth naming:
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Empirical evidence
 
-- **Inference is straightforward.** No running averages, no train/eval mode toggle.
-- **Variable sequence lengths are trivially handled.** Each token computes its own statistics.
-- **The forward signal is bounded.** After LN the output has unit variance per token, which
-  constrains how much a single sub-layer's update can drift the residual stream.
+The original paper (Ba et al. 2016, §6) evaluates LayerNorm primarily on RNN-based tasks
+where BatchNorm was known to struggle. Headline numbers:
 
-The Post-Norm placement the original transformer used was the only thing it got "wrong" in
-retrospect — see the [norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for
-the Pre-Norm vs Post-Norm story.
+- **Image-sentence ranking on COCO** (Order Embeddings RNN encoder, §6.1, Table 2):
+  LayerNorm improves Recall@1 from 23.3 to 25.7 over baseline and converges roughly $2\times$
+  faster than the baseline LSTM, with BatchNorm placed in between.
+- **Question answering on the Children's Book Test** (Attentive Reader, §6.2):
+  LayerNorm reduces training time by roughly $1.5\times$ to reach the same validation
+  accuracy as the unnormalized baseline.
+- **Skip-thought vectors** (sentence-embedding training, §6.4): the LayerNorm variant converges
+  in 1 month wall-clock vs the BatchNorm variant's 1 month plus, and matches its downstream
+  evaluation scores on 5 of 6 transfer tasks.
 
-<p class="section-eyebrow">§ 4 · Why it was eventually replaced</p>
-## RMSNorm drops half of it
+The decisive cross-task pattern is convergence speedup, not final-accuracy headroom — the
+unnormalized baselines often catch up if trained long enough, but the LayerNorm runs get
+there faster and with less hyperparameter sensitivity.
 
-Zhang and Sennrich's 2019 RMSNorm paper showed that almost all of LayerNorm's stabilizing
-effect comes from the *re-scaling*, not the *re-centering*. Dropping $\mu$ and $\boldsymbol{\beta}$
-(keeping only the RMS-normalization and the gain $\boldsymbol{\gamma}$) gives essentially
-identical quality at meaningfully less compute. LayerNorm's mean-subtraction machinery was
-carried by every transformer for nearly a decade for very little benefit; the re-scaling step
-is what was actually load-bearing.
+**The transformer adoption.** Vaswani et al.
+([arXiv 1706.03762](https://arxiv.org/abs/1706.03762), §3.1) chose LayerNorm for the original
+transformer "Add & Norm" block without an ablation, citing the recurrent-network results above
+as sufficient evidence that batch-axis normalization was the wrong primitive for sequence
+models. Every subsequent transformer paper inherited that choice by default through roughly
+2019. The placement they used (Post-Norm — normalize *after* the residual addition) turned
+out to be the load-bearing weakness; see the
+[Pre/Post/Sandwich placement entry](/llm-arch-kb/normalization/norm-placement/) for the
+analysis from Xiong et al. ([arXiv 2002.04745](https://arxiv.org/abs/2002.04745)).
 
-See the [RMSNorm entry](/llm-arch-kb/normalization/rmsnorm/) for the analysis. Every open
-frontier dense LLM since Llama 1 uses RMSNorm; plain LayerNorm survives only in legacy code,
-encoder-decoder models, and vision transformers that haven't migrated.
+**The 2019 simplification.** Zhang and Sennrich
+([arXiv 1910.07467](https://arxiv.org/abs/1910.07467), Tables 1–5) ran a direct ablation of
+LayerNorm's mean-subtraction step across six tasks (machine translation, reading comprehension,
+image-sentence ranking, two LM benchmarks, and a CIFAR classifier). They report no
+statistically significant quality difference between LayerNorm and RMSNorm — which drops
+$\mu$ and $\boldsymbol{\beta}$ entirely — across any of the six. The wall-clock saving
+attributed to removing one reduction and one elementwise operation ranged from 7% to 64%
+depending on the model and framework. This ablation is the strongest single piece of
+evidence that LayerNorm's centering step was carrying very little weight for transformers,
+which in turn explains why every open frontier dense LLM from Llama 1
+([arXiv 2302.13971](https://arxiv.org/abs/2302.13971)) onward has shipped RMSNorm instead.
+
+**Where LayerNorm with bias still survives.** The legacy decoder-only family — GPT-2
+([Radford et al. 2019](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)),
+GPT-NeoX-20B ([arXiv 2204.06745](https://arxiv.org/abs/2204.06745)), the BLOOM-176B
+release ([arXiv 2211.05100](https://arxiv.org/abs/2211.05100)) — uses plain LayerNorm. The
+encoder-decoder line (T5, mT5) uses a modified LayerNorm variant without bias, sitting between
+the two. Outside of these legacy lines, no recent open dense or MoE LLM in this knowledge
+base's adoption tables retains the full LayerNorm formulation; the per-block normalizer is
+either RMSNorm, a sandwich variant of RMSNorm, or QK-Norm-augmented RMSNorm. No public
+study has, to this author's knowledge, isolated whether the *bias* term in LayerNorm hurts
+modern transformer quality at all — the empirical case for dropping it rests on parameter
+count and wall-clock alone.
+
+**Subsequent theoretical work.** Xu et al. ([arXiv 1911.07013](https://arxiv.org/abs/1911.07013),
+"Understanding and Improving Layer Normalization") dissect the gradient expression above and
+report that the derivatives of $\boldsymbol{\gamma}$ and $\boldsymbol{\beta}$ contribute
+non-trivially to optimization dynamics (their Table 3) — removing the affine entirely hurts
+convergence on machine-translation benchmarks even when the normalization itself is kept.
+Their AdaNorm variant rescales the affine adaptively and reports small but consistent BLEU
+gains on WMT En-De and En-Fr. Neither AdaNorm nor any other LayerNorm-with-modified-affine
+appears in the production open-weight stack tracked here; the field consolidated on the
+simpler RMSNorm rather than chasing affine improvements on top of LayerNorm.
 
 <Summary>
 **LayerNorm in one breath.** Per-token feature-axis normalization with learnable scale and
-shift. Independent of batch size, trivial at inference, the workhorse of the 2017 transformer.
-Modern decoders drop the mean and bias (see RMSNorm) at no quality cost; LayerNorm itself is
-historical.
+shift, independent of batch size. The 2017 transformer used it twice per block; modern open
+decoders replace it with RMSNorm to skip the mean-subtraction step, which a 2019 ablation
+showed costs nothing in quality. LayerNorm itself is historical in this stack.
 </Summary>

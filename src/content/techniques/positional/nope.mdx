@@ -29,81 +29,201 @@ import NoPeOrder from "~/components/figures/NoPeOrder";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## A control experiment that wasn't supposed to work
+## A control experiment that was not supposed to work
 
-By 2022, the "positional encoding is necessary" claim was taken as load-bearing — without
-sinusoidal / rotary / ALiBi / learned position embeddings, the attention mechanism is
-permutation-equivariant, and language is not.
+By 2022, "transformers need a positional encoding" was taken as load-bearing. The
+self-attention mechanism (Vaswani et al. 2017) is permutation-equivariant by construction:
+without something that breaks the symmetry, two permutations of the same input set
+produce permuted versions of the same output set, and language — which is not a set —
+cannot be modeled. Every transformer LM since 2017 had shipped with
+[sinusoidal](/llm-arch-kb/positional/sinusoidal/),
+learned, [ALiBi](/llm-arch-kb/positional/alibi/), or RoPE positional information.
 
-Haviv et al. ran the control experiment anyway: train a decoder-only language model with no
-positional encoding at all. The expected outcome was a model that produced word salad.
+Haviv et al. (Tel Aviv University / UW / Intel / Meta, NAACL 2022) ran the control
+experiment that the "necessary" claim implies: train a decoder-only LM with no positional
+encoding at all. The expected outcome was a model that produced word salad. The actual
+outcome, summarized in Figure 1 of the paper at 1.3B parameters on a Pile excerpt: NoPos
+13.10, Learned 13.05, Sinusoidal 12.93, ALiBi 12.51 — within about half a perplexity
+point of the best position-aware model and within 0.05 of learned PE. The result
+replicated across model sizes (125M / 350M / 760M / 1.3B; Table 2) and across sequence
+lengths (256 / 512 / 1024 / 2048; Table 3).
 
-The actual outcome (their Figure 2): the no-PE model trains to within ~1 perplexity point of a
-standard sinusoidal baseline on WikiText-103. On some long-range tasks it actually generalizes
-better.
+The single architectural detail that rescues the experiment is the **causal mask**. The
+paper's framing (§ 6): a bidirectional masked-LM transformer trained on the same setup
+without positional encodings *fails* to converge — Table 4 reports MLM perplexity 147.18
+for NoPos vs. 4.06 for learned, a $\sim 36\times$ gap. The asymmetry between the causal
+and bidirectional results is what isolates the mechanism. The one-sentence preview:
+causal attention's mask geometry is itself a positional signal, and decoder-only LMs are
+already extracting it whether you also add an explicit positional encoding or not.
 
-<p class="section-eyebrow">§ 2 · The mechanism</p>
-## The causal mask leaks position
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Why the causal mask is a position signal
 
-The asymmetry: a *bidirectional* attention layer is genuinely permutation-equivariant, and
-needs positional information injected to break the symmetry. A *causal* attention layer is not.
-Token at position $t$ can attend to positions $\{0, 1, \ldots, t\}$ — a different set than the
-positions attended by token $t-1$, position $t+1$, or any other token.
+The standard scaled dot-product attention, with a causal mask $M$ that zeroes out
+above-diagonal entries (or sets them to $-\infty$ before softmax), computes for query
+position $i$:
 
-Specifically:
+$$
+\mathrm{Attn}_i(Q, K, V) \;=\; \mathrm{softmax}\!\left(\frac{\mathbf{q}_i K^\top}{\sqrt{d_k}} + M_i\right) V,
+$$
 
-- Token 0 attends to itself only.
-- Token 1 attends to a set of size 2.
-- Token $t$ attends to a set of size $t + 1$.
+where $M_i$ is the $i$th row of the mask: $0$ for $j \leq i$ and $-\infty$ for $j > i$.
+This is unchanged in NoPE — there is no $\mathrm{PE}(t)$ added to the input, no rotation
+of Q and K, no ALiBi-style bias.
 
-The number of tokens a query has seen is a perfect indicator of its absolute position. The
-model can derive position from the *count of past tokens* observable through the mask — for
-example, by routing attention through a head that uses softmax temperature to estimate the
-denominator of $\sum_{s \leq t} 1 = t + 1$.
+**The asymmetry the mask imposes.** A *bidirectional* attention layer is genuinely
+permutation-equivariant: permute the input set, and the output set permutes the same way,
+because every query sees the same key set regardless of its position. A *causal*
+attention layer is not. Token at position $t$ attends to keys $\{0, 1, \ldots, t\}$ — a
+set whose cardinality is exactly $t + 1$. Different positions see different-sized key
+sets:
 
-Haviv et al. probe internal representations and confirm that no-PE models do encode position
-information in their hidden states — they just learn it implicitly from the mask geometry.
+$$
+|\mathcal{S}_t| \;=\; t + 1, \qquad t = 0, 1, 2, \ldots
+$$
+
+The cardinality is a perfect indicator of absolute position. A model that can compute
+$|\mathcal{S}_t|$ at each layer can recover position exactly. And the softmax denominator
+gives it one natural way to do this: $\sum_{j \leq i} \exp(\text{score}_{ij})$ has a
+soft-count semantics, and the variance of the attention distribution scales with the
+number of attended keys.
+
+**Probing experiment.** Haviv et al. § 5 probes whether NoPE models actually contain
+recoverable position information. They train a 2-layer feedforward classifier on each
+NoPos layer's hidden representations to predict the absolute position $t \in \{0, \ldots, 1023\}$
+of each token, using *frozen* hidden states from the NoPos LM. Figure 2 reports mean
+absolute distance between predicted and true position:
+
+$$
+\mathrm{MAD}_\ell \;=\; \frac{1}{N} \sum_{n=1}^{N} \bigl|\,\hat{t}_n^{(\ell)} - t_n\,\bigr|.
+$$
+
+The NoPos model starts at MAD $\approx 340$ (random-baseline level) at layer 0, drops to
+single-digit MAD by layer 4–5, plateaus near 5–10 through the middle layers, and rises
+slightly in the last few layers. The Learned-PE baseline has MAD near 0 at layer 0 (the
+PE is sitting in the input) and tracks NoPos closely through the middle layers. ALiBi has
+the *worst* probe accuracy past the first few layers — its position signal lives in the
+attention biases, not in residual-stream coordinates. The probe result establishes the
+key claim: NoPos models do encode absolute position in their hidden states, acquired
+within the first few layers, without any explicit position injection.
+
+**The bidirectional control.** § 6 trains a RoBERTa-large-style MLM at 128 tokens on a
+Pile excerpt with each position scheme. With learned PE, MLM perplexity is 4.06; with
+sinusoidal, 4.07; with ALiBi, 4.00; with NoPos, 147.18. The bidirectional NoPos model
+fails to learn at all. This rules out alternative mechanisms (e.g., "position is leaked
+through token statistics"): the only structural difference between the causal and
+bidirectional setups is the mask, and the mask is what disappears in the bidirectional
+case.
+
+**Variance shift across layers.** Voita et al. (2019,
+[arXiv 1908.11775](https://arxiv.org/abs/1908.11775)) noted that transformers shed
+positional information in their final layers as representations become more
+token-prediction-shaped. Figure 2 of Haviv et al. reproduces this for all four position
+schemes — the rise in MAD at layers 22-24 is consistent across NoPos, Learned, Sinusoidal,
+and ALiBi. The middle-layer plateau is where the model has access to position; the final
+layers do not need it because the next-token prediction has already concentrated on a
+content-driven candidate set.
+
+**Order-sensitivity check.** § 5 ("Positional information matters"): shuffling the
+prefix tokens before a target prediction increases token-level loss from $\sim 4$ to
+$\sim 11$, confirming that NoPos predictions are not order-invariant — the implicit
+position the model recovers is genuinely being used to condition predictions, not a
+post-hoc probe artifact.
+
+**What NoPE does not claim.** The original Haviv et al. paper does not claim NoPE
+extrapolates to longer contexts than seen during training. It claims within-length
+quality parity with PE-equipped models and convincing evidence that causal attention
+implicitly encodes absolute position. The length-extrapolation property is the subject
+of [Kazemnejad et al. 2023 (arXiv 2305.19466)](https://arxiv.org/abs/2305.19466), a
+follow-up that benchmarks NoPE alongside other position schemes on length-generalization
+tasks and finds NoPE generalizes best on a suite of algorithmic-reasoning tasks.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## A causal transformer with no position injection
 
 ```python
-# A "no-PE" causal transformer is just standard causal attention with no positional injection.
-# No sinusoidal table. No RoPE. No ALiBi. Just:
-def no_pe_attn(q, k, v, causal_mask):
+def nope_attention(q, k, v, causal_mask):
+    # q, k, v: [B, H, T, d_h]   — projected from h with NO RoPE, NO ALiBi, no PE table.
+    # causal_mask: [T, T]       — 0 for j <= i, -inf for j > i.
     logits = (q @ k.transpose(-2, -1)) / d_h**0.5
     return (logits + causal_mask).softmax(-1) @ v
+
+
+def nope_block(x, attn, ffn, n1, n2):
+    # x: [B, T, d_model] — token embedding without any PE addition at the input either.
+    x = x + attn(n1(x))    # standard Pre-Norm; no position injection inside attn.
+    x = x + ffn(n2(x))
+    return x
 ```
+
+The forward pass is a standard causal Pre-Norm transformer with the position-encoding
+step deleted. There is no PE table at the input, no rotation of Q and K, no additive
+bias on the attention logits. The causal mask is unchanged.
 
 <NoPeOrder client:visible />
 
-<p class="section-eyebrow">§ 3 · Length generalization</p>
-## What Kazemnejad et al. added
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the paper showed, what follow-ups added, what production adopted
 
-The 2023 follow-up by Kazemnejad et al. (arXiv 2305.19466) sharpened the finding: across a
-suite of length-extrapolation tasks (addition, copying, parity), NoPE *generalizes better* than
-RoPE, ALiBi, or sinusoidal on out-of-distribution lengths. Where sinusoidal and learned PE fall
-off cliffs at $> L_{\text{train}}$ positions, NoPE degrades smoothly.
+**Quality vs. PE-equipped baselines.** Table 1 of Haviv et al. compares the four position
+schemes at two settings. On WikiText-103 with the Baevski–Auli architecture (247M, 512
+tokens): NoPos 20.97, Learned 20.42, Sinusoidal 20.16, ALiBi 19.71. On the Pile with the
+GPT-3-XL-style 1.3B architecture (1024 tokens): NoPos 13.10, Learned 13.05, Sinusoidal
+12.93, ALiBi 12.51. NoPos is the *worst* of the four on both, but by 0.05–1.0 perplexity
+points. Random-seed variance for these architectures (Press et al. 2020 report
+$\sigma \sim 0.34$ across seeds for the Baevski–Auli model on WikiText-103) covers most
+of the gap.
 
-The intuition: there is no positional encoding to extrapolate, so there is nothing to break.
-The model's implicit position-counting mechanism is scale-invariant.
+**Scaling.** Table 2 sweeps model size: 125M, 350M, 760M, 1.3B. The gap between NoPos and
+Learned narrows from 0.11 perplexity at 125M to 0.05 at 1.3B — larger models close the
+already-small gap. Table 3 sweeps sequence length 256/512/1024/2048 at 1.3B: NoPos and
+Learned stay within 0.05–0.15 of each other across the range; ALiBi's lead grows from
+0.33 at 256 to 0.81 at 2048.
 
-<p class="section-eyebrow">§ 4 · Where production picks it up</p>
-## Partial adoption, not full replacement
+**Downstream transfer.** Footnote in § 4 cites [Scao et al. 2022 (arXiv 2210.15424)](https://arxiv.org/abs/2210.15424),
+the BLOOM hyperparameter-search paper, which evaluated NoPos models on 27 diverse
+downstream tasks: NoPos averaged 41.23% accuracy, Learned 41.72%, ALiBi 43.70%. The
+ordering matches the language-modeling perplexity ordering; NoPos is a hair behind
+Learned and meaningfully behind ALiBi.
 
-For tasks where position-tagged tokens are useful — long-document QA, code, anything with
-explicit hierarchy — pure NoPE underperforms RoPE in absolute quality (Kazemnejad et al.
-Table 2). The implicit position information is enough but not optimal: a richer
-relative-position signal helps the model when relative position is genuinely informative.
+**Length-extrapolation behavior.** The follow-up by [Kazemnejad et al. 2023
+(arXiv 2305.19466)](https://arxiv.org/abs/2305.19466) sharpens the picture. On a battery
+of length-generalization tasks (addition, copying, reversal, parity), NoPE *generalizes
+better* than RoPE, ALiBi, or sinusoidal on out-of-distribution lengths — sinusoidal and
+learned drop sharply past $L_{\text{train}}$, ALiBi degrades smoothly, and NoPE degrades
+the most slowly. The intuition: there is no positional encoding to extrapolate, so there
+is nothing to break. The implicit position-counting mechanism is monotone in $t$ and has
+no special structure that fails outside the training range.
 
-What 2025 production models actually adopt is the hybrid form. Llama 4 Scout's iRoPE
-interleaves NoPE layers with RoPE layers for length generalization; Kimi Linear strips RoPE
-from the MLA body and keeps it only on a small decoupled head. In both, NoPE buys
-length-extrapolation headroom while RoPE still carries the bulk of the positional signal.
-RoPE-only remains the consensus for dense decoders; NoPE is the cleanest existence proof
-that "positional encoding is necessary" is *strictly false* for causal decoders.
+**Where production adopted it.** Pure NoPE is rare in 2025-2026 production decoders;
+the public adoption pattern is *hybrid*. Meta's Llama 4 Scout interleaves NoPE layers
+with RoPE layers (the "iRoPE" pattern) explicitly for length generalization
+([Llama 4 announcement](https://ai.meta.com/blog/llama-4-multimodal-intelligence/)).
+Moonshot's Kimi Linear 48B-A3B uses NoPE in the MLA body and applies RoPE only to a
+small 64-dim decoupled head per query (`mla_use_nope: true` in the released
+[Hugging Face config](https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct)).
+DeepSeek-V2/V3 use [decoupled RoPE](/llm-arch-kb/positional/decoupled-rope/), which keeps
+most of the per-head representation NoPE-like (only the dedicated decoupled head carries
+the position).
+
+The rationale in all three cases is the same: pure RoPE provides the strongest
+relative-position signal at training-length, but its extrapolation behavior is worse
+than NoPE's, and a hybrid that keeps RoPE on a fraction of layers (or a fraction of head
+dimensions) gets both. The Kazemnejad et al. length-generalization findings appear to
+be load-bearing for these design decisions.
+
+**What NoPE is for, taxonomically.** NoPE is the existence proof that "positional
+encoding is necessary for causal LMs" is false. It does not displace RoPE in production
+quality, but it forced the field to be precise about *what* positional encodings are
+adding — the answer is relative-position signal richness, not raw "ability to know where
+each token is", which the causal mask already supplies.
 
 <Summary>
-**NoPE in one breath.** Drop the positional encoding entirely; the causal mask's asymmetry
-leaks enough position information for the model to recover it. Works within a perplexity point
-of sinusoidal on standard tasks, generalizes better than every PE on length extrapolation.
-Reveals what positional encodings are actually adding — and that for causal decoders, it's not
-nearly as much as everyone assumed.
+**NoPE in one breath.** Drop the positional encoding entirely; the causal mask's
+asymmetry — query $t$ attends to a key set of size $t+1$ — leaks enough position
+information for the model to recover it implicitly within the first few layers (probe
+MAD $< 10$ by layer 5 at 1.3B). Within $\sim 0.05$ perplexity of learned PE on the Pile
+at 1.3B; bidirectional MLM fails completely without PE, confirming the mechanism.
+Generalizes better than every PE on length extrapolation (Kazemnejad et al. 2023).
+Production adoption is hybrid — Llama 4 Scout, Kimi Linear, decoupled-RoPE families.
 </Summary>

@@ -172,7 +172,7 @@ export default function QkNormLogits() {
           <span>Outlier magnitude added to q[{outlierDim()}]</span>
           <input
             type="range"
-            aria-label="Outlier magnitude added to q[{outlierDim()}]"
+            aria-label={`Outlier magnitude added to q[${outlierDim()}]`}
             min={0}
             max={20}
             step={0.1}

@@ -1,0 +1,59 @@
+---
+name: "GLM-4 9B"
+organization: "Zhipu AI / Tsinghua KEG"
+release_date: "2024-06-04"
+parameters_total: "9B"
+context_length: 1048576
+open_weights: true
+paper_url: "https://arxiv.org/abs/2406.12793"
+model_card_url: "https://huggingface.co/THUDM/glm-4-9b"
+disclosure_level: "open"
+architecture:
+  positional: "2D Rotary Position Embedding (the GLM-family signature, carried from GLM-130B)"
+  normalization_placement: "Post-Norm with DeepNorm-style scaling"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA (32 query heads grouped into smaller KV-head set)"
+  moe: null
+  other:
+    - "40 layers"
+    - "1M-token context window via long-context extension recipe"
+    - "Bilingual Chinese / English; multilingual support beyond"
+    - "Open-weights variant of the GLM-4 family; 32B and larger variants are not openly released"
+source_urls:
+  - "https://arxiv.org/abs/2406.12793"
+  - "https://huggingface.co/THUDM/glm-4-9b"
+  - "https://github.com/THUDM/GLM-4"
+notes: "The open-weights GLM-4 release. Architecture lineage from GLM-130B is visible in the retained 2D RoPE and Post-Norm-flavored placement, but the FFN has moved to SwiGLU and the norm to RMSNorm — the GLM family quietly converged toward modern conventions on those two axes between 2022 and 2024."
+---
+
+GLM-4 9B (June 2024) is the openly-released variant of the GLM-4 family, the successor to
+[GLM-130B](/llm-arch-kb/models/glm-130b/). The architecture documents the family's gradual
+convergence with the post-Llama consensus stack, while keeping two signature GLM choices:
+
+- **Retained from GLM-130B:**
+  - **2D RoPE** position encoding — the GLM family's hallmark since 2022. Each token's
+    position is a 2D coordinate (segment index, intra-segment position); RoPE is applied
+    independently to each axis. This pairs naturally with the GLM blank-infilling pretraining
+    objective, which the GLM-4 series continues to use alongside causal LM.
+  - **Post-Norm-flavored placement** with depth-derived residual scaling
+    ([DeepNet](/llm-arch-kb/residual/deepnet/)-style). The placement choice keeps the GLM
+    family on the minority side of the [Pre vs Post](/llm-arch-kb/normalization/norm-placement/)
+    debate.
+- **Updated to modern defaults:**
+  - **RMSNorm** replaces the LayerNorm used in GLM-130B.
+  - **SwiGLU** FFN replaces the plain GeLU FFN of GLM-130B — adopting the
+    [GLU-variant FFN](/llm-arch-kb/ffn-moe/swiglu/) settled on by the Llama family.
+  - **GQA** replaces MHA — the same KV-cache reduction adopted across nearly every open
+    release in 2023–24.
+
+The 1M-token context window is the GLM-4 series' headline long-context capability, achieved
+through a long-context training recipe layered on top of the base 32K (or 128K, depending on
+release variant) pretraining. The exact extension method is described in §3 of the GLM-4 tech
+report.
+
+For the family's earlier and later releases see [GLM-130B](/llm-arch-kb/models/glm-130b/) and
+the GLM-4.5 entry (when added). The 32B GLM-4-Plus and other larger GLM-4 variants are not
+released openly; their architecture is similar to GLM-4-9B at increased scale per the tech
+report, but the precise specifications are not publicly documented.

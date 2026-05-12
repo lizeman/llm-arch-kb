@@ -3,6 +3,7 @@ import BaseLayout from "./BaseLayout.astro";
 import { techniquesAdoptedBy } from "~/utils/adoption-graph";
 import { ARCH_SLOTS, displayArch } from "~/utils/architecture";
 import { BASE } from "~/utils/site";
+import SimilarModels from "~/components/SimilarModels.astro";
 
 interface ArchitectureSpec {
   positional: string | null;
@@ -112,6 +113,8 @@ const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
         <li><a href={u} rel="noopener noreferrer">{u}</a></li>
       ))}
     </ul>
+
+    <SimilarModels slug={slug} />
   </article>
 </BaseLayout>
 

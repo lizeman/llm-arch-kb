@@ -1,0 +1,50 @@
+---
+name: "Qwen 2.5 72B"
+organization: "Alibaba (Qwen Team)"
+release_date: "2024-09-19"
+parameters_total: "72B"
+context_length: 131072
+open_weights: true
+paper_url: "https://arxiv.org/abs/2412.15115"
+model_card_url: "https://huggingface.co/Qwen/Qwen2.5-72B"
+disclosure_level: "documented"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: "RMSNorm"
+  qk_norm: false
+  activation: "SwiGLU"
+  attention: "GQA"
+  moe: null
+  other:
+    - "128K context (with YaRN-style extension at inference for longer windows)"
+    - "Tokenizer: byte-level BPE, ~152K vocabulary"
+    - "Qwen 2.5 license (free for research and most commercial use; usage restrictions apply at very high revenue scale)"
+source_urls:
+  - "https://arxiv.org/abs/2412.15115"
+  - "https://huggingface.co/Qwen/Qwen2.5-72B"
+  - "https://qwenlm.github.io/blog/qwen2.5/"
+notes: "Dense 72B decoder in the Qwen 2.x family. Architecture follows the dominant Pre-Norm RMSNorm + RoPE + GQA + SwiGLU stack. The technical report covers Qwen 2.5 as a model family — the 72B is the largest dense member."
+---
+
+Qwen 2.5 72B (September 2024) is Alibaba's largest open-weights dense model in the Qwen 2.x
+generation. Architecturally it follows the consensus open-weights stack of 2024: **Pre-Norm
+RMSNorm + RoPE + GQA + SwiGLU**. The technical report describes Qwen 2.5 as a model family
+spanning 0.5B–72B dense variants plus separate MoE configurations; this entry covers the 72B
+dense.
+
+Headline characteristics:
+
+- **GQA** attention throughout — the 72B uses grouped-query attention, sharing each KV head
+  across multiple query heads (the precise group count for 72B is in the model config files).
+- **RoPE** positional encoding with a base scaled to support a 128K-token context window.
+  Longer contexts at inference time are reached with YaRN-style scaling per the team's
+  recommendations.
+- **SwiGLU** FFN inside Pre-Norm RMSNorm blocks — the standard 2024 recipe.
+
+Qwen 2.5's distinguishing characteristics are mostly outside the architecture: the
+pretraining corpus (~18T tokens in the technical report), the tokenizer (byte-level BPE at
+~152K vocabulary), and the post-training recipe that makes the Instruct variant competitive
+with much larger Western models on code and math benchmarks.
+
+For exact head/layer/FFN dimensions, see the model config in the Hugging Face repository.

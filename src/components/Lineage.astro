@@ -1,5 +1,6 @@
 ---
 import { getCollection } from "astro:content";
+import { BASE, slugTail } from "~/utils/site";
 
 interface Props {
   predecessors: string[];
@@ -7,14 +8,11 @@ interface Props {
 }
 
 const { predecessors, successors } = Astro.props;
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 
-// Build slug -> {title, abbreviation, category} index across all techniques.
 const all = await getCollection("techniques");
 const lookup = new Map<string, { title: string; abbreviation: string; category: string }>();
 for (const t of all) {
-  const tail = t.slug.split("/").pop()!;
-  lookup.set(tail, {
+  lookup.set(slugTail(t.slug), {
     title: t.data.title,
     abbreviation: t.data.abbreviation,
     category: t.data.category,
@@ -26,49 +24,35 @@ function resolve(slugs: string[]): Item[] {
   return slugs
     .map((s) => {
       const meta = lookup.get(s);
-      if (!meta) return null;
-      return { slug: s, ...meta };
+      return meta ? { slug: s, ...meta } : null;
     })
     .filter((x): x is Item => x !== null);
 }
 
-const pre = resolve(predecessors);
-const post = resolve(successors);
-const empty = pre.length === 0 && post.length === 0;
+const rows: { label: string; items: Item[] }[] = [
+  { label: "Predecessors", items: resolve(predecessors) },
+  { label: "Successors", items: resolve(successors) },
+].filter((r) => r.items.length > 0);
 ---
 
-{!empty && (
+{rows.length > 0 && (
   <section class="lineage">
     <p class="section-eyebrow">Lineage</p>
     <dl>
-      {pre.length > 0 && (
+      {rows.map(({ label, items }) => (
         <div class="row">
-          <dt>Predecessors</dt>
+          <dt>{label}</dt>
           <dd>
-            {pre.map((p, idx) => (
+            {items.map((p, idx) => (
               <>
-                <a href={`${base}/${p.category}/${p.slug}/`}>
+                <a href={`${BASE}/${p.category}/${p.slug}/`}>
                   {p.title}<span class="abbr">{p.abbreviation}</span>
-                </a>{idx < pre.length - 1 ? <span class="sep">·</span> : null}
+                </a>{idx < items.length - 1 ? <span class="sep">·</span> : null}
               </>
             ))}
           </dd>
         </div>
-      )}
-      {post.length > 0 && (
-        <div class="row">
-          <dt>Successors</dt>
-          <dd>
-            {post.map((s, idx) => (
-              <>
-                <a href={`${base}/${s.category}/${s.slug}/`}>
-                  {s.title}<span class="abbr">{s.abbreviation}</span>
-                </a>{idx < post.length - 1 ? <span class="sep">·</span> : null}
-              </>
-            ))}
-          </dd>
-        </div>
-      )}
+      ))}
     </dl>
   </section>
 )}

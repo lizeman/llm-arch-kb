@@ -1,26 +1,13 @@
 ---
 import BaseLayout from "~/layouts/BaseLayout.astro";
 import { getCollection } from "astro:content";
-import { sortChronological } from "~/utils/chronological-sort";
+import { sortChronological, monthName, groupByYear } from "~/utils/chronological-sort";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+import { BASE, slugTail } from "~/utils/site";
 
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const all = await getCollection("techniques");
-type TechniqueEntry = (typeof all)[number];
-const sorted = sortChronological(all as unknown as TechniqueEntry[]);
-
-const byYear = new Map<number, TechniqueEntry[]>();
-for (const t of sorted) {
-  const arr = byYear.get(t.data.year) ?? [];
-  arr.push(t);
-  byYear.set(t.data.year, arr);
-}
-const years = [...byYear.keys()].sort((a, b) => a - b);
-
-function monthName(m?: number): string {
-  if (!m) return "";
-  return new Date(2000, m - 1, 1).toLocaleString("en-US", { month: "short" });
-}
+const sorted = sortChronological(all);
+const { years, byYear } = groupByYear(sorted, (t) => t.data.year);
 ---
 
 <BaseLayout
@@ -41,22 +28,19 @@ function monthName(m?: number): string {
       <section class="year-group">
         <h2>{year}</h2>
         <ul class="year-list">
-          {byYear.get(year)!.map((t) => {
-            const slugLast = t.slug.split("/").pop()!;
-            return (
-              <li>
-                <a href={`${base}/${t.data.category}/${slugLast}/`}>
-                  <span class="when">{monthName(t.data.month)}</span>
-                  <span class="title-block">
-                    <strong>{t.data.title}</strong>
-                    <span class="abbr">{t.data.abbreviation}</span>
-                    <span class="cat">{CATEGORY_LABELS[t.data.category]}</span>
-                  </span>
-                  <span class="summary">{t.data.summary}</span>
-                </a>
-              </li>
-            );
-          })}
+          {byYear.get(year)!.map((t) => (
+            <li>
+              <a href={`${BASE}/${t.data.category}/${slugTail(t.slug)}/`}>
+                <span class="when">{monthName(t.data.month)}</span>
+                <span class="title-block">
+                  <strong>{t.data.title}</strong>
+                  <span class="abbr">{t.data.abbreviation}</span>
+                  <span class="cat">{CATEGORY_LABELS[t.data.category]}</span>
+                </span>
+                <span class="summary">{t.data.summary}</span>
+              </a>
+            </li>
+          ))}
         </ul>
       </section>
     ))}

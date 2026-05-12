@@ -1,6 +1,8 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
 import { techniquesAdoptedBy } from "~/utils/adoption-graph";
+import { ARCH_SLOTS, displayArch } from "~/utils/architecture";
+import { BASE } from "~/utils/site";
 
 interface ArchitectureSpec {
   positional: string | null;
@@ -34,30 +36,12 @@ interface Props {
 
 const { frontmatter, slug } = Astro.props;
 const arch = frontmatter.architecture;
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const undisclosed = frontmatter.disclosure_level === "undisclosed";
 const adopts = await techniquesAdoptedBy(slug);
 
-type ArchKey = keyof Omit<ArchitectureSpec, "other">;
-const archSlots: { key: ArchKey; label: string }[] = [
-  { key: "positional", label: "Positional encoding" },
-  { key: "normalization_placement", label: "Norm placement" },
-  { key: "normalization_type", label: "Norm type" },
-  { key: "qk_norm", label: "QK-Norm" },
-  { key: "activation", label: "Activation" },
-  { key: "attention", label: "Attention" },
-  { key: "moe", label: "MoE" },
-];
-
-function display(v: string | boolean | null | undefined): string {
-  if (v === null || v === undefined || v === "" || v === "null") return "—";
-  if (typeof v === "boolean") return v ? "yes" : "no";
-  return String(v);
-}
-
-const archRows = archSlots.map(({ key, label }) => ({
+const archRows = ARCH_SLOTS.map(({ key, label }) => ({
   label,
-  value: display(arch[key]),
+  value: displayArch(arch[key]),
 }));
 
 const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
@@ -80,7 +64,7 @@ const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
     {undisclosed && (
       <div class="undisclosed-note" role="note">
         <strong>Architecture details are not publicly documented.</strong>
-        &nbsp;Per the <a href={`${base}/about/`}>citation policy</a>, we list only confirmed public facts and refrain from inferring architectural choices.
+        &nbsp;Per the <a href={`${BASE}/about/`}>citation policy</a>, we list only confirmed public facts and refrain from inferring architectural choices.
       </div>
     )}
 
@@ -107,12 +91,11 @@ const hasOther = Array.isArray(arch.other) && arch.other.length > 0;
         <h2>Techniques used</h2>
         <ul class="adopts-list">
           {adopts.map((e) => {
-            const parts = e.technique.split("/");
-            const cat = parts[0];
-            const last = parts.slice(1).join("/") || parts[0];
+            const [cat, ...rest] = e.technique.split("/");
+            const tail = rest.length > 0 ? rest.join("/") : cat;
             return (
               <li>
-                <a href={`${base}/${cat}/${last}/`}>{e.technique_title}</a>
+                <a href={`${BASE}/${cat}/${tail}/`}>{e.technique_title}</a>
                 {e.notes && <span class="notes"> — {e.notes}</span>}
               </li>
             );

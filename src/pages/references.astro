@@ -1,13 +1,11 @@
 ---
 import BaseLayout from "~/layouts/BaseLayout.astro";
 import { getCollection } from "astro:content";
-
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+import { compareByDate, groupByYear } from "~/utils/chronological-sort";
+import { BASE } from "~/utils/site";
 
 const techniques = await getCollection("techniques");
 
-// Build a deduplicated list of (arxiv_id, paper_title, year, introduced_by, paper_url) tuples,
-// keyed by arxiv_id, with the entries that cite each paper.
 type Citation = {
   arxiv_id: string;
   paper_title: string;
@@ -40,19 +38,8 @@ for (const t of techniques) {
   });
 }
 
-const citations = [...citationMap.values()].sort((a, b) => {
-  if (a.year !== b.year) return a.year - b.year;
-  return (a.month ?? 0) - (b.month ?? 0);
-});
-
-// Group by year for browsing.
-const byYear = new Map<number, Citation[]>();
-for (const c of citations) {
-  const arr = byYear.get(c.year) ?? [];
-  arr.push(c);
-  byYear.set(c.year, arr);
-}
-const years = [...byYear.keys()].sort((a, b) => a - b);
+const citations = [...citationMap.values()].sort(compareByDate);
+const { years, byYear } = groupByYear(citations, (c) => c.year);
 ---
 
 <BaseLayout
@@ -85,7 +72,7 @@ const years = [...byYear.keys()].sort((a, b) => a - b);
                 <span class="uses-label">Used in:</span>
                 {c.cites.map((u, idx) => (
                   <>
-                    <a href={`${base}/${u.category}/${u.slug}/`}>{u.title}</a><span class="abbr"> ({u.abbr})</span>
+                    <a href={`${BASE}/${u.category}/${u.slug}/`}>{u.title}</a><span class="abbr"> ({u.abbr})</span>
                     {idx < c.cites.length - 1 ? <span class="sep"> · </span> : null}
                   </>
                 ))}

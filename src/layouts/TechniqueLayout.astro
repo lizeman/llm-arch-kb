@@ -4,6 +4,8 @@ import AdoptionList from "~/components/AdoptionList.astro";
 import Lineage from "~/components/Lineage.astro";
 import Cite from "~/components/Cite.astro";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+import { monthName } from "~/utils/chronological-sort";
+import { BASE } from "~/utils/site";
 
 interface Props {
   frontmatter: {
@@ -27,18 +29,15 @@ interface Props {
 }
 
 const { frontmatter } = Astro.props;
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
-const monthName = frontmatter.month
-  ? new Date(2000, frontmatter.month - 1, 1).toLocaleString("en-US", { month: "long" })
-  : null;
-const date = monthName ? `${monthName} ${frontmatter.year}` : `${frontmatter.year}`;
+const month = monthName(frontmatter.month, "long");
+const date = month ? `${month} ${frontmatter.year}` : `${frontmatter.year}`;
 ---
 
 <BaseLayout title={`${frontmatter.title} (${frontmatter.abbreviation})`} description={frontmatter.summary}>
   <article class="prose">
     <header class="entry-header">
       <p class="section-eyebrow">
-        <a href={`${base}/${frontmatter.category}/`}>{CATEGORY_LABELS[frontmatter.category]}</a>
+        <a href={`${BASE}/${frontmatter.category}/`}>{CATEGORY_LABELS[frontmatter.category]}</a>
         &nbsp;·&nbsp;{date}
       </p>
       <h1>{frontmatter.title}</h1>

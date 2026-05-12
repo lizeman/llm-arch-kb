@@ -1,12 +1,12 @@
 ---
 import { getCollection } from "astro:content";
+import { BASE } from "~/utils/site";
 
 interface Props {
   adopted_by: { model: string; source_url: string; notes?: string }[];
 }
 
 const { adopted_by } = Astro.props;
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 
 const models = await getCollection("models");
 const lookup = new Map(models.map((m) => [m.slug, m.data]));
@@ -22,7 +22,7 @@ const lookup = new Map(models.map((m) => [m.slug, m.data]));
         const org = data?.organization;
         return (
           <li>
-            <a href={`${base}/models/${model}/`}><strong>{name}</strong></a>
+            <a href={`${BASE}/models/${model}/`}><strong>{name}</strong></a>
             {org && <span class="org"> · {org}</span>}
             {notes && <span class="notes"> — {notes}</span>}
             &nbsp;<a class="cite" href={source_url} rel="noopener noreferrer">[source]</a>

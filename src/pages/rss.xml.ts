@@ -1,5 +1,7 @@
 import type { APIRoute } from "astro";
 import { getCollection } from "astro:content";
+import { sortChronological } from "~/utils/chronological-sort";
+import { BASE, slugTail } from "~/utils/site";
 
 function escape(s: string): string {
   return s
@@ -16,18 +18,13 @@ function cdata(s: string): string {
 
 export const GET: APIRoute = async ({ site }) => {
   if (!site) throw new Error("site URL must be configured in astro.config.mjs");
-  const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
   const origin = site.origin;
 
   const techniques = await getCollection("techniques");
-  const sorted = [...techniques].sort((a, b) => {
-    if (a.data.year !== b.data.year) return b.data.year - a.data.year;
-    return (b.data.month ?? 0) - (a.data.month ?? 0);
-  });
+  const sorted = sortChronological(techniques).reverse();
 
   const items = sorted.map((t) => {
-    const slugLast = t.slug.split("/").pop()!;
-    const url = `${origin}${base}/${t.data.category}/${slugLast}/`;
+    const url = `${origin}${BASE}/${t.data.category}/${slugTail(t.slug)}/`;
     return `    <item>
       <title>${cdata(`${t.data.title} (${t.data.abbreviation})`)}</title>
       <link>${escape(url)}</link>
@@ -38,8 +35,8 @@ export const GET: APIRoute = async ({ site }) => {
     </item>`;
   }).join("\n");
 
-  const feedUrl = `${origin}${base}/rss.xml`;
-  const homeUrl = `${origin}${base}/`;
+  const feedUrl = `${origin}${BASE}/rss.xml`;
+  const homeUrl = `${origin}${BASE}/`;
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">

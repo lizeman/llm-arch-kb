@@ -1,36 +1,35 @@
 ---
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+import { BASE } from "~/utils/site";
 
 const path = Astro.url.pathname;
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 
 function isActive(href: string): boolean {
-  const target = `${base}${href}`;
-  if (href === "/") return path === `${base}/` || path === base;
+  const target = `${BASE}${href}`;
+  if (href === "/") return path === `${BASE}/` || path === BASE;
   return path.startsWith(target);
 }
 
-const sections = Object.entries(CATEGORY_LABELS).map(([slug, label]) => ({
-  href: `/${slug}/`,
-  label,
-}));
-sections.push({ href: "/models/", label: "Models" });
-sections.push({ href: "/compare/", label: "Compare" });
-sections.push({ href: "/timeline/", label: "Timeline" });
-sections.push({ href: "/references/", label: "References" });
-sections.push({ href: "/search/", label: "Search" });
-sections.push({ href: "/about/", label: "About" });
+const sections = [
+  ...Object.entries(CATEGORY_LABELS).map(([slug, label]) => ({ href: `/${slug}/`, label })),
+  { href: "/models/", label: "Models" },
+  { href: "/compare/", label: "Compare" },
+  { href: "/timeline/", label: "Timeline" },
+  { href: "/references/", label: "References" },
+  { href: "/search/", label: "Search" },
+  { href: "/about/", label: "About" },
+];
 ---
 
 <header class="site-nav">
   <div class="site-nav__inner">
-    <a href={`${base}/`} class="site-nav__title">LLM Architecture KB</a>
+    <a href={`${BASE}/`} class="site-nav__title">LLM Architecture KB</a>
     <nav aria-label="Primary">
       <ul>
         {sections.map(({ href, label }) => (
           <li>
             <a
-              href={`${base}${href}`}
+              href={`${BASE}${href}`}
               class:list={["site-nav__link", { "is-active": isActive(href) }]}
             >{label}</a>
           </li>

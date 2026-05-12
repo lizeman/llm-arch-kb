@@ -1,6 +1,7 @@
 ---
+import { BASE } from "~/utils/site";
+
 const built = new Date().toISOString().slice(0, 10);
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const repo = "https://github.com/lizeman/llm-arch-kb";
 ---
 
@@ -13,9 +14,9 @@ const repo = "https://github.com/lizeman/llm-arch-kb";
     <p>
       <a href={repo}>Source on GitHub</a>
       &nbsp;·&nbsp;
-      <a href={`${base}/about/`}>Methodology</a>
+      <a href={`${BASE}/about/`}>Methodology</a>
       &nbsp;·&nbsp;
-      <a href={`${base}/rss.xml`}>RSS</a>
+      <a href={`${BASE}/rss.xml`}>RSS</a>
       &nbsp;·&nbsp;
       Last built {built}
     </p>

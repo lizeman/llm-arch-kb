@@ -1,63 +1,16 @@
 ---
 import BaseLayout from "~/layouts/BaseLayout.astro";
 import { getCollection } from "astro:content";
-
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+import { sortChronological, isoMonth } from "~/utils/chronological-sort";
+import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+import { ARCH_SLOTS, displayArch, type ArchKey } from "~/utils/architecture";
+import { BASE, slugTail } from "~/utils/site";
 
 const models = (await getCollection("models")).sort((a, b) =>
   a.data.release_date.localeCompare(b.data.release_date),
 );
 const techniques = await getCollection("techniques");
-
-// Map of technique slug-tail → entry, for linking abbreviations to entry URLs
-const techniqueLookup = new Map<string, (typeof techniques)[number]>();
-for (const t of techniques) {
-  techniqueLookup.set(t.slug.split("/").pop()!, t);
-}
-
-// Sort techniques chronologically for View A
-const sortedTechniques = [...techniques].sort((a, b) => {
-  if (a.data.year !== b.data.year) return a.data.year - b.data.year;
-  return (a.data.month ?? 0) - (b.data.month ?? 0);
-});
-
-const CATEGORY_LABEL: Record<string, string> = {
-  positional: "Positional",
-  normalization: "Normalization",
-  residual: "Residual",
-  "ffn-moe": "FFN / MoE",
-  attention: "Attention",
-  "long-context": "Long Context",
-};
-
-function dash(): string {
-  return "—";
-}
-
-type ArchKey =
-  | "positional"
-  | "normalization_placement"
-  | "normalization_type"
-  | "qk_norm"
-  | "activation"
-  | "attention"
-  | "moe";
-
-const slots: { key: ArchKey; label: string }[] = [
-  { key: "positional", label: "Positional" },
-  { key: "normalization_placement", label: "Norm placement" },
-  { key: "normalization_type", label: "Norm type" },
-  { key: "qk_norm", label: "QK-Norm" },
-  { key: "activation", label: "Activation" },
-  { key: "attention", label: "Attention" },
-  { key: "moe", label: "MoE" },
-];
-
-function display(value: string | boolean | null | undefined): string {
-  if (value === null || value === undefined || value === "" || value === "null") return dash();
-  if (typeof value === "boolean") return value ? "yes" : "no";
-  return value;
-}
+const sortedTechniques = sortChronological(techniques);
 ---
 
 <BaseLayout
@@ -71,7 +24,7 @@ function display(value: string | boolean | null | undefined): string {
       <p class="lede">
         Architecture slot by architecture slot, every documented model in the knowledge base.
         Empty cells (—) mean the choice was not publicly disclosed, per the
-        <a href={`${base}/about/`}>citation policy</a>.
+        <a href={`${BASE}/about/`}>citation policy</a>.
       </p>
     </header>
 
@@ -79,7 +32,7 @@ function display(value: string | boolean | null | undefined): string {
     <p class="table-lede">
       Each row is a production model with public architecture documentation. Each column is a
       design slot. Cells repeat the model's disclosed choice; the interactive
-      <a href={`${base}/compare/`}>sortable variant</a> is on the v2 roadmap.
+      <a href={`${BASE}/compare/`}>sortable variant</a> is on the v2 roadmap.
     </p>
 
     <div class="table-wrap">
@@ -87,18 +40,18 @@ function display(value: string | boolean | null | undefined): string {
         <thead>
           <tr>
             <th scope="col">Model</th>
-            {slots.map((s) => <th scope="col">{s.label}</th>)}
+            {ARCH_SLOTS.map((s) => <th scope="col">{s.shortLabel}</th>)}
           </tr>
         </thead>
         <tbody>
           {models.map((m) => (
             <tr>
               <th scope="row">
-                <a href={`${base}/models/${m.slug}/`}>{m.data.name}</a>
+                <a href={`${BASE}/models/${m.slug}/`}>{m.data.name}</a>
                 <span class="org">{m.data.organization}</span>
               </th>
-              {slots.map((s) => (
-                <td>{display(m.data.architecture[s.key] as string | boolean | null)}</td>
+              {ARCH_SLOTS.map((s) => (
+                <td>{displayArch(m.data.architecture[s.key as ArchKey] as string | boolean | null)}</td>
               ))}
             </tr>
           ))}
@@ -125,25 +78,19 @@ function display(value: string | boolean | null | undefined): string {
           </tr>
         </thead>
         <tbody>
-          {sortedTechniques.map((t) => {
-            const tail = t.slug.split("/").pop()!;
-            const date = t.data.month
-              ? `${t.data.year}-${String(t.data.month).padStart(2, "0")}`
-              : `${t.data.year}`;
-            return (
-              <tr>
-                <td class="year">{date}</td>
-                <td class="cat">{CATEGORY_LABEL[t.data.category] ?? t.data.category}</td>
-                <th scope="row">
-                  <a href={`${base}/${t.data.category}/${tail}/`}>{t.data.title}</a>
-                  <span class="abbr">{t.data.abbreviation}</span>
-                </th>
-                <td class="status">{t.data.status}</td>
-                <td class="adopters">{t.data.adopted_by?.length ?? 0}</td>
-                <td class="summary">{t.data.summary}</td>
-              </tr>
-            );
-          })}
+          {sortedTechniques.map((t) => (
+            <tr>
+              <td class="year">{isoMonth(t.data.year, t.data.month)}</td>
+              <td class="cat">{CATEGORY_LABELS[t.data.category] ?? t.data.category}</td>
+              <th scope="row">
+                <a href={`${BASE}/${t.data.category}/${slugTail(t.slug)}/`}>{t.data.title}</a>
+                <span class="abbr">{t.data.abbreviation}</span>
+              </th>
+              <td class="status">{t.data.status}</td>
+              <td class="adopters">{t.data.adopted_by?.length ?? 0}</td>
+              <td class="summary">{t.data.summary}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
@@ -154,7 +101,7 @@ function display(value: string | boolean | null | undefined): string {
       (<strong>Llama, OLMo, DeepSeek, Gemma</strong>); the v2 ship plans to extend to
       <strong>Kimi, MiniMax, GLM</strong> with the same disclosure standard.
       Closed-frontier families (GPT-*, Claude, Gemini) are intentionally absent — see the
-      <a href={`${base}/about/`}>methodology</a> for why.
+      <a href={`${BASE}/about/`}>methodology</a> for why.
     </p>
   </article>
 </BaseLayout>

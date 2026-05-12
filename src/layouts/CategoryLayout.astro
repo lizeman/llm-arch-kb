@@ -1,6 +1,8 @@
 ---
 import BaseLayout from "./BaseLayout.astro";
 import { CATEGORY_LABELS } from "~/utils/adoption-graph";
+import { isoMonth } from "~/utils/chronological-sort";
+import { BASE, slugTail } from "~/utils/site";
 
 interface Props {
   category: keyof typeof CATEGORY_LABELS;
@@ -19,7 +21,6 @@ interface Props {
 }
 
 const { category, description, entries } = Astro.props;
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
 const label = CATEGORY_LABELS[category];
 ---
 
@@ -37,13 +38,13 @@ const label = CATEGORY_LABELS[category];
       <ul class="entry-list">
         {entries.map((e) => (
           <li>
-            <a href={`${base}/${category}/${e.slug.split("/").pop()}/`}>
+            <a href={`${BASE}/${category}/${slugTail(e.slug)}/`}>
               <div class="entry-list__title">
                 <strong>{e.data.title}</strong>
                 <span class="abbr">{e.data.abbreviation}</span>
               </div>
               <div class="entry-list__meta">
-                <span>{e.data.year}{e.data.month ? `-${String(e.data.month).padStart(2, "0")}` : ""}</span>
+                <span>{isoMonth(e.data.year, e.data.month)}</span>
                 <span class="entry-list__summary">{e.data.summary}</span>
               </div>
             </a>

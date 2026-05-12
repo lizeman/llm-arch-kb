@@ -1,6 +1,6 @@
 ---
 import BaseLayout from "~/layouts/BaseLayout.astro";
-const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
+import { BASE } from "~/utils/site";
 ---
 
 <BaseLayout title="Not found" description="That page does not exist.">
@@ -9,8 +9,8 @@ const base = (import.meta.env.BASE_URL ?? "/").replace(/\/$/, "");
       <p class="section-eyebrow">404</p>
       <h1>That page is not in the knowledge base.</h1>
       <p class="lede">
-        Either it has not been written yet, or the URL is wrong. Try <a href={`${base}/`}>the home page</a>
-        or browse <a href={`${base}/about/`}>the methodology</a> for the closed-model policy.
+        Either it has not been written yet, or the URL is wrong. Try <a href={`${BASE}/`}>the home page</a>
+        or browse <a href={`${BASE}/about/`}>the methodology</a> for the closed-model policy.
       </p>
     </header>
   </article>

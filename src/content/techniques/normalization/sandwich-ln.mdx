@@ -1,0 +1,112 @@
+---
+title: "Sandwich-LN"
+abbreviation: "Sandwich-LN"
+category: "normalization"
+year: 2021
+month: 5
+introduced_by: "Ming Ding et al. (Tsinghua / Alibaba — CogView)"
+paper_title: "CogView: Mastering Text-to-Image Generation via Transformers"
+arxiv_id: "2105.13290"
+paper_url: "https://arxiv.org/abs/2105.13290"
+status: "production-adopted"
+problem_solved: "Cap the magnitude of each block's perturbation to the residual stream — keeping Pre-Norm's gradient-flow benefit while preventing the residual norm from growing unboundedly with depth."
+predecessors: []
+successors: []
+adopted_by:
+  - model: "gemma-2-27b"
+    source_url: "https://arxiv.org/abs/2408.00118"
+    notes: "First Gemma generation to use Sandwich placement: norm before and after each sublayer."
+  - model: "gemma-3-27b"
+    source_url: "https://arxiv.org/abs/2503.19786"
+    notes: "Norm-everywhere — sandwich placement applied to both attention and FFN sublayers."
+summary: "Two RMSNorms per sublayer: one before, one after, both inside the residual branch. Bounds the per-block contribution to the residual stream while keeping the identity path unnormalized. Used by Gemma 2 and 3."
+tags: ["normalization", "stability", "gemma"]
+last_verified: "2026-05-11"
+---
+
+import Summary from "~/components/Summary.astro";
+
+<p class="section-eyebrow">§ 1 · Premise</p>
+## What Pre-Norm leaves unsolved
+
+Pre-Norm transformers have a residual stream that grows without bound across depth. The block
+$\mathbf{x} \leftarrow \mathbf{x} + f(\mathrm{Norm}(\mathbf{x}))$ normalizes the *input* to the
+sublayer, so the sublayer always sees unit-variance input — but its *output* is added back to
+the unnormalized residual. Each block adds a $f$-shaped perturbation; over 60+ layers those
+perturbations stack.
+
+The unbounded growth is not fatal — modern training tricks (careful init, RMSNorm without bias,
+final norm at the output) keep it in check — but it is observable. The norm of
+$\mathbf{x}_\ell$ at layer 60 of Llama 2 is much larger than at layer 1, and that magnitude
+imbalance can make later layers harder to condition.
+
+<p class="section-eyebrow">§ 2 · The two-sided sandwich</p>
+## Norm before AND after the sublayer
+
+Sandwich-LN, introduced in CogView (Ding et al. 2021, §3.4) and later refined under names like
+Peri-LN, places **two** normalizations per sublayer — one before, one after — but keeps both
+*inside* the residual branch:
+
+$$\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \mathrm{Norm}_{\text{post}}\!\bigl(f\bigl(\mathrm{Norm}_{\text{pre}}(\mathbf{x}_\ell)\bigr)\bigr).$$
+
+The identity path $\mathbf{x}_\ell \to \mathbf{x}_{\ell+1}$ is untouched, so gradients flow as
+cleanly as in Pre-Norm. The new $\mathrm{Norm}_{\text{post}}$ caps the magnitude of what each
+block can add to the residual stream — the per-block perturbation has bounded variance
+regardless of what the sublayer learned to output.
+
+```python
+# Pre-Norm
+def block_pre(x, attn, ffn, n1, n2):
+    x = x + attn(n1(x))
+    x = x + ffn(n2(x))
+    return x
+
+# Sandwich
+def block_sandwich(x, attn, ffn, n1, n2, n3, n4):
+    x = x + n2(attn(n1(x)))      # both norms inside the residual branch
+    x = x + n4(ffn(n3(x)))
+    return x
+```
+
+Sandwich doubles the number of norm operations per layer. With RMSNorm — which costs only a
+single reduction and a per-feature scalar — the wall-clock overhead at inference is small.
+
+<p class="section-eyebrow">§ 3 · What it changes about training</p>
+## A bounded residual contribution
+
+Pre-Norm's residual stream norm $\|\mathbf{x}_\ell\|$ grows like $O(\sqrt{\ell})$ in expectation
+when each block adds an iid unit-variance perturbation. Sandwich-LN doesn't change that scaling
+*law* — the residual is still a sum of $\ell$ perturbations — but it tightens the constants by
+keeping each individual perturbation at exactly the magnitude $\mathrm{Norm}_{\text{post}}$
+produces.
+
+The practical effect reported by Gemma 2 (Team 2024, §3) and Gemma 3 (Team 2025) is that
+training stays stable with simpler init recipes and without spike-suppression hacks. Whether
+this is causally due to sandwich placement or co-occurs with other Gemma-specific design
+choices (very wide FFN, deep stacks, careful tokenizer) is hard to isolate, but Gemma's
+training reports cite the placement specifically.
+
+<p class="section-eyebrow">§ 4 · Gemma's "norm everywhere"</p>
+## The 2025 maximal form
+
+Gemma 3's tech report describes "norm everywhere" — sandwich placement applied to **both** the
+attention sublayer and the FFN sublayer of every block, giving four RMSNorms per block. This
+is the maximal expression of the Sandwich-LN idea: every signal that enters or leaves a
+sublayer's compute graph passes through a norm.
+
+The cost is four normalizations per block instead of two. The benefit, per the report, is
+exceptionally stable training across the 1B, 4B, 12B, 27B scale family — the same recipe works
+unchanged from very small to very large.
+
+For the dominant 2024–26 open stack (Llama, DeepSeek, Qwen, Mistral), plain Pre-Norm + RMSNorm
+remains the default. Gemma is the most prominent counterexample, and the sandwich placement
+shows up in some research-oriented stability work (Peri-LN follow-ons, OLMo 2's deliberate
+Post-Norm revival is an adjacent but different choice — see the
+[norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for the placement-space map).
+
+<Summary>
+**Sandwich-LN in one breath.** Norm before *and* after each sublayer, both inside the residual
+branch. Identity path stays clean (Pre-Norm gradient flow) while each block's contribution to
+the residual stream is bounded. Originated in CogView (2021), the signature normalization
+choice of the Gemma 2 / 3 family.
+</Summary>

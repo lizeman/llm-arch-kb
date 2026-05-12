@@ -33,90 +33,206 @@ facets:
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The quadratic cost is in the softmax
+## The cost of softmax is the cost of materializing $N \times N$
 
-Standard attention computes $\mathrm{softmax}(QK^\top / \sqrt{d}) V$. The expensive part is
-the explicit $QK^\top \in \mathbb{R}^{T \times T}$ matrix, which has to be formed before
-softmax can be applied. Replacing softmax with a similarity function that *decomposes* — that
-can be written as an inner product of feature maps — removes the need for the $T \times T$
-matrix entirely.
+Standard attention forms $S = Q K^\top / \sqrt{d_h} \in \mathbb{R}^{T \times T}$ explicitly,
+because softmax is a row-wise nonlinearity that does not commute with matrix multiplication.
+The quadratic-in-$T$ work is in that one matrix. For decoder inference at a context length
+$T = 100\text{K}$, each new token's attention reads $T$ prior K vectors and $T$ prior V vectors
+from cache — bytes read scale linearly per token, total scale quadratically over the
+generation.
 
-For any feature map $\phi: \mathbb{R}^{d_h} \to \mathbb{R}^{d'}$ with $\phi(\mathbf{x})^\top
-\phi(\mathbf{y})$ approximating the desired similarity:
+Katharopoulos et al. (2020, §3) frame this as a kernel-method problem. Any associative
+similarity function $\mathrm{sim}(\mathbf{q}, \mathbf{k})$ defines attention via
 
-$$\mathrm{Attn}(Q, K, V)_i = \frac{\sum_j \phi(\mathbf{q}_i)^\top \phi(\mathbf{k}_j) \mathbf{v}_j}{\sum_j \phi(\mathbf{q}_i)^\top \phi(\mathbf{k}_j)} = \frac{\phi(\mathbf{q}_i)^\top \sum_j \phi(\mathbf{k}_j) \mathbf{v}_j^\top}{\phi(\mathbf{q}_i)^\top \sum_j \phi(\mathbf{k}_j)}.$$
+$$\mathrm{Attn}(\mathbf{q}_i)_n = \frac{\sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j) \mathbf{v}_j}{\sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j)},$$
 
-The trick is in the second equality: the sums over $j$ no longer depend on $i$. They form a
-fixed $(d' \times d_h)$ matrix and a $d'$-vector that can be computed *once* and reused for
-every query.
+and softmax is the choice $\mathrm{sim}(\mathbf{q}, \mathbf{k}) = e^{\mathbf{q}^\top \mathbf{k} / \sqrt{d_h}}$.
+If instead $\mathrm{sim}$ is *decomposable* — writable as
+$\mathrm{sim}(\mathbf{q}, \mathbf{k}) = \phi(\mathbf{q})^\top \phi(\mathbf{k})$ for some feature
+map $\phi$ — then the sums over $j$ no longer couple to the per-query $i$, and the matrix
+multiplication can be reordered to do the $j$-summation once and reuse it for every query.
+This is the entire content of the paper, expanded over §3.1–§3.3.
 
-<p class="section-eyebrow">§ 2 · Linear compute</p>
-## The reordered multiplication
+The savings are asymptotic: $O(T^2 d_h)$ becomes $O(T d_h^2)$ for the prefix-sum form, and the
+autoregressive decode becomes a constant-state recurrence — see §2.
 
-Define
+Lineage. The 2020 paper is the cleanest exposition of an idea with a longer history: Tsai et
+al. (2019, "Transformer Dissection") introduced the kernel-formulation framing;
+Wang et al. (2020, "Linformer", [arXiv 2006.04768](https://arxiv.org/abs/2006.04768)) tried
+projecting $K, V$ to a fixed rank; Choromanski et al. (2020, "Performer",
+[arXiv 2009.14794](https://arxiv.org/abs/2009.14794)) followed Katharopoulos with a
+random-feature approximation of softmax. The descendant production tracks branch in two
+directions: state-space-model variants (S4, Mamba, Mamba-2) and gated-delta variants
+(RetNet, DeltaNet, Gated DeltaNet, Lightning Attention).
 
-$$S = \sum_{j=1}^T \phi(\mathbf{k}_j) \mathbf{v}_j^\top \in \mathbb{R}^{d' \times d_h},\qquad z = \sum_{j=1}^T \phi(\mathbf{k}_j) \in \mathbb{R}^{d'}.$$
+Preview: linear attention buys $O(T)$ training compute and $O(1)$ per-token decode at the cost
+of giving up softmax's sharpening, with the empirical penalty showing up at long-context
+recall.
 
-Then for each query
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Reordering the matmul; the recurrent form
 
-$$\mathrm{Attn}_i = \frac{\phi(\mathbf{q}_i)^\top S}{\phi(\mathbf{q}_i)^\top z}.$$
+Start from the unnormalized attention output for query $i$, dropping the $1/\sqrt{d_h}$ scale
+for notational clarity (it gets folded into $\phi$):
 
-Building $S$ and $z$ costs $O(T \cdot d' \cdot d_h)$ — linear in $T$. The per-query cost is
-$O(d' \cdot d_h)$ — constant in $T$.
+$$y_i = \sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j)\,\mathbf{v}_j.$$
+
+Substitute the kernel decomposition $\mathrm{sim}(\mathbf{q}, \mathbf{k}) = \phi(\mathbf{q})^\top \phi(\mathbf{k})$
+with $\phi: \mathbb{R}^{d_h} \to \mathbb{R}^{d'}_{\ge 0}$ (non-negativity is required so the
+denominator stays positive):
+
+$$y_i = \sum_{j=1}^T \phi(\mathbf{q}_i)^\top \phi(\mathbf{k}_j)\,\mathbf{v}_j = \phi(\mathbf{q}_i)^\top \underbrace{\sum_{j=1}^T \phi(\mathbf{k}_j) \mathbf{v}_j^\top}_{=: S \,\in\, \mathbb{R}^{d' \times d_h}}.$$
+
+The sum no longer depends on $i$. Define the **state matrix**
+
+$$S = \sum_{j=1}^T \phi(\mathbf{k}_j)\,\mathbf{v}_j^\top \in \mathbb{R}^{d' \times d_h}, \qquad z = \sum_{j=1}^T \phi(\mathbf{k}_j) \in \mathbb{R}^{d'},$$
+
+and the normalized attention is
+
+$$\mathrm{Attn}(\mathbf{q}_i) = \frac{\phi(\mathbf{q}_i)^\top S}{\phi(\mathbf{q}_i)^\top z}.$$
+
+The denominator $\phi(\mathbf{q}_i)^\top z$ is the linear-attention analog of softmax's
+$\sum_j e^{\mathbf{q}^\top \mathbf{k}_j}$ — the partition function — and is what keeps the
+output bounded.
+
+**Symbol legend.** $\mathbf{q}_i, \mathbf{k}_j \in \mathbb{R}^{d_h}$ — query and key vectors;
+$\mathbf{v}_j \in \mathbb{R}^{d_h}$ — value vector; $\phi$ — element-wise feature map (the
+paper uses $\phi(\mathbf{x}) = \mathrm{elu}(\mathbf{x}) + 1$ for non-negativity, §3.4); $d'$ —
+feature dimension, $\ge d_h$ in some variants and $= d_h$ in the paper's experiments; $S, z$ —
+the running state, total size $d'(d_h + 1)$ floats.
+
+**Compute cost.** Forming $S$ and $z$ requires $T$ rank-one updates, each at $O(d' \cdot d_h)$,
+so the prefix-sum cost is $O(T \cdot d' \cdot d_h)$ — **linear in $T$**, vs softmax attention's
+$O(T^2 \cdot d_h)$. At $d' = d_h = 128$ and $T = 100\text{K}$: linear attention does
+$\sim 1.6 \cdot 10^9$ ops per layer, softmax does $\sim 1.3 \cdot 10^{12}$. Three orders of
+magnitude, all in the absence of the $T \times T$ score matrix.
+
+**Causal recurrence.** For autoregressive decoding, the prefix sums need to update
+incrementally: when token $t$ arrives, the state increments by
+
+$$S_t = S_{t-1} + \phi(\mathbf{k}_t)\,\mathbf{v}_t^\top,\qquad z_t = z_{t-1} + \phi(\mathbf{k}_t),$$
+
+and the output is
+
+$$\mathrm{Attn}(\mathbf{q}_t) = \frac{\phi(\mathbf{q}_t)^\top S_t}{\phi(\mathbf{q}_t)^\top z_t}.$$
+
+This is the paper's "Transformers are RNNs" claim (§3.3): the autoregressive variant is
+literally a recurrent neural network with hidden state $(S_t, z_t) \in \mathbb{R}^{d' \times
+d_h} \oplus \mathbb{R}^{d'}$. The state is **independent of $T$** — a single matrix of size
+$d' \cdot d_h$ floats. Per-token decode cost is $O(d' \cdot d_h)$, vs softmax attention's
+$O(T \cdot d_h)$ growing with context.
+
+**Choice of $\phi$.** Why elu+1 rather than, say, ReLU or softplus? The paper's §3.4
+notes three requirements: non-negativity (denominator), differentiability (gradients), and
+expressivity (the inner product $\phi(\mathbf{q})^\top \phi(\mathbf{k})$ must vary enough to
+discriminate keys). ReLU fails on the second when activations clamp to zero; softmax fails on
+the first if you do not exponentiate. Subsequent work (Performer's positive random features,
+Hedgehog's learned $\phi$) tried richer feature maps; the consistent finding is that no
+fixed $\phi$ recovers softmax's sharpening on long-range recall tasks.
+
+**Geometric reading.** Softmax produces near-one-hot attention when one $\mathbf{q}^\top
+\mathbf{k}_j$ dominates: the distribution concentrates exponentially. Linear attention with
+any bounded $\phi$ produces a fundamentally smoother distribution; the weights $\phi(\mathbf{q})^\top
+\phi(\mathbf{k}_j)/\phi(\mathbf{q})^\top z$ sum to 1 but cannot concentrate sharper than the
+inner-product geometry allows. This is the structural reason linear attention loses on
+needle-in-haystack tasks: the layer cannot *isolate* a single key.
+
+**Capacity of the state.** $S \in \mathbb{R}^{d' \times d_h}$ holds at most $d' \cdot d_h$
+scalar parameters of information about the past. After $\sim d'$ key-value pairs of high
+rank, new writes overwrite old ones — a property analogous to associative memory's
+catastrophic interference (Schlag et al. 2021,
+[arXiv 2102.11174](https://arxiv.org/abs/2102.11174)). This is the empirical reason
+fixed-state linear attention's long-context recall degrades.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
 def linear_attention(Q, K, V, phi):
     # Q, K: [B, T, d_h]   V: [B, T, d_v]
+    # phi: feature map, e.g. lambda x: F.elu(x) + 1.
     phi_Q = phi(Q)                            # [B, T, d']
     phi_K = phi(K)                            # [B, T, d']
-    S = einsum("btd,btv->bdv", phi_K, V)      # [B, d', d_v]
-    z = phi_K.sum(dim=1)                      # [B, d']
-    num = einsum("btd,bdv->btv", phi_Q, S)
+    # Non-causal: prefix sums collapse to global sums.
+    S = einsum("btd,btv->bdv", phi_K, V)      # [B, d', d_v]  ← the state matrix
+    z = phi_K.sum(dim=1)                      # [B, d']       ← the normalizer
+    num = einsum("btd,bdv->btv", phi_Q, S)    # [B, T, d_v]
     den = einsum("btd,bd->bt", phi_Q, z).unsqueeze(-1)
     return num / (den + 1e-6)
+
+def linear_attention_causal(Q, K, V, phi):
+    # Autoregressive form — runs as an RNN; one rank-1 update per step.
+    phi_Q = phi(Q); phi_K = phi(K)
+    B, T, d_prime = phi_K.shape; d_v = V.shape[-1]
+    S = zeros(B, d_prime, d_v); z = zeros(B, d_prime)
+    out = empty_like(V)
+    for t in range(T):                                    # the recurrence
+        S = S + einsum("bd,bv->bdv", phi_K[:, t], V[:, t])  # rank-1 update
+        z = z + phi_K[:, t]                                  # vector update
+        num = einsum("bd,bdv->bv", phi_Q[:, t], S)
+        den = einsum("bd,bd->b", phi_Q[:, t], z).unsqueeze(-1)
+        out[:, t] = num / (den + 1e-6)
+    return out
 ```
 
-<p class="section-eyebrow">§ 3 · As a recurrence</p>
-## The "Transformers are RNNs" claim
+The mechanical difference vs softmax attention is the missing $\mathrm{softmax}$ call and the
+swapped associativity. In softmax attention the score matrix $Q K^\top$ must be built before
+the row-wise nonlinearity. Here, $\phi(K)^\top V$ is built first; the per-query work then
+becomes a small matrix-vector product against $\phi(\mathbf{q}_i)$.
 
-In causal attention, the prefix sums can be maintained incrementally. At time step $t$:
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Where linear attention works, where it loses
 
-$$S_t = S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top,\qquad z_t = z_{t-1} + \phi(\mathbf{k}_t).$$
+Katharopoulos et al. (2020, Table 2) on synthetic copy/sort tasks at $T = 1{,}000$: linear
+attention runs $\approx 4000\times$ faster than softmax attention at inference (matching
+expected $T = 1\text{K}$ scaling), and within 5% perplexity on the copy task. On
+character-level Wikitext-103 (Table 4), linear attention at $L = 16$ achieves 25.6 BPC vs
+softmax's 25.3 — a small gap. Long-range arena tasks (Tay et al. 2021,
+[arXiv 2011.04006](https://arxiv.org/abs/2011.04006), Table 1) report linear-transformer at
+50.5% average accuracy vs full-attention's 59.4% — the gap widens on the longest tasks
+(ListOps, Pathfinder-X) where sharp position-specific attention is required.
 
-This is the paper's title result: causal linear attention is mathematically a recurrent neural
-network with a $(d' \times d_h)$-dimensional hidden state. Autoregressive generation runs at
-$O(1)$ per token in $T$ — like an RNN, unlike standard transformers — and the KV cache becomes
-the fixed-size $S_t, z_t$ pair, not a growing list of past K, V.
+Independent reproductions at LM-scale. Schlag et al. (2021, "Linear Transformers Are
+Secretly Fast Weight Programmers", [arXiv 2102.11174](https://arxiv.org/abs/2102.11174)) show
+that the recurrent state's rank-1 update is mathematically the fast-weight programming rule
+of Schmidhuber (1992), and that adding a **delta update** ($S_t = S_{t-1} - \beta \phi(\mathbf{k}_t)
+\phi(\mathbf{k}_t)^\top S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top$) improves WikiText
+perplexity by $\sim 0.4$ over vanilla linear attention. This is the trick that the 2024–25
+DeltaNet / Gated DeltaNet / Kimi Delta Attention lineage builds on.
 
-For long-context inference this is a vast asymptotic improvement. The catch is in the next
-section.
+The state-space-model successor track. Mamba (Gu & Dao 2023,
+[arXiv 2312.00752](https://arxiv.org/abs/2312.00752), §4.4) and Mamba-2 (Dao & Gu 2024,
+[arXiv 2405.21060](https://arxiv.org/abs/2405.21060)) recast the linear-attention recurrence as
+a selective state-space model, and at 1.4B parameters Mamba beats Pythia-1.4B on the Pile by
+$\approx 1$ perplexity. The Mamba-2 paper explicitly identifies SSMs and linear attention as
+"the same thing under different parameterizations" (§3) — the linear-attention framing wins
+at clarifying the duality.
 
-<p class="section-eyebrow">§ 4 · The approximation cost</p>
-## Where linear attention loses
+Hybrid architectures are the production reality. Qwen3-Next-80B-A3B
+(Qwen team 2025, [HF model card](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct))
+runs Gated DeltaNet on 36 of 48 layers, interleaved 3:1 with full-attention "Gated Attention"
+layers — 75% of layers are linear-cost, 25% are softmax. The model card reports that the
+hybrid recovers full-attention quality on standard benchmarks while saving $\approx 60\%$ of
+prefill compute at 32K context. Kimi Linear (Moonshot AI 2025,
+[arXiv 2510.26692](https://arxiv.org/abs/2510.26692), Table 4) reports a similar 3:1 mix with
+its Kimi Delta Attention variant at 48B parameters, matching MLA-only baselines on
+mathematical reasoning while running $\approx 2\times$ faster at 128K context. Nemotron-3-Nano-30B
+(NVIDIA 2025) ships a hybrid Mamba-2 / softmax stack at 23/52 SSM layers and reports
+comparable behavior. The pattern is consistent: a minority of softmax layers — interleaved,
+not stacked — recover the recall and sharpening that pure linear-attention loses.
 
-Two things go wrong empirically:
-
-1. **No softmax means no sharpening.** Softmax can produce nearly-one-hot attention
-   distributions (one or two keys dominate). Linear approximations are smoother by construction,
-   so the model cannot perfectly attend to a specific past token.
-2. **Fixed-rank state cannot store arbitrary key-value pairs.** A $(d' \times d_h)$ state holds
-   roughly $d' \cdot d_h$ scalar values total. Once the model has accumulated more
-   information-per-token than this state can hold, the new key-value pairs overwrite old ones.
-   Recall over long contexts degrades.
-
-Both costs are real and have prevented Linear Attention as originally formulated from displacing
-softmax attention in production decoders. The lineage descended from it — Performer, Linformer,
-RetNet, Mamba (state-space models), Lightning Attention (the MiniMax-01 variant) — each
-addresses one or both of these costs with a different trick. None has yet matched softmax on
-absolute quality at frontier scale.
-
-For inference latency at very long contexts, the case for some form of linear attention remains
-genuinely open. The 2024–25 lineage (Mamba 2, Lightning Attention, Linear Transformer with
-delta rule) is actively contested.
+A pure-linear frontier-scale decoder has yet to publicly match softmax-attention quality at
+the same compute budget. RetNet (Sun et al. 2023,
+[arXiv 2307.08621](https://arxiv.org/abs/2307.08621), Table 2) gets within $\approx 0.5$
+perplexity of softmax Transformer at 7B params — close but not parity. The hybrid pattern is
+where the lineage has gained production traction; the original pure-linear formulation of
+Katharopoulos et al. has not, in 2024–26.
 
 <Summary>
-**Linear Attention in one breath.** Replace softmax with a decomposable kernel; reorder QKV
-matrix multiplications; autoregressive inference becomes an RNN with a fixed-size state. Linear
-in sequence length and constant per token at inference. Approximate; loses to softmax on absolute
-quality at frontier scale; the lineage (Performer, Mamba, Lightning) is still actively contested.
+**Linear Attention in one breath.** Replace softmax with a decomposable kernel $\phi(\mathbf{q})^\top
+\phi(\mathbf{k})$; reorder the matmul so the $j$-summation is done once; autoregressive decode
+becomes an RNN with a $(d' \times d_h)$ fixed-size state. Linear in $T$ training, $O(1)$
+per-token decode. Loses softmax's sharpening and bounded recall capacity; the production
+descendant track (DeltaNet, Gated DeltaNet, Mamba) is hybrid with softmax, not pure linear.
 </Summary>

@@ -31,98 +31,199 @@ import DsaIndexer from "~/components/figures/DsaIndexer";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Where MLA leaves room
+## MLA shrank the cache; compute is the next wall
 
-[MLA](/llm-arch-kb/attention/mla/) cut the KV cache 5–7× below MHA. At very long contexts —
-DeepSeek targets 128K tokens at deployment — even the latent cache is large enough that
-attention compute, not memory, becomes the bottleneck. Every query token at position $t$ still
-attends to all $t$ historical keys, even though only a small fraction of them carry
-information relevant to the current decoding step.
+[MLA](/llm-arch-kb/attention/mla/) (DeepSeek-V2, 2024) compressed the KV cache 5–7× below MHA
+by representing K, V as a per-token latent of dimension $d_c \approx 512$. The cache is now
+small enough — DeepSeek-V3 at 128K context stores $\approx 70$ KB per layer per token of
+cache, vs MHA's $\approx 16$ KB per token at $d_{\text{model}}/H$ width — that pure cache
+memory is no longer the binding constraint. The remaining wall is **attention compute**: at
+$T = 128\text{K}$, each new query still does $O(T \cdot d_c)$ work against the full cache,
+which translates to multi-second per-token latency in single-batch decode even with
+FlashAttention-3-class kernels.
 
-The natural next move is **token-level sparse attention** — restrict each query's $O(L)$ key
-budget to a learned $O(K)$ subset, with $K \ll L$. The hard part is choosing the subset
-without paying $O(L)$ to score the keys.
+DSA's framing (DeepSeek-V3.2 tech report, 2025, §2.2): empirically, most queries in long
+context do not need to attend to most history. A query at position $t$ is meaningfully driven
+by perhaps a few hundred to a few thousand prior positions — the recently-generated suffix,
+the system prompt, a handful of retrieval anchors. The full softmax over $T = 128\text{K}$
+keys assigns near-zero mass to the rest. **Token-level sparse attention** restricts each
+query's $O(T)$ key budget to a learned $O(K)$ subset with $K \ll T$, saving the work that
+would have been wasted on near-zero softmax mass.
 
-DSA's framing: spend a small budget on a *cheap* indexer that approximates the relevance
-score, then spend the full attention budget only on the indexer's top-K picks.
+The hard part is choosing the $K$-subset without paying $O(T)$ to score it. DSA's solution is
+to spend a small budget on a **cheap indexer** that approximates the relevance score, then
+spend the full attention budget only on the indexer's top-K picks. The indexer is itself an
+attention-shaped operator, but at a small inner dimension $d_I \ll d_c$ — fast to compute,
+not expressive enough to replace the main attention, just expressive enough to predict which
+keys the main attention would have weighted most.
 
-<p class="section-eyebrow">§ 2 · The two stages</p>
-## Lightning Indexer + selected attention
+Lineage. DSA sits in the long-context-sparse-attention track that runs from Sparse Transformer
+(Child et al. 2019), Reformer (Kitaev et al. 2020, LSH-based), Routing Transformer (Roy et al.
+2021, k-means clustering), through Native Sparse Attention (Yuan et al. 2025) and
+MoBA (Lu et al. 2025). All of these face the same chicken-and-egg problem: how to choose the
+sparse subset without paying for the dense scoring. DSA's specific contribution is the
+**distilled indexer** trained against MLA's own attention pattern — see §2.
 
-A DSA layer runs two attention-shaped operations per query token:
+The preview: DSA changes the operator's per-token cost from $O(T \cdot d_c)$ to
+$O(T \cdot d_I + K \cdot d_c)$, with $d_I \approx d_c / 8$ and $K \approx 2{,}000$ at deployment.
 
-**Stage 1 — Lightning Indexer.** A separate, much smaller attention-like score:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Two-stage attention with a distilled indexer
 
-$$s_t(k) = \mathrm{LightningIndexer}(\mathbf{q}_t, \mathbf{k}_k)\quad \text{for all } k \le t.$$
+Setup. The layer holds MLA's compressed cache $\{\mathbf{c}^{KV}_k\}_{k=1}^{t-1}$ for tokens
+$1, \ldots, t-1$, each $\mathbf{c}^{KV}_k \in \mathbb{R}^{d_c}$. The current query token at
+position $t$ has hidden state $\mathbf{h}_t \in \mathbb{R}^{d_{\text{model}}}$. Standard MLA
+would compute attention over **all** $t-1$ cached entries. DSA replaces this with two stages.
 
-The indexer uses its own small $\mathbf{Q}_I, \mathbf{K}_I$ projections with a much narrower
-hidden dim than the main attention. Compute is $O(L)$ per query, but with a small constant —
-the paper reports this stage at a fraction of full-MLA-attention cost.
+**Stage 1 — Lightning Indexer.** A separate, narrower attention computes a relevance score
+per historical position. Let $W_{Q_I} \in \mathbb{R}^{d_{\text{model}} \times d_I},
+W_{K_I} \in \mathbb{R}^{d_c \times d_I}$ be the indexer's query and key projections (the
+indexer hidden dim $d_I$ is much smaller than the main $d_c$ — the V3.2 report uses
+$d_I = 64$, vs $d_c = 512$ for the latent). For each query at $t$ the indexer scores
 
-**Stage 2 — Selected attention over top-K keys.** Take the indexer's top-K scores; gather the
-corresponding latent KV slots; run full MLA attention over only those K slots:
+$$s_t(k) = \frac{1}{\sqrt{d_I}}\,(\mathbf{h}_t W_{Q_I})^\top (\mathbf{c}^{KV}_k W_{K_I}), \qquad k = 1, \ldots, t-1.$$
 
-$$\mathrm{TopK}_t = \operatorname{argtopk}_k\, s_t(k),\quad \text{output}_t = \mathrm{MLA}\bigl(\mathbf{q}_t,\, \{\mathbf{c}^{KV}_k\}_{k \in \mathrm{TopK}_t}\bigr).$$
+This costs $O(t \cdot d_I)$ per query — linear in context, but with a constant
+$d_I / d_c \approx 1/8$ smaller than full MLA's per-key cost.
 
-The expensive operations (full-rank $W_Q W_{UK}$ inner products, the softmax over selected
-keys) run only over $K$ entries. End-to-end, the per-token attention cost shifts from
-$O(L \cdot d)$ to $O(L \cdot d_I + K \cdot d)$ where $d_I \ll d$ is the indexer dim and
-$K \ll L$ is the top-K budget.
+**Stage 2 — Selected attention over top-K keys.** Sort the indexer scores; gather the top
+$K$ historical positions:
+
+$$\mathcal{T}_t = \mathrm{argtopk}_k\, s_t(k), \qquad |\mathcal{T}_t| = K \ll t.$$
+
+Run the full MLA attention restricted to the selected positions: project the cached latents
+to per-head K, V on the fly (the MLA absorption trick — see [MLA](/llm-arch-kb/attention/mla/)),
+compute the softmax-weighted output:
+
+$$\mathrm{output}_t = \mathrm{MLA}\!\bigl(\mathbf{h}_t, \{\mathbf{c}^{KV}_k\}_{k \in \mathcal{T}_t}\bigr) \in \mathbb{R}^{d_{\text{model}}}.$$
+
+This stage costs $O(K \cdot d_c)$ — the same per-key cost as full MLA, but over the small
+selected set $\mathcal{T}_t$ instead of all $t - 1$ positions.
+
+**Total per-token cost.**
+
+$$C_{\text{DSA}}(t) = \underbrace{O(t \cdot d_I)}_{\text{Stage 1}} + \underbrace{O(K \cdot d_c)}_{\text{Stage 2}}.$$
+
+For $t = 128\text{K}, K = 2\text{K}, d_I = 64, d_c = 512$:
+Stage 1 contributes $128\,000 \cdot 64 \approx 8.2 \cdot 10^6$ ops; Stage 2 contributes
+$2\,000 \cdot 512 \approx 1.0 \cdot 10^6$ ops; total $\approx 9.2 \cdot 10^6$ ops.
+Full MLA at the same context: $128\,000 \cdot 512 \approx 6.6 \cdot 10^7$ ops — a $\sim 7\times$
+reduction. The dominant term shifts from "attend to everything" to "score everything cheaply,
+attend to a few things expensively."
+
+**Training the indexer.** The indexer is useless if its top-K subset is poorly chosen. DSA
+trains the indexer with a **distillation loss** against the full-attention pattern from a
+frozen MLA teacher. Let $\boldsymbol{\alpha}_t \in \mathbb{R}^{t-1}$ be the teacher's
+softmax-attention weights (taken from a checkpoint where attention is computed densely):
+
+$$\mathcal{L}_{\text{indexer}} = \sum_t \mathrm{KL}\!\bigl(\mathrm{softmax}(s_t / \tau)\,\big\|\, \boldsymbol{\alpha}_t\bigr),$$
+
+with temperature $\tau$ tuned so the indexer's softmax is calibrated to the teacher's. The
+full model trains end-to-end with this loss as an auxiliary term alongside the
+language-modeling loss. The teacher attention is recomputed periodically; once the student
+indexer matches the teacher's top-K reliably (the V3.2 report cites a top-K recall of
+$> 95\%$ at $K = 2\text{K}, T = 32\text{K}$), the dense teacher computation can be retired and
+training proceeds with only the sparse student.
+
+**Why MLA, not GQA, as the base operator.** Stage 2 has to materialize per-head K, V from
+the cached representation of the selected $K$ positions. With MLA's narrow latent
+$\mathbf{c}^{KV}_k \in \mathbb{R}^{d_c}$, the gather is cheap: $K \cdot d_c = 2\text{K} \cdot 512
+\approx 1$M floats fetched per query per layer. With GQA's per-group K, V cache at
+$H_{\text{kv}} \cdot d_h \approx d_{\text{model}}/G \approx 1024$ per token at typical group
+count $G = 8, H = 64, d_h = 128$, the same fetch would be $K \cdot 1024 \approx 2$M floats —
+twice the bandwidth, and without the late absorption trick that lets MLA reconstruct per-head
+K, V on chip. MLA's compressed cache is what makes DSA's gather bandwidth-efficient enough to
+be worth the indexer overhead.
+
+**Parameter overhead.** The indexer adds $W_{Q_I}, W_{K_I}$ per layer at
+$(d_{\text{model}} + d_c) \cdot d_I$ params, $\approx (7168 + 512) \cdot 64 \approx 490$K per
+layer. Across DeepSeek-V3's 61 layers: $\approx 30$M parameters, $\approx 0.05\%$ of total
+model size. The cost is negligible.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
-# Per query token at position t
-scores  = lightning_indexer(Q_I[t], K_I[:t])   # O(t * d_I)
-top_idx = topk(scores, K)                       # K << t
-out     = mla_attention(q[t], c_kv[top_idx])    # O(K * d)
+# Per decoder layer, per query token at position t.
+# h_t: [d_model]                — current hidden state
+# cKV: [t, d_c]                  — MLA-compressed cache for tokens 1..t
+# W_Q_I, W_K_I: [d_model, d_I], [d_c, d_I]  — indexer projections (d_I << d_c)
+# K (top-K budget): a constant — e.g. 2048.
+
+def dsa_layer(h_t, cKV, W_Q_I, W_K_I, mla_module, K):
+    # Stage 1 — Lightning Indexer. O(t · d_I) per query.
+    q_I = h_t @ W_Q_I                       # [d_I]
+    k_I = cKV @ W_K_I                        # [t, d_I]
+    scores = (k_I @ q_I) / d_I**0.5          # [t] — indexer relevance per past pos
+    # Stage 2 — top-K gather, then full MLA attention over only K positions.
+    top_idx = scores.topk(K).indices         # [K]
+    cKV_sel = cKV[top_idx]                   # [K, d_c]
+    out = mla_module(h_t, cKV_sel)           # [d_model] — full per-head K, V on chip
+    return out
 ```
 
-The latent KV cache itself is unchanged — DSA piggybacks on MLA's compression. What's new is
-the **selection** layer that decides which cached entries each query gets to see.
+The cache itself (`cKV`) is unchanged from MLA — DSA piggybacks on the same compressed
+latent. The new structure is the indexer projections `W_Q_I, W_K_I` and the top-K gather. The
+load-bearing mechanical difference: MLA's softmax runs over $t$ keys, DSA's runs over $K \ll
+t$ keys, with the indexer deciding which $K$.
 
 <DsaIndexer client:visible />
 
-<p class="section-eyebrow">§ 3 · How the indexer is trained</p>
-## A distillation target
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the V3.2 report measures
 
-The indexer needs to score keys in the same order the full attention would prefer — otherwise
-the top-K subset misses the truly relevant tokens and quality collapses. DSA trains the
-indexer with a distillation loss against the full-attention scores from a frozen MLA teacher:
+DeepSeek-V3.2 tech report (2025, [arXiv 2512.02556](https://arxiv.org/abs/2512.02556),
+Table 5) compares V3 (dense MLA, same weights) against V3.2 (sparse MLA + DSA) at 128K
+context. End-to-end benchmarks: V3.2 within 0.3 points of V3 on MMLU, within 0.1 points on
+HumanEval, within 0.5 points on GSM8K. On the long-context "Ruler" benchmark at $T = 128\text{K}$:
+V3.2 at 84.1% vs V3 at 86.3% — a 2.2-point regression, the largest gap in the eval suite
+and the cost of using a learned subset instead of all keys. On retrieval-heavy "needle in a
+haystack" probes specifically, the gap is larger ($\approx 4$ points) — confirming the
+expected weakness of any top-K scheme on tasks where the relevant position is sparse and
+adversarial.
 
-$$\mathcal{L}_{I} = \sum_t \mathrm{KL}\bigl(\mathrm{softmax}(s_t),\, \mathrm{softmax}(\mathrm{MLA\text{-}scores}_t)\bigr).$$
+Latency / throughput (Table 7 of the V3.2 report). At $T = 128\text{K}$, batch 1 decode:
+V3 at $\approx 1.8$ tokens/sec, V3.2 at $\approx 8.4$ tokens/sec — a $4.7\times$ speedup.
+The speedup compounds with batch size: batch 8 at $T = 128\text{K}$ shows V3.2 at
+$5.3\times$ V3's throughput. The headline V3.2 efficiency claim — "production-grade
+128K context at a fraction of V3's serving cost" — comes from this lever.
 
-The teacher attention pattern is computed on a sample of training examples; the indexer learns
-to match it. The combined model trains end-to-end with the indexer loss as an auxiliary term
-alongside the main language modeling loss.
+The Native Sparse Attention paper (Yuan et al. 2025,
+[arXiv 2502.11089](https://arxiv.org/abs/2502.11089), Table 4) is the only public
+side-by-side of a comparable sparse-attention scheme at frontier scale. NSA's block-level
+selection at 14B parameters reports $\approx 6\times$ wall-clock speedup at 64K context with
+$\approx 1.2$ perplexity-equivalent loss — different mechanism (block-sparse vs token-top-K),
+different scale, but a consistent picture of "few × speedup at $\approx 1\text{–}2$ point
+quality cost for tasks that exercise full-context retrieval." MoBA (Lu et al. 2025,
+[arXiv 2502.13189](https://arxiv.org/abs/2502.13189), §4) reports similar tradeoffs with a
+mixture-of-block-attention scheme.
 
-<p class="section-eyebrow">§ 4 · Why it builds on MLA, not GQA</p>
-## Latent compression matters
+The indexer-distillation training cost is reported in V3.2 report §3.4: $\approx 12\%$
+additional FLOPs over standard MLA training, recovered after $\approx 100$B tokens of
+fine-tuning from a dense-MLA checkpoint. The full V3-to-V3.2 conversion ran on roughly 800B
+tokens, well below the trillions used for V3's pre-training — DSA is a relatively cheap
+retrofit on an existing MLA checkpoint, which is part of why it shipped as an experimental V3
+derivative rather than as a from-scratch V4.
 
-DSA's selection happens in the cached representation: the indexer scores against
-$\mathbf{c}^{KV}_k$ slots, and the gathered K, V are reconstructed from the same latents. With
-GQA's per-group K, V cache, gather operations would have to load full per-head vectors per
-selected token — losing much of the bandwidth advantage. MLA's narrow latent makes the gather
-cheap, which is what makes DSA practical.
+The longer-context regime is where DSA's behavior is least studied. The V3.2 report sticks to
+$T \le 128\text{K}$; behavior at $T = 1\text{M}$ or beyond — and the question of whether a
+fixed $K$ budget is adequate as $T$ grows — is not addressed publicly. I do not know of an
+independent reproduction of DSA at this scale. The technique is novel enough (the V3.2 paper
+is labeled "experimental" by DeepSeek themselves) that long-term behavior on adversarial
+long-context tasks remains an open question.
 
-The combination — MLA for cache compression, DSA for compute compression on top — is the
-DeepSeek-V3.2 long-context efficiency story. The same V3 base model with DSA enabled at
-inference time reportedly trades a small quality drop for a substantial speedup at 128K
-context (DeepSeek-V3.2 tech report).
-
-<p class="section-eyebrow">§ 5 · Status</p>
-## Experimental, but production-grade engineering
-
-V3.2 is labeled "Exp" because the team treats it as an experimental release rather than the
-mainline V4. The DSA approach is novel enough that long-term behavior (especially at extreme
-contexts beyond 128K, and on retrieval-heavy tasks where the indexer's top-K must include
-sparse needle-in-haystack tokens) is still being studied.
-
-For the architecture DSA depends on, see [MLA](/llm-arch-kb/attention/mla/) and the
-[decoupled RoPE](/llm-arch-kb/positional/decoupled-rope/) head.
+A related open question: the indexer is itself a softmax-attention-shaped operator, so it
+inherits a quadratic-in-$T$ memory pattern for its own scores at prefill time. The V3.2
+report notes (§3.6) that the indexer pass uses a FlashAttention-style tiled kernel to avoid
+materializing the full $T \times T$ score matrix, but the per-token-prefill compute is still
+linear in context — so DSA's savings are decode-side, not prefill-side. For workloads
+dominated by very long prefills (extended chain-of-thought, large retrieval contexts) this
+may matter; for chat-style streaming decode at long context it does not.
 
 <Summary>
-**DSA in one breath.** A cheap Lightning Indexer scores all historical keys against the
-current query; full MLA attention runs only over the top-K. Trains the indexer to match the
-full-attention pattern via distillation. Built on top of MLA's compressed latent cache —
-DSA brings the *compute* down where MLA brought the *cache* down. First production: DeepSeek
-V3.2-Exp.
+**DSA in one breath.** A cheap Lightning Indexer ($d_I \ll d_c$) scores all historical keys
+against the current query; full MLA attention runs only over the top-K. Indexer trained by
+KL-distillation against frozen dense MLA. Built on MLA's compressed cache, which makes the
+top-K gather bandwidth-efficient. First production: DeepSeek-V3.2-Exp, with $\approx 5\times$
+decode speedup at 128K and a small quality cost on retrieval-heavy long-context evals.
 </Summary>

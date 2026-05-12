@@ -28,91 +28,206 @@ import FlashTiling from "~/components/figures/FlashTiling";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Attention is memory-bound
+## Attention is bottlenecked on HBM bandwidth, not FLOPs
 
-Standard attention computes scores $S = QK^\top / \sqrt{d_h}$, softmaxes to $P = \mathrm{softmax}(S)$,
-and aggregates $O = PV$. The N×N matrices $S$ and $P$ have to be materialized somewhere. On a
-GPU, "somewhere" is HBM — the slow, large memory pool.
+A standard attention forward pass at sequence length $N$ and head dimension $d$ computes
+$S = Q K^\top / \sqrt{d}$, then $P = \mathrm{softmax}(S)$, then $O = P V$. Both $S$ and $P$
+are $N \times N$ matrices. On an A100 GPU, the two main memory tiers are HBM (40–80 GB,
+$\approx 1.5$ TB/s bandwidth) and per-SM SRAM ($\approx 192$ KB on A100, $\approx 19$ TB/s).
+The standard implementation materializes $S$ and $P$ to HBM, then reads them back to compute
+$O$ — three round trips of $N^2$ floats each.
 
-Dao et al. measured this in 2022: for the typical transformer scales of 2022 (sequence length
-2K–16K, head dim 64), the entire attention operation spent **most of its wall-clock time waiting
-for memory**, not computing. The arithmetic intensity (FLOPs per byte transferred) was lower
-than what the GPU's compute units could keep busy.
+Dao et al. (2022, §1) measure the arithmetic intensity for typical 2022 transformer attention
+at $N \in \{1\text{K}, 4\text{K}, 16\text{K}\}, d = 64$ and find it firmly in the
+memory-bound regime: the GPU spends 60–80% of wall-clock on HBM reads of $S, P$, and only
+20–40% on the actual matmul FLOPs that compute them. The PyTorch reference implementation in
+2022 ran at roughly 5% of peak compute throughput on long-sequence attention.
 
-The diagnosis flips the optimization target: instead of reducing FLOPs (the goal of approximate
-attention variants — Performer, Linformer, etc.), reduce *memory traffic*.
+The conventional optimization target for slow attention had been the $O(N^2)$ FLOP count: the
+sparse-attention lineage (Sparse Transformer, Longformer, BigBird) and the linear-attention
+lineage (Performer, Linformer, [Linear Attention](/llm-arch-kb/attention/linear-attention/))
+both replace the dense softmax with something cheaper. Dao et al.'s reframing: the FLOPs are
+fine, the bytes are the problem. Quadratic memory traffic, not quadratic compute, is the wall
+attention training hit in practice.
 
-<p class="section-eyebrow">§ 2 · The technique</p>
-## Tile, fuse, recompute
+The technique below is exact — it returns bit-identical outputs to standard attention up to
+floating-point reduction order — and the resulting kernel underlies essentially every
+production transformer trainer in 2024–26. It is the rare optimization that frontier models
+adopt without any quality trade. The lineage from FlashAttention runs through FlashAttention-2
+(Dao 2023, sequence-axis parallelism) to FlashAttention-3 (Shah, Dao et al. 2024,
+H100-specific async tensor-memory), each of which extracts another constant factor.
 
-FlashAttention splits Q, K, V into small tiles that fit in SRAM (the GPU's on-chip cache,
-~100 KB per SM). For each tile of Q, it streams the K and V tiles in turn, computes a partial
-softmax + output, and accumulates — using an *online softmax* trick to maintain numerical
-correctness across tile boundaries.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Tiling + online softmax + recomputation
 
-The key arithmetic is the online softmax aggregation. Given two partial softmaxes with running
-maxima $m_1, m_2$ and denominators $\ell_1, \ell_2$, the merge is:
+Setup. Let $Q, K, V \in \mathbb{R}^{N \times d}$ live in HBM. Choose block sizes
+$B_r$ (rows of $Q$ per tile) and $B_c$ (columns of $K, V$ per tile) such that
+$4 \cdot B_r \cdot d + B_r \cdot B_c$ floats fit in SRAM — the per-tile Q-block,
+K-block, V-block, output accumulator, and score scratch must all be resident on-chip
+simultaneously. On A100 with $d = 64$, the paper picks $B_r = B_c = 128$ for $\approx 80$ KB
+of SRAM, leaving room for register pressure and double-buffering.
 
-$$m = \max(m_1, m_2),\quad \ell = e^{m_1 - m}\ell_1 + e^{m_2 - m}\ell_2,$$
+The naive softmax — compute $S$, subtract max, exponentiate, divide by sum — cannot run
+tile-by-tile because the row-wise softmax denominator depends on every column of $S$.
+FlashAttention solves this with the **online softmax** of Milakov & Gimelshein (2018,
+[arXiv 1805.02867](https://arxiv.org/abs/1805.02867)). For a row of $S$ split into two
+partial blocks with maxima $m_1, m_2$ and denominators $\ell_1 = \sum_j e^{S_{1,j} - m_1},
+\ell_2 = \sum_j e^{S_{2,j} - m_2}$, the merged statistics are
 
-$$O = e^{m_1 - m}\frac{\ell_1}{\ell}O_1 + e^{m_2 - m}\frac{\ell_2}{\ell}O_2.$$
+$$m = \max(m_1, m_2),\qquad \ell = e^{m_1 - m}\,\ell_1 + e^{m_2 - m}\,\ell_2.$$
 
-The full N×N attention matrix is never materialized; only the per-tile partials are. Backward
-pass uses recomputation (the same idea as gradient checkpointing) to avoid storing $P$ for the
-backward.
+Why this and not "compute the row max separately, then softmax"? Because that requires
+two passes over $K$ — one for the max, one for the exponentiation — doubling the HBM
+read traffic. The online form folds both into a single pass that updates running statistics
+as new $K, V$ tiles stream in.
+
+Output accumulation uses a corresponding rescale. With running output $O_1$ accumulated under
+local max $m_1$, the merged output after seeing block 2 is
+
+$$O = e^{m_1 - m}\,\frac{\ell_1}{\ell}\,O_1 + e^{m_2 - m}\,\frac{\ell_2}{\ell}\,O_2.$$
+
+The factor $e^{m_1 - m}$ corrects the earlier output for the new global max; the $\ell_1/\ell$
+re-weights it by the new denominator. The algebra reduces to a one-line update: each time a
+new K-tile arrives, the accumulator gets rescaled in place before the new tile's softmax-times-V
+gets added.
+
+The final per-row attention output written to HBM is the standard softmax-weighted average,
+read out of the running statistics after the full inner-loop pass:
+
+$$O_i = \frac{1}{\ell_i}\,\sum_{j=1}^N e^{S_{ij} - m_i}\,V_j,$$
+
+which equals $\mathrm{softmax}(S_i)\,V$ exactly — the online merge accumulates this sum
+without ever holding the full row $S_i$ in memory simultaneously.
+
+**Forward algorithm** (Algorithm 1 of Dao et al. 2022). Loop over Q-tiles in the outer loop
+(parallelizable across CUDA blocks), K/V tiles in the inner loop. For each Q-tile of shape
+$(B_r, d)$: zero an output accumulator $O \in \mathbb{R}^{B_r \times d}$, a max
+$m \in \mathbb{R}^{B_r}$, and a denominator $\ell \in \mathbb{R}^{B_r}$. For each inner K/V
+tile of shape $(B_c, d)$, compute the local $S_{\text{tile}} = Q_{\text{tile}} K_{\text{tile}}^\top /\sqrt{d}$,
+take its row-max, update $m$, exponentiate, update $\ell$ and $O$ with the merge equations
+above. After the inner loop, divide $O$ by $\ell$ once. Write $O$ to HBM. The output is
+bit-equivalent to the dense softmax up to floating-point summation order.
+
+**Backward algorithm** (Algorithm 2 of Dao et al. 2022). Storing the $N \times N$ matrix $P$
+for the backward pass would defeat the purpose. Instead, FlashAttention stores only the
+softmax statistics $m, \ell \in \mathbb{R}^N$ from the forward pass and **recomputes** the
+relevant tiles of $S$ and $P$ inside SRAM during the backward — the same idea as gradient
+checkpointing applied at the kernel level. The extra FLOPs are recouped many times over by
+the avoided HBM traffic; the paper reports the backward at $\approx 1.5\times$ the forward
+cost, vs $\approx 3\times$ for the standard implementation.
+
+**Memory complexity.** Peak activation memory drops from $O(N^2)$ (standard, materialized
+$S, P$) to $O(N)$ (FlashAttention, only $m, \ell$ stored across the iteration). The $O(Nd)$
+output is unchanged. This is the lever that unlocked $N \ge 64\text{K}$ training on a single
+GPU.
+
+**FLOP complexity.** Unchanged at $O(N^2 d)$ — the matmul work is the same. The savings are
+in the constant in front of the *bytes* term, not the FLOPs. Dao et al. (§3.3) prove a
+lower bound: any IO-aware attention algorithm requires
+$\Omega(N^2 d^2 / M)$ HBM accesses where $M$ is SRAM size, and FlashAttention is within a
+constant of this lower bound. Standard attention has $\Theta(N d + N^2)$ HBM accesses — the
+$N^2$ term dominates at long $N$ and is what FlashAttention removes.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
-# Forward (sketch): for each Q tile, walk over K/V tiles, accumulate online softmax.
-for q_tile in split(Q, block_size):
-    m = -inf; l = 0; o = 0
-    for k_tile, v_tile in zip(split(K, ...), split(V, ...)):
-        s = q_tile @ k_tile.T / d_h**0.5
-        m_new = max(m, max(s, axis=-1))
-        p = exp(s - m_new[..., None])
-        l = exp(m - m_new) * l + sum(p, axis=-1)
-        o = exp(m - m_new)[..., None] * o + p @ v_tile
-        m = m_new
-    yield o / l[..., None]
+# Forward sketch — illustrative, not a CUDA kernel.
+# Q, K, V: [N, d] in HBM.
+# Output: O, plus log-sum-exp statistics for the backward.
+def flash_attention_forward(Q, K, V, B_r, B_c):
+    N, d = Q.shape
+    O = zeros((N, d))                      # accumulator in HBM, written once.
+    m = full((N,), -inf)                   # running row max.
+    l = zeros((N,))                        # running row denominator.
+    for q_start in range(0, N, B_r):       # outer loop — Q tiles.
+        q = Q[q_start:q_start+B_r]         # [B_r, d], resident in SRAM.
+        o_local = zeros((B_r, d))          # in SRAM.
+        m_local = full((B_r,), -inf)
+        l_local = zeros((B_r,))
+        for k_start in range(0, N, B_c):   # inner loop — K, V tiles stream in.
+            k = K[k_start:k_start+B_c]     # [B_c, d], resident in SRAM.
+            v = V[k_start:k_start+B_c]
+            s = q @ k.T / d**0.5           # [B_r, B_c] — never written to HBM.
+            m_new = maximum(m_local, s.max(axis=-1))
+            p = exp(s - m_new[:, None])
+            l_local = exp(m_local - m_new) * l_local + p.sum(axis=-1)
+            o_local = exp(m_local - m_new)[:, None] * o_local + p @ v
+            m_local = m_new
+        O[q_start:q_start+B_r] = o_local / l_local[:, None]
+        m[q_start:q_start+B_r] = m_local
+        l[q_start:q_start+B_r] = l_local
+    return O, m, l  # m, l are reused on the backward via recomputation.
 ```
-
-The compute is the same. The memory pattern is dramatically better.
 
 <FlashTiling client:visible />
 
-<p class="section-eyebrow">§ 3 · Results</p>
-## Empirical evidence
+The load-bearing mechanical difference vs naive attention: the $N \times N$ score matrix $s$
+is never written to HBM. It lives in SRAM for the duration of each $(B_r, B_c)$ tile pass,
+gets consumed by the online softmax, and is discarded. HBM traffic per Q-tile is
+$O(B_r d + (N / B_c) \cdot B_c d) = O(N d)$, vs the standard implementation's $O(N^2)$ for
+the materialized score matrix.
 
-Dao et al. (2022, Table 1) report **2-4× speedup on end-to-end transformer training** vs
-PyTorch's default attention at sequences from 1K to 16K, with peak memory dropping from
-$O(N^2)$ to $O(N)$. The peak-memory improvement is the practical win: it removed the
-single biggest barrier to long-context training on a single GPU.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What FlashAttention buys, in numbers
 
-Subsequent versions:
+Dao et al. (2022, Table 1) on GPT-2 small (124M params, $N = 1\text{K}$) end-to-end training:
+FlashAttention 3.5× faster than the PyTorch eager implementation, 1.6× faster than Megatron-LM's
+fused attention. On GPT-2 medium (350M, $N = 1\text{K}$): 3.0× over PyTorch eager. At BERT-large
+($N = 512$): 1.15× — the speedup is smaller at short sequences because the constant overhead of
+the tile loop matters more relative to the savings. The headline 2–4× number is for
+long-sequence training where the HBM-traffic saving compounds.
 
-- **FlashAttention-2** (Dao 2023, arXiv 2307.08691): better parallelism across the sequence
-  dimension and reorganized loops; another ~2× speedup over v1.
-- **FlashAttention-3** (Shah, Dao et al. 2024, arXiv 2407.08608): specialized for NVIDIA Hopper
-  with asynchronous tensor-memory accelerators and FP8 support; another ~1.5–2× over v2 on H100.
+Peak memory measurements (Table 2 of Dao et al. 2022): GPT-2 medium at $N = 16\text{K}$
+crashes on an A100 with standard attention ($\approx 80$ GB peak) but trains under
+$\approx 20$ GB peak with FlashAttention — the $5\times$–$20\times$ memory reduction headline.
+This is the result that unlocked the $\ge 32\text{K}$ context training that the 2023 long-context
+wave (LongLLaMA, Claude 100K, GPT-4-32K) leaned on.
 
-The technique is implemented in PyTorch's `scaled_dot_product_attention`, JAX, Triton, and every
-training framework's default attention path. Every model in this knowledge base — Llama, DeepSeek,
-Gemma, OLMo — trains on top of FlashAttention or a derivative.
+**FlashAttention-2** (Dao 2023, [arXiv 2307.08691](https://arxiv.org/abs/2307.08691),
+§3.1, Figure 5) reorganizes the inner loop and parallelizes across the sequence axis (FA-1
+parallelized only over batch and head axes). On A100 at $N = 16\text{K}, d = 128$: FA-2 hits
+$\approx 230$ TFLOPS/s vs FA-1's $\approx 140$ TFLOPS/s — 1.7× over v1. End-to-end GPT-3-style
+training at $N = 8\text{K}$ on 64 A100s: $1.4\times$ wall-clock speedup over FA-1.
 
-<p class="section-eyebrow">§ 4 · Why this entry has no adopters</p>
-## A note on attribution
+**FlashAttention-3** (Shah, Dao et al. 2024, [arXiv 2407.08608](https://arxiv.org/abs/2407.08608),
+§4) targets H100's asynchronous tensor-memory accelerator (TMA) and warp-specialized
+scheduling. On H100 at $d = 128, N = 16\text{K}$, fp16: 740 TFLOPS/s — $\approx 75\%$ of H100's
+peak fp16 throughput, $1.5\text{–}2\times$ over FA-2. The same paper reports an fp8 variant at
+1.2 PFLOPS/s on H100, $\approx 1.5\times$ further over fp16.
 
-Like StreamingLLM, FlashAttention is an implementation kernel, not an architectural choice. Saying
-"Llama 3.1 adopts FlashAttention" would be technically true but underdetermined — it's like
-saying the model "adopts the GPU memory hierarchy". The technique is at a different level of
-abstraction than the others in this knowledge base.
+Independent reproduction in PyTorch's `torch.nn.functional.scaled_dot_product_attention`
+(merged via PyTorch 2.0, March 2023) wraps the FlashAttention-2 kernel as one of three
+default backends; the same operator under JAX
+([dot_product_attention](https://github.com/google/jax/pull/15294)) ships an equivalent
+kernel. Triton implementations of FlashAttention-2
+([OpenAI tutorial](https://triton-lang.org/main/getting-started/tutorials/06-fused-attention.html))
+are within 5% of the CUDA kernel on A100 and have become the reference reimplementation for
+custom backends.
 
-The closer analog is GQA's relationship to MHA: GQA changes the *operator*, FlashAttention
-changes the *kernel that implements the operator*. Both matter; only one shows up in the model
-architecture spec sheets.
+The kernel is so universal that **adopting it is invisible at the model-spec level** — none of
+the 50+ models in this knowledge base list "FlashAttention" as an architectural choice, the
+way they list GQA or RoPE. It is in the system stack, not the model card. Llama-3
+(Meta 2024, [arXiv 2407.21783](https://arxiv.org/abs/2407.21783), §3) cites FlashAttention-2 by
+name as the training kernel; DeepSeek-V3
+([arXiv 2412.19437](https://arxiv.org/abs/2412.19437), §3.5) uses a custom FlashAttention-3-style
+kernel; Gemma-2 (Gemma team 2024, [arXiv 2408.00118](https://arxiv.org/abs/2408.00118)) cites
+FA-2 directly. The pattern across all frontier-decoder tech reports is the same: cite, then
+move on. No public study finds a workload where vanilla attention is competitive once the
+sequence length crosses $\approx 2\text{K}$.
+
+For numerical-precision sensitivity, Golden et al. (2024,
+["Is Flash Attention Stable?"](https://arxiv.org/abs/2405.02803), §4) compared FA-2 against
+the reference attention on the same model and observe that bf16 FlashAttention can produce
+training-loss differences of $\approx 10^{-3}$ per step from accumulated reduction-order
+effects in the online-softmax merge — small enough that no production trainer has reported it
+as a quality issue, but non-zero and worth flagging. The fp32 variant is bit-equivalent up to
+reduction order.
 
 <Summary>
-**FlashAttention in one breath.** Tile attention so QK^T and softmax stay in SRAM. Exact (not
-approximate), 2-4× faster, 5-20× less peak memory. Universal in modern training; FlashAttention-3
-on Hopper is the current frontier. The single most important compute-side improvement to
-attention since the 2017 paper.
+**FlashAttention in one breath.** Tile attention so $QK^\top$ and softmax stay in SRAM; use
+online softmax across tile boundaries and recomputation across the backward. Exact (not
+approximate), 2–4× faster than naive on A100, 5–20× less peak memory. FA-2 reorganizes the
+loop for sequence-axis parallelism; FA-3 specializes for H100 async TMA. Universal in modern
+training; invisible at the model-spec level.
 </Summary>

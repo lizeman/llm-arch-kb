@@ -25,73 +25,199 @@ facets:
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The cost MHA pays at inference
+## Decoder inference is bottlenecked on memory, not compute
 
-At training time, MHA's per-head K and V projections parallelize across the batch and sequence
-dimensions and cost very little. At inference time, with batch size 1 and autoregressive
-generation, the KV cache becomes the dominant memory cost. Each token's prior K and V vectors
-must stay resident; each head needs its own copy.
+Shazeer's 2019 framing of the problem is the arithmetic-intensity gap between train and
+decode. At training time, MHA processes a full batch of sequences in parallel: per-layer
+matmul cost is $O(B \cdot T \cdot d_{\text{model}}^2)$ on the projections and
+$O(B \cdot T^2 \cdot d_{\text{model}})$ on the attention scores, both well above the GPU's
+memory-bandwidth ceiling. At decode, one token at a time, batch size effectively 1 per
+sequence, the only work the GPU must do is project the new token and read the entire prior
+$K, V$ cache from HBM to compute the softmax. The cache read dominates wall-clock.
 
-For a 64-head, 128 head-dim, 80-layer model at 128K context, the cache pushes 300 GB — far
-beyond what a single GPU holds. Long-context decoder inference is bottlenecked here.
+Shazeer (2019, §1) reports the empirical asymmetry for a 6-layer transformer at
+$d_{\text{model}} = 1024, H = 8, d_h = 128$: training does $\sim 4$M ops per byte transferred —
+compute-bound on a TPU. Decoding does $\sim 1$ op per byte transferred — three orders of
+magnitude below the hardware's compute/bandwidth ratio. The bottleneck is not the FLOPs of
+attention; it is the bytes of K, V the device must reload each step.
 
-<p class="section-eyebrow">§ 2 · The simplification</p>
-## One write-head
+In concrete numbers: at $d_{\text{model}} = 8192, H = 64, d_h = 128, L = 80$ (Llama-1-65B
+geometry), MHA writes $2 \cdot H \cdot d_h = 2 \cdot d_{\text{model}} = 16$K floats of K, V
+per token per layer. At $T = 128\text{K}$ context in fp16, this stacks to
+$2 \cdot 80 \cdot 16\,000 \cdot 128\,000 \cdot 2 \approx 327$ GB — past the working set of any
+single GPU. The lineage that follows tightens this constraint, with MQA the most aggressive
+first attempt.
 
-Shazeer's 2019 proposal: keep $H$ query heads, but project K and V only *once* per layer. All
-heads attend over the same K, V pair.
+The lineage starts here. Predecessor: vanilla [MHA](/llm-arch-kb/attention/mha/) of Vaswani et
+al. (2017), where the cache size scales with $H$. Successors, both of which moderate MQA's
+quality cost: [GQA](/llm-arch-kb/attention/gqa/) (Ainslie et al. 2023) shares K, V across
+*groups* of query heads rather than collapsing to one; [MLA](/llm-arch-kb/attention/mla/)
+(DeepSeek-V2, 2024) compresses K, V to a per-token latent and reconstructs per-head views on
+the fly. Both retain enough K, V degrees of freedom to recover most of MHA's quality.
 
-$$\mathbf{Q}_i = X W_Q^{(i)} \quad (i = 1, \ldots, H),\qquad \mathbf{K} = X W_K,\quad \mathbf{V} = X W_V.$$
+The preview: MQA's $H\times$ cache reduction is the lower bound of "shared KV" — share
+maximally — and serves as the contrastive baseline for everything in the lineage.
 
-The KV cache per token per layer drops from $2 \cdot H \cdot d_h$ to $2 \cdot d_h$ floats — an
-$H\times$ reduction. For the 64-head, 128 head-dim, 80-layer setup, the cache goes from 300 GB
-to under 5 GB at 128K context.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## One write-head, H query heads
+
+Start from MHA. Each head $i$ has its own $\mathbf{Q}_i, \mathbf{K}_i, \mathbf{V}_i$ at head
+dim $d_h = d_{\text{model}}/H$, with the layer output
+
+$$\mathrm{MHA}(X) = \bigl[\mathrm{softmax}(\tfrac{1}{\sqrt{d_h}}\mathbf{Q}_i \mathbf{K}_i^\top)\, \mathbf{V}_i\bigr]_{i=1}^H \, W_O,$$
+
+where $\mathbf{Q}_i = X W_Q^{(i)}, \mathbf{K}_i = X W_K^{(i)}, \mathbf{V}_i = X W_V^{(i)}$
+and $W_Q^{(i)}, W_K^{(i)}, W_V^{(i)} \in \mathbb{R}^{d_{\text{model}} \times d_h}$.
+
+Shazeer's modification (2019, §2.2): keep $H$ query projections, replace the per-head $W_K,
+W_V$ with a single shared pair $W_K, W_V \in \mathbb{R}^{d_{\text{model}} \times d_h}$. The
+result is
+
+$$\mathbf{Q}_i = X W_Q^{(i)} \quad (i = 1, \ldots, H),\qquad \mathbf{K} = X W_K,\quad \mathbf{V} = X W_V,$$
+
+with all heads attending over the same K, V matrix:
+
+$$\mathrm{MQA}(X) = \bigl[\mathrm{softmax}(\tfrac{1}{\sqrt{d_h}}\mathbf{Q}_i \mathbf{K}^\top)\, \mathbf{V}\bigr]_{i=1}^H \, W_O.$$
+
+Why this and not, say, average the per-head K, V after the fact? Because the cache is the
+asset to shrink, and averaged-after-the-fact still requires writing per-head K, V into the
+cache during prefill before averaging — the savings are zero. MQA's move is to never
+*construct* per-head K, V at all: the projection matrices $W_K, W_V$ are sized $d_{\text{model}}
+\times d_h$, so the model has exactly one K vector and one V vector per token, no matter how
+many query heads consume them.
+
+Why share K and V together, and not (say) share K but keep per-head V? Shazeer's choice is
+symmetric — both K and V collapse to a single head — because the cache size at long context
+is dominated by the larger of the two, and the FLOP saving from collapsing both is symmetric.
+The asymmetric variant ("shared K, per-head V") is unexplored in the original paper;
+Ainslie et al. (2023) note (§2.1) that the asymmetric design would only save half the cache
+while costing roughly the same quality.
+
+The per-token, per-layer K-cache and V-cache sizes drop from
+
+$$M_{\text{KV,MHA}} = 2 \cdot H \cdot d_h = 2 \cdot d_{\text{model}}$$
+
+to
+
+$$M_{\text{KV,MQA}} = 2 \cdot d_h,$$
+
+an $H\times$ reduction. For the Llama-1-65B-shaped model above, this is $327\text{ GB} / 64
+\approx 5.1$ GB — within working set of a single A100.
+
+**Parameter count.** The attention sub-layer parameter count drops from
+$P_{\text{MHA}} = 4 \cdot d_{\text{model}}^2$ (three projections at $d_{\text{model}}^2$ each
+plus $W_O$) to
+
+$$P_{\text{MQA}} = d_{\text{model}}^2 \cdot \left(2 + \tfrac{2}{H}\right),$$
+
+where the two full-rank terms are $W_Q$ and $W_O$ and the $2/H$ piece is the shared $W_K, W_V$
+at $d_{\text{model}} \times d_h$ each. For Llama-1-65B at $d_{\text{model}} = 8192, H = 64$:
+$P_{\text{MQA}} \approx 2.03 \cdot d_{\text{model}}^2 \approx 136$M parameters per layer, vs
+$P_{\text{MHA}} = 4 \cdot d_{\text{model}}^2 \approx 268$M. About half the attention
+parameters disappear — but the attention sub-layer is roughly a third of total model params,
+so total model size shrinks by $\approx 15\%$ at fixed $d_{\text{model}}, L$, which is
+why Shazeer's paper measures *relative* quality at fixed total parameter budget rather than
+fixed $d_{\text{model}}$.
+
+**Compute FLOPs.** Per layer at sequence length $T$, the attention scores still cost
+$2 \cdot H \cdot T^2 \cdot d_h = 2 \cdot T^2 \cdot d_{\text{model}}$ FLOPs — the score matrix
+has the same shape as MHA. The savings are in the projections ($2 \cdot d_{\text{model}}^2 /
+H$ fewer FLOPs on K, V projections) and in the memory traffic, not in the asymptotic FLOP
+count. The wins at decode time come from the HBM read of a single shared $K, V$ instead of
+$H$ per-head copies — bandwidth, not FLOPs.
+
+**An information-bottleneck reading.** MHA gives each head $d_h$ key-direction degrees of
+freedom and $d_h$ value-direction degrees of freedom, for a total cache-side dimension of
+$2 H d_h = 2 d_{\text{model}}$. MQA caps the cache-side at $2 d_h$, independent of $H$. The
+model loses the ability to *disagree across heads* about what to attend to; all $H$ queries
+project against the same $d_h$-dim key subspace. The quality cost MQA pays is the price of
+collapsing that subspace.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
 def mqa(x, W_Q_all, W_K, W_V, W_O, H, mask=None):
+    # x: [B, T, d_model]
+    # W_Q_all: [d_model, H * d_h]  — H per-head query projections, stacked.
+    # W_K, W_V: [d_model, d_h]     — shared across all H query heads (the load-bearing change).
     B, T, D = x.shape
     d_h = D // H
+    # Q: per-head split exactly as in MHA.
     q = (x @ W_Q_all).view(B, T, H, d_h).transpose(1, 2)  # [B, H, T, d_h]
+    # K, V: one shared head; insert a length-1 H axis so it broadcasts.
     k = (x @ W_K).unsqueeze(1)                            # [B, 1, T, d_h]
-    v = (x @ W_V).unsqueeze(1)
-    logits = (q @ k.transpose(-2, -1)) / d_h**0.5         # broadcasts over H
-    if mask is not None: logits = logits.masked_fill(mask, float("-inf"))
+    v = (x @ W_V).unsqueeze(1)                            # [B, 1, T, d_h]
+    # Scores: broadcasting over H since k has H=1.
+    logits = (q @ k.transpose(-2, -1)) / d_h**0.5         # [B, H, T, T]
+    if mask is not None:
+        logits = logits.masked_fill(mask, float("-inf"))
     out = logits.softmax(-1) @ v                          # [B, H, T, d_h]
     return out.transpose(1, 2).reshape(B, T, D) @ W_O.T
 ```
 
-<p class="section-eyebrow">§ 3 · The quality cost</p>
-## Why nobody runs pure MQA anymore
+The mechanical change relative to MHA is one line: $W_K$ and $W_V$ project to $d_h$
+dimensions instead of $H \cdot d_h$, and the resulting K, V tensors carry a length-1 H axis
+that broadcasts across the per-head softmax. The KV-cache code, which gets the K, V tensors
+appended to a growing buffer, writes $d_h$ floats per token per layer instead of $H \cdot d_h$.
 
-Shazeer's paper reports MQA approximately matching MHA on translation tasks, with a 12× decode
-speedup on a 6-layer model (Table 2). PaLM (Chowdhery et al. 2022) used MQA at 540B and reported
-no measurable quality difference at that scale.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What MQA cost, what its successors recovered
 
-Later work was less sanguine. The GQA paper (Ainslie et al. 2023) found MQA losing ~1.5
-quality points vs MHA on summarization and translation at the T5-XXL scale (Table 1). The
-asymmetry is intuitive: every head must now agree on which positions matter, where MHA let
-heads specialize on different relations.
+Shazeer (2019, Table 2) on WMT 2014 En-De translation, 6-layer encoder-decoder at
+$d_{\text{model}} = 1024, H = 8$: baseline MHA at $28.4$ BLEU, MQA at $27.7$ BLEU — a
+0.7 BLEU regression. Decode time on a TPU v2 dropped from 46 μs/token to 3.8 μs/token,
+the headline $\sim 12\times$ speedup. The cache size dropped from $H = 8$ per-head copies to 1
+shared copy — an $8\times$ memory reduction.
 
-The pattern that emerged: MQA's savings are too valuable to leave on the table, but its quality
-cost is real enough to motivate a middle ground — GQA's partial sharing across small groups.
-GQA closes most of the quality gap while keeping ~$H/8$-fold cache reduction. Today every
-production decoder we document uses GQA or MLA, not plain MQA.
+PaLM (Chowdhery et al. 2022, [arXiv 2204.02311](https://arxiv.org/abs/2204.02311), §2.1)
+adopted MQA at 540B and reported "no observable quality drop" relative to a smaller MHA
+ablation. The ablation in Appendix G of that paper sweeps MQA vs MHA at the 8B parameter
+scale: MQA loses $\approx 0.4\%$ on the language-modeling-loss aggregate but is within noise
+on most downstream tasks. PaLM's case for MQA was scale-dependent: the quality cost looked
+acceptable at very large model size, where the redundancy in K, V across heads is reportedly
+higher.
 
-<p class="section-eyebrow">§ 4 · MQA's place in the lineage</p>
-## Conceptual stepping stone
+The GQA paper of Ainslie et al. (2023, [arXiv 2305.13245](https://arxiv.org/abs/2305.13245),
+Table 1) re-ran the comparison at T5-XXL (11B) scale, with a more comprehensive eval suite.
+MQA lost 1.5 quality points on summarization-aggregate (SAMSum, MultiNews, MediaSum) and 0.9
+points on reading-comprehension-aggregate (NQ, TriviaQA), compared with MHA. The same paper
+shows that GQA-8 — eight groups, so $H/8$ K, V heads — closes nearly all of that gap while
+keeping $H/8 \approx 8\times$ cache reduction. Ainslie et al. attribute the quality loss to
+the loss of per-head specialization: when all heads must share a single key projection, heads
+cannot disagree on where to look.
 
-MQA's importance is not as a final destination but as the move that proved KV sharing was
-viable. Once a single shared K, V worked at all, the design space opened: group sharing (GQA),
-latent compression (MLA), and decoupled positional sub-heads (MLA's RoPE band) all build on the
-basic observation that per-head K, V was over-provisioned.
+Pope et al. (2023, "Efficiently Scaling Transformer Inference",
+[arXiv 2211.05102](https://arxiv.org/abs/2211.05102), Figure 5) characterized the inference
+speedup for PaLM-540B at long context: MQA reduced batch-1 decode latency by $\approx 7\times$
+at 8K context, with the ratio growing toward the asymptotic $H\times$ at longer contexts where
+the KV-cache read dominates. The same paper noted that MQA's benefits compound with
+tensor-parallel inference, since the smaller K, V no longer need to be all-gathered across
+TP ranks — a system-level argument that subsequent quantization and KV-paging work
+(vLLM, PagedAttention) implicitly inherit.
 
-For context on the descendants:
+The production picture in 2024–26 is that pure MQA is rare: Falcon-180B
+([arXiv 2311.16867](https://arxiv.org/abs/2311.16867), §3.1) shipped MQA and is the largest
+publicly-documented MQA model; PaLM-2 (Anil et al. 2023) shipped MQA. Llama-2 and every
+subsequent Llama variant chose GQA instead; Mistral, Gemma-2, Qwen, DeepSeek all went GQA or
+MLA. The lineage settled on partial sharing as the better trade. MQA's role today is the
+contrastive endpoint — "if we collapsed all the way to one K, V, here is the quality cost"
+— against which GQA's chosen group count gets calibrated.
 
-- [GQA](/llm-arch-kb/attention/gqa/) — partial sharing across groups of query heads.
-- [MLA](/llm-arch-kb/attention/mla/) — latent-space compression instead of head sharing.
+No public study disentangles MQA's quality cost from confounded factors like training-data
+mixture or fine-tuning recipe at frontier scale. The cleanest comparison is still the
+Ainslie et al. (2023) T5-XXL table, which is two scaling generations behind 2026 frontier
+decoders.
+
+The "uptraining" trick from Ainslie et al. (2023, §3.1) is worth flagging: an MHA checkpoint
+can be converted to MQA by averaging the per-head $W_K, W_V$ into a single shared projection,
+then continuing pre-training for $\approx 5\%$ of original steps. This recovers most of the
+quality lost to the average-collapse, and is the converted-from-MHA recipe several papers used
+to retrofit MQA onto existing checkpoints without retraining from scratch. The same paper's
+Table 6 shows uptraining recovers $\approx 0.6$ of the 1.5-point summarization gap.
 
 <Summary>
-**MQA in one breath.** Share one K, V across all H query heads. H× KV cache reduction; small but
-real quality cost that motivated GQA's middle ground. Foundational on the lineage from MHA to
-modern KV-friendly attention, but no current frontier open decoder ships pure MQA.
+**MQA in one breath.** Share one K, V across all $H$ query heads. $H\times$ KV-cache reduction;
+small but real quality cost that motivated GQA's middle ground. Foundational on the lineage
+from MHA to modern KV-friendly attention, but no current frontier open decoder ships pure MQA.
 </Summary>

@@ -51,92 +51,246 @@ import MoeRouting from "~/components/figures/MoeRouting";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The MoE setup
+## Parameter scaling without FLOP scaling
 
-A Mixture-of-Experts layer replaces a dense FFN with $E$ parallel "expert" FFNs and a small
-gating network that picks which experts handle each token:
+A dense transformer with hidden size $d$ and FFN intermediate size $d_{ff}=4d$ spends
+$\approx 8\,d^{2}$ FLOPs per token on the FFN. Doubling $d_{ff}$ doubles both the parameter
+count and the per-token FLOPs — capacity and compute are welded together. Mixture-of-Experts
+(MoE) breaks that coupling. A Switch Transformer layer with $N$ expert FFNs of width $d_{ff}$
+and top-$K$ routing has $N$ times the FFN parameters but only $K$ times the per-token FFN
+FLOPs (Fedus et al., 2022, [arXiv:2101.03961](https://arxiv.org/abs/2101.03961), §2). Holding
+$K=1$ or $K=2$ fixed, one can scale total parameters by an order of magnitude while keeping
+the FLOP budget of a much smaller dense model. This is the lever every modern frontier
+open-weights release pulls: Mixtral 8×7B at 47B total / 13B active
+([arXiv:2401.04088](https://arxiv.org/abs/2401.04088) §2.1), DeepSeek-V3 at 671B total / 37B
+active ([arXiv:2412.19437](https://arxiv.org/abs/2412.19437) §2), Qwen3-Next 80B at 80B total
+/ 3B active.
 
-$$\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathrm{topK}(g(\mathbf{x}))} g_i(\mathbf{x})\,f_i(\mathbf{x}),$$
+Two failure modes plague the vanilla recipe. First, *coarse granularity*: GShard
+([arXiv:2006.16668](https://arxiv.org/abs/2006.16668) §3.2) and Switch use a small expert
+count ($N=8$ to $128$) with each expert sized to a full FFN. With $K=2$ of $N=8$, the gate
+chooses among only $\binom{8}{2}=28$ expert combinations per token — coarse, and each expert
+must absorb a broad slice of input space. A single Mixtral expert is forced to cover Python
+syntax, German morphology, and basic arithmetic in the same parameters
+([arXiv:2401.04088](https://arxiv.org/abs/2401.04088) §3.4 reports per-domain routing
+distributions that are nearly uniform rather than peaked — consistent with experts that have
+not specialized). Second, *redundant common knowledge*: tokens that need basic linguistic
+competence (almost every token) route through different experts depending on minor surface
+features, so every expert ends up re-learning the same common weights. The auxiliary
+load-balancing loss compounds the problem by actively pushing the gate toward uniform
+routing even when uniformity is not what the task wants
+([arXiv:2101.03961](https://arxiv.org/abs/2101.03961) §2.2).
 
-where $g(\mathbf{x}) \in \mathbb{R}^E$ is the gate's softmax over experts and only the top-K
-weights and expert outputs are computed. Total parameter count scales with $E$; *activated*
-parameter count per token scales only with $K$. Sparse on both forward and backward.
+The lineage so far: Shazeer et al. ([arXiv:1701.06538](https://arxiv.org/abs/1701.06538))
+introduced sparsely-gated MoE for LSTMs; GShard scaled it to transformers with the standard
+top-2 routing recipe; Switch Transformer pushed to top-1 to simplify dispatch and balance;
+Mixtral demonstrated the recipe at frontier open-weights quality with $N=8$, top-2. All four
+share the same coarse granularity, leaving the specialization-vs-redundancy tension
+unresolved.
 
-This is what makes 1T-parameter models inferable on real hardware: only ~30B parameters fire
-per token, not the whole network.
+DeepSeekMoE ([arXiv:2401.06066](https://arxiv.org/abs/2401.06066)) makes two coupled changes
+to the layer — finer experts at higher top-$K$, plus a small number of always-on shared
+experts — and shows in 2B / 16B / 145B ablations that the resulting layer reaches the loss
+of a vanilla MoE with roughly $1.5\times$ the activated compute.
 
-<p class="section-eyebrow">§ 2 · Two failure modes of vanilla MoE</p>
-## Coarse experts, redundant common work
+DeepSeekMoE ([arXiv:2401.06066](https://arxiv.org/abs/2401.06066)) makes two coupled changes
+to the layer — finer experts at higher top-$K$, plus a small number of always-on shared
+experts — and shows in 2B / 16B / 145B ablations that the resulting layer reaches the loss
+of a vanilla MoE with roughly $1.5\times$ the activated compute.
 
-Pre-DeepSeekMoE designs (GShard, Switch Transformer, Mixtral) typically used a moderate number
-of large experts (8–16, each roughly the size of a full dense FFN). Two issues followed:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From top-K MoE to fine-grained + shared
 
-1. **Coarse expert granularity.** With only 8 experts, each one has to cover a huge slice of
-   input space — a single expert ends up handling both "Python syntax" and "Russian grammar".
-   Specialization is weak.
-2. **Common knowledge gets stored everywhere.** Tokens that need basic linguistic competence
-   (almost every token) route through different experts each time, forcing every expert to
-   redundantly learn the same common-knowledge weights.
+**Start: vanilla top-$K$ MoE.** Let $\mathbf{u}_t \in \mathbb{R}^{d}$ be the input to the MoE
+layer for token $t$ (the post-attention residual stream), $N$ the number of routed experts,
+and $K$ the number activated per token. Each expert $\mathrm{FFN}_i$ is a full-width FFN with
+intermediate size $d_{ff}$. The gate produces affinity scores $s_{i,t} = \mathrm{Softmax}_i(\mathbf{u}_t^{\top}\mathbf{e}_i)$
+over expert centroids $\mathbf{e}_i \in \mathbb{R}^{d}$, and the layer output is
 
-<p class="section-eyebrow">§ 3 · The two changes</p>
-## Fine-grained segmentation + shared experts
+$$
+\mathbf{h}_t \;=\; \sum_{i=1}^{N} g_{i,t}\,\mathrm{FFN}_i(\mathbf{u}_t) \;+\; \mathbf{u}_t,
+\qquad
+g_{i,t} \;=\;
+\begin{cases}
+ s_{i,t}, & s_{i,t} \in \mathrm{Top\text{-}K}\big(\{s_{j,t}\}_{j=1}^{N}\big),\\
+ 0, & \text{otherwise.}
+\end{cases}
+\tag{1}
+$$
 
-DeepSeekMoE makes two coupled changes:
+Only $K$ of the $g_{i,t}$ are non-zero per token, so the per-token FFN FLOP cost is
+$K \cdot \mathcal{O}(d\,d_{ff})$ regardless of $N$. Total FFN parameters are $N \cdot 2\,d\,d_{ff}$
+(two matrices per FFN, ignoring biases and the gate variant; SwiGLU adds a third). Activated
+parameters per token are $K \cdot 2\,d\,d_{ff}$. This is the form Switch Transformer ($K=1$),
+GShard, and Mixtral ($K=2, N=8$) all instantiate.
 
-**Fine-grained segmentation.** Split each "expert" into $m$ smaller pieces, then increase top-K
-by the same factor. Where vanilla had top-2 of 8 large experts, DeepSeekMoE has top-2m of 8m
-small experts. Activated parameter count is identical, but specialization is much sharper —
-each tiny expert can afford to learn one narrow concept.
+**Move 1: fine-grained expert segmentation.** Replace each of the $N$ experts with $m$
+slimmer copies whose intermediate size is $d_{ff}/m$. The new expert count is $mN$, and the
+top-$K$ is raised to $mK$. The layer becomes (DeepSeekMoE §3.1, Eq. 6–8):
 
-**Shared expert isolation.** Reserve a small set $K_s$ of "shared" experts that are *always*
-active for every token (they bypass the gate). They absorb the common-knowledge work, freeing
-the routed experts to specialize.
+$$
+\mathbf{h}_t \;=\; \sum_{i=1}^{mN} g_{i,t}\,\mathrm{FFN}_i(\mathbf{u}_t) \;+\; \mathbf{u}_t,
+\qquad
+g_{i,t} \;=\;
+\begin{cases}
+ s_{i,t}, & s_{i,t} \in \mathrm{Top\text{-}}mK\big(\{s_{j,t}\}_{j=1}^{mN}\big),\\
+ 0, & \text{otherwise.}
+\end{cases}
+\tag{2}
+$$
 
-The new layer is
+The key invariant: activated parameters per token are unchanged. Each fine expert has
+intermediate size $d_{ff}/m$ and so contributes $2\,d\,d_{ff}/m$ parameters; $mK$ of them
+fire; total activated $= mK \cdot 2\,d\,d_{ff}/m = K \cdot 2\,d\,d_{ff}$, identical to (1).
+Total parameters are likewise unchanged at $N \cdot 2\,d\,d_{ff}$. What changes is the
+*combinatorial flexibility* of routing. Switch Transformer / GShard with $K=2$ of $N=16$
+offers $\binom{16}{2}=120$ possible expert subsets; raising to $mK=8$ of $mN=64$ (i.e.,
+$m=4$) offers $\binom{64}{8} \approx 4.4 \times 10^{9}$ subsets
+([arXiv:2401.06066](https://arxiv.org/abs/2401.06066) §3.1). The gate now has the addressing
+resolution to assign each narrow concept (Python syntax, German noun gender, basic
+arithmetic) to its own small expert.
 
-$$\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathrm{topK}(g(\mathbf{x}))} g_i\,f_i(\mathbf{x}) + \sum_{j \in \mathrm{shared}} f_j(\mathbf{x}).$$
+**Why not just raise $K$ without segmentation?** Because that costs FLOPs linearly: top-$8$
+of $N=16$ activates $8\times$ the FFN compute of top-$2$. Segmentation buys finer routing at
+no FLOP increase.
+
+**Why not just raise $N$ without raising $K$?** Adding more large experts at fixed $K$ shrinks
+the chance each expert gets enough tokens to train on, and does not give the gate more *per-token*
+addressing resolution (still picks $K$ of $N$). Segmentation gives finer per-token resolution.
+
+**Move 2: shared expert isolation.** Reserve $K_s$ of the fine experts as *shared*: they
+bypass the gate and fire on every token. The remaining $mN - K_s$ are routed, and the gate
+picks $mK - K_s$ of them. The layer becomes (DeepSeekMoE §3.2, Eq. 9–11):
+
+$$
+\mathbf{h}_t \;=\; \sum_{i=1}^{K_s}\mathrm{FFN}_i(\mathbf{u}_t)
+\;+\; \sum_{i=K_s+1}^{mN} g_{i,t}\,\mathrm{FFN}_i(\mathbf{u}_t) \;+\; \mathbf{u}_t,
+\tag{3}
+$$
+
+with $g_{i,t}$ as in (2) but with $\mathrm{Top\text{-}}(mK - K_s)$ over the routed pool only.
+The activated parameter budget stays $mK \cdot 2\,d\,d_{ff}/m = 2K\,d\,d_{ff}$ — same as
+vanilla — because we shifted $K_s$ of the activations from "routed and learned" to "always-on
+and shared." Setting $K_s = 1$ or $K_s = 2$ is what production configurations use; the
+DeepSeek-V2 layer has $K_s = 2, mN-K_s = 160, mK-K_s = 6$
+([arXiv:2405.04434](https://arxiv.org/abs/2405.04434) §2.1), DeepSeek-V3 has
+$K_s = 1, mN-K_s = 256, mK-K_s = 8$ ([arXiv:2412.19437](https://arxiv.org/abs/2412.19437) §2).
+
+**Why a shared expert and not "just train the gate harder"?** The argument is
+information-theoretic. Common-knowledge weights are needed by *every* token; any routing
+decision that sometimes sends a token away from those weights forces the gate to spend
+capacity re-learning them in multiple experts. Reserving $K_s$ experts that always fire
+removes the routing decision entirely for that fraction of the layer, freeing the routed
+experts to specialize on input-specific features. The probing study in §4 shows this matters:
+disabling the single shared expert in DeepSeekMoE 2B and replacing it with one extra routed
+slot raises Pile loss from $1.808$ to $2.414$
+([arXiv:2401.06066](https://arxiv.org/abs/2401.06066) §4.5).
+
+**Load balance.** Without intervention, the gate can collapse to a few favored experts. The
+paper adds two auxiliary losses (§3.3): an expert-level balance loss
+$\mathcal{L}_{\mathrm{ExpBal}} = \alpha_1 \sum_{i=1}^{N'} f_i P_i$ (Eq. 12) where $f_i$ is the
+fraction of tokens routed to expert $i$ and $P_i$ is the mean gate probability assigned to
+it, and a device-level balance loss
+$\mathcal{L}_{\mathrm{DevBal}} = \alpha_2 \sum_{i=1}^{D} f'_i P'_i$ (Eq. 15) that balances
+load across device groups rather than individual experts. Successor work
+([aux-loss-free MoE](https://arxiv.org/abs/2408.15664), DeepSeek-V3 §3.4) replaces both with
+a per-expert bias that floats up when an expert is under-loaded and down when over-loaded —
+gradient-free balancing at no expressivity cost.
+
+**Final budget.** With $N'_r = mN - K_s$ routed experts and $K'_r = mK - K_s$ activated:
+total FFN params $= mN \cdot 2\,d\,d_{ff}/m = 2N\,d\,d_{ff}$; activated FFN params per token
+$= (K_s + K'_r) \cdot 2\,d\,d_{ff}/m = 2K\,d\,d_{ff}$. The total/activated ratio is $N/K$ — the
+same lever as before — but the routing decision now happens at a finer grain over a larger pool.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## A DeepSeekMoE layer in sketch form
+
+```python
+def deepseek_moe_layer(u, routed_experts, shared_experts, gate, K_r):
+    # u: [B, T, d]
+    # routed_experts: list of (mN - K_s) fine-grained FFNs, each d_ff/m wide
+    # shared_experts: list of K_s always-on fine-grained FFNs
+    # gate: linear d -> (mN - K_s); K_r = mK - K_s
+
+    # --- shared lane: every token sees every shared expert ---
+    h_shared = sum(f(u) for f in shared_experts)        # [B, T, d]
+
+    # --- routed lane: top-K_r selection over the routed pool ---
+    scores = softmax(gate(u), dim=-1)                   # [B, T, mN - K_s]
+    topk_w, topk_idx = scores.topk(K_r, dim=-1)         # [B, T, K_r], [B, T, K_r]
+    # the paper keeps raw softmax weights (no re-normalization); some variants renormalize
+
+    # dispatch: gather each token's K_r expert outputs and combine
+    h_routed = dispatch_and_combine(u, routed_experts, topk_idx, topk_w)  # [B, T, d]
+
+    return u + h_shared + h_routed                      # residual add
+```
+
+`dispatch_and_combine` is the all-to-all permutation that groups tokens by chosen expert,
+runs each expert on its assigned slice, and scatters the outputs back, weighted by `topk_w`.
+The mechanics of that permutation are the engineering bulk of any MoE implementation but are
+orthogonal to the algorithmic claim being illustrated here.
+
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## How much the two changes buy
+
+**2B-scale validation (Table 1).** The introducing paper trains a $2.0$B-total / $0.3$B-active
+DeepSeekMoE configuration ($1$ shared expert, $63$ routed at $1/4$ FFN width, top-$7$ routed)
+against a same-budget GShard 2B with $16$ standard-width experts at top-$2$. On Pile validation
+loss DeepSeekMoE reaches $1.808$ versus GShard's $1.867$, and on downstream zero-shot
+benchmarks: HellaSwag $54.8\%$ vs $50.5\%$, PIQA $72.3\%$ vs $70.6\%$, ARC-challenge $34.3\%$
+vs $31.6\%$, TriviaQA $16.6\%$ vs $10.2\%$
+([arXiv:2401.06066](https://arxiv.org/abs/2401.06066) Table 1, §4.1). Table 2 compares against
+a "GShard$\times 1.5$" baseline at $2.9$B total / $0.45$B activated — DeepSeekMoE 2B matches it
+roughly, meaning the recipe gets the loss of a 1.5$\times$-larger vanilla MoE at the same
+activated compute.
+
+**Expert specialization probes (§4.5).** Two ablations isolate where the gain comes from. (a)
+*Disable top routed experts at inference.* The Pile loss curve when knocking out the highest-
+ranked routed experts rises faster for DeepSeekMoE than for GShard$\times 1.5$, indicating
+each routed expert in DeepSeekMoE is less replaceable by its peers — lower parameter
+redundancy. (b) *Disable the shared expert.* Setting $K_s = 0$ while activating one extra
+routed slot raises Pile loss from $1.808$ to $2.414$, a much larger jump than knocking out a
+routed expert. The shared expert holds high-value common-knowledge weights that routed
+experts cannot reproduce on demand ([arXiv:2401.06066](https://arxiv.org/abs/2401.06066) §4.5).
+
+**16B-scale follow-through (Tables 3–4).** The $16.4$B-total / $2.8$B-active DeepSeekMoE
+model, trained on 2T tokens, matches a fully dense DeepSeek 7B on Pile (BPB $0.74$ vs $0.75$)
+at $40.5\%$ of training FLOPs, and out-performs LLaMA-2 7B on majority of benchmarks at
+$39.6\%$ of LLaMA's training compute, including HumanEval $26.8\%$ vs $14.6\%$ and GSM8K
+$18.8\%$ vs $15.5\%$ ([arXiv:2401.06066](https://arxiv.org/abs/2401.06066) §5, Tables 3–4).
+
+**145B-scale extension (Table 6).** A $144.6$B-total / $22.2$B-active DeepSeekMoE 145B
+trained on only $245$B tokens reaches Pile loss $1.876$ versus DeepSeek 67B dense at $1.905$,
+at $28.5\%$ of the dense FLOP budget; a half-activated variant at $12.2$B active matches
+DeepSeek 67B at $18.2\%$ of compute ([arXiv:2401.06066](https://arxiv.org/abs/2401.06066) §7,
+Table 6). MMLU lags ($39.4\%$ vs $45.1\%$) — the paper attributes this to the smaller
+attention parameter count rather than the MoE recipe.
+
+**Production adoption.** DeepSeek-V2 (236B total / 21B active) keeps the recipe with
+$N_r = 162$ routed, $K_s = 2$ shared, top-$6$ routing
+([arXiv:2405.04434](https://arxiv.org/abs/2405.04434) §2.1). DeepSeek-V3 (671B total / 37B
+active) scales to $N_r = 256$ routed, $K_s = 1$ shared, top-$8$ routing, and switches the
+balance mechanism to the aux-loss-free bias scheme; it reports a near-monotone improvement on
+downstream loss versus a same-FLOP V2 baseline
+([arXiv:2412.19437](https://arxiv.org/abs/2412.19437) §2, §3.4). DeepSeek-V2 §2.1 also runs an
+internal Mixtral-style baseline (8 large experts, top-2, same total parameters and same
+training tokens) and reports the DeepSeekMoE variant winning on validation loss by a
+non-trivial margin — the cleanest like-for-like Mixtral-vs-DeepSeekMoE comparison currently
+in the public literature. The recipe has since been adopted by GLM-4.5
+([arXiv:2508.06471](https://arxiv.org/abs/2508.06471)), MiniMax-01
+([arXiv:2501.08313](https://arxiv.org/abs/2501.08313)), Hunyuan-Large
+([arXiv:2411.02265](https://arxiv.org/abs/2411.02265) §3) and Qwen3-Next — independent
+adoptions but not independent ablations. No external peer-reviewed reproduction of the
+2B-scale ablation has been published; the strongest external evidence remains the production
+scaling results above.
 
 <MoeRouting client:visible />
 
-```python
-def deepseek_moe(x, experts, shared_experts, gate, K):
-    # x: [B, T, d_model]   experts: list of E fine-grained FFNs
-    logits = gate(x)                        # [B, T, E]
-    topk_w, topk_idx = logits.topk(K, dim=-1)
-    topk_w = topk_w.softmax(-1)             # normalize over the chosen K only
-    routed = dispatch_and_combine(x, experts, topk_idx, topk_w)
-    shared = sum(f(x) for f in shared_experts)
-    return routed + shared
-```
-
-<p class="section-eyebrow">§ 4 · Load balancing</p>
-## Keep experts from collapsing
-
-A second concern in MoE training: nothing in the loss directly prevents the gate from sending
-all tokens to a single expert. Switch Transformer and Mixtral use an auxiliary load-balancing
-loss that penalizes uneven expert utilization. The auxiliary term has a small but measurable
-cost on downstream quality — it pulls the gate away from what it would choose for accuracy.
-
-DeepSeek V3 introduced an **auxiliary-loss-free** routing scheme: instead of a balance loss,
-maintain a per-expert bias term that is incremented when an expert is over-used and decremented
-when under-used. The bias enters at top-K selection time but does *not* enter the final
-attention/FFN output computation, so it costs nothing in expressivity. See the DeepSeek V3
-paper §3.4 for the exact update rule. This is the variant in production DeepSeek V3.
-
-<p class="section-eyebrow">§ 5 · Results</p>
-## Empirical evidence
-
-DeepSeekMoE (Table 1, the original 2024 paper) reports a 16B/2.8B-active MoE matching the
-quality of a 7B dense model with ~40% of the training compute. The follow-up V2 (236B/21B
-active) and V3 (671B/37B active) papers reuse the same routing scheme essentially unchanged.
-
-The technique is now the dominant MoE recipe in open releases: DeepSeek V2/V3 use it, Kimi K2
-uses a closely related variant. The contrast with Mixtral's coarser routing remains a clean
-ablation in the literature.
-
 <Summary>
-**DeepSeekMoE in one breath.** Many small experts plus a few always-on shared experts. The
-gate routes top-K out of many; the shared lane handles common-knowledge work so routed experts
-can specialize sharply. Activated parameter count stays under 6% of total; quality matches
-dense models at under half the training compute.
+**DeepSeekMoE in one breath.** Split each big expert into $m$ slim experts at top-$mK$ — same
+activated FLOPs, $10^{7}\times$ more routing combinations, sharper specialization. Reserve
+$K_s$ always-on shared experts for common-knowledge work so routed experts stop re-learning
+it. The 2B ablation matches GShard$\times 1.5$ on Pile loss; 16B matches dense DeepSeek 7B at
+$40\%$ of training compute; production V2/V3 keep the recipe.
 </Summary>

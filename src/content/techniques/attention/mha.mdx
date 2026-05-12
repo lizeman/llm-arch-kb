@@ -31,84 +31,202 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## One attention is not enough
+## One attention head cannot carry every relation type
 
-A single scaled dot-product attention head over the full $d_{\text{model}}$ space would be
-asked to learn every kind of relation a token might need — syntactic, semantic, positional,
-discourse-level — into one set of weights. The 2017 transformer's bet: it works better to run
-$H$ independent attention heads in parallel, each free to attend to a different aspect of the
-input.
+Vaswani et al. (2017) opened the transformer paper with a deliberately weak baseline: a single
+scaled dot-product attention over the full model width $d_{\text{model}} = 512$. With queries,
+keys and values living in one inner-product space, every relation a token might want to express
+— subject-verb agreement, coreference, positional adjacency, topical similarity — collapses
+onto the same set of $W_Q, W_K, W_V$ weights. The bet of "Attention Is All You Need" §3.2.2 is
+that splitting the projection into $H$ smaller heads, each with its own $d_h = d_{\text{model}}/H$
+subspace, gives the optimizer enough independent capacity to specialize.
 
-This is the move that makes "attention is all you need" actually work. A single attention
-flattens the relational structure of language into one inner-product space; many parallel
-heads let that structure decompose.
+Concretely: at $d_{\text{model}} = 512, H = 8$ the per-head $d_h = 64$ and each head holds
+$3 \cdot 512 \cdot 64 = 98{,}304$ parameters. Across 8 heads plus the output projection
+$W_O \in \mathbb{R}^{512 \times 512}$, the attention sub-layer carries $4 \cdot 512^2 \approx 1.05$M
+parameters — exactly matching the cost of a single full-rank attention while distributing
+expressivity across heads. The paper's Table 3 ablation (row B, $H = 1$) shows base-model
+perplexity rising from 4.92 to 5.29 and BLEU dropping by 0.9 points on WMT En-De when $H$
+is forced to 1 — the empirical case for multiple heads.
 
-<p class="section-eyebrow">§ 2 · The math</p>
-## Project, attend, concatenate
+The lineage runs from the Bahdanau (2014) additive attention used in seq2seq translators,
+through Luong (2015) multiplicative attention, to Cheng et al. (2016) intra-attention which
+first applied attention inside a single sequence. Vaswani's contribution is twofold: dropping
+recurrence entirely (the entire sequence is consumed in parallel), and breaking attention into
+parallel subspaces. The first move is what made the architecture trainable at scale; the
+second is what made it expressive enough to compete with LSTM seq2seq at translation quality.
 
-Per head $i \in \{1, \ldots, H\}$, project Q, K, V into a $d_h$-dimensional subspace (where
-$d_h = d_{\text{model}} / H$):
+What this entry sets up: the layer's exact math, its parameter and compute footprint, the
+mechanical reason its KV cache eventually became intolerable at long context, and what survives
+in every descendant — GQA, MQA, MLA, linear-attention variants — that has supplanted it.
+
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From dot-product attention to H parallel subspaces
+
+The starting point is the scaled dot-product attention of Vaswani et al. (2017) §3.2.1. For a
+sequence of $T$ tokens at width $d_{\text{model}}$, with $X \in \mathbb{R}^{T \times d_{\text{model}}}$
+the input, the operator is
+
+$$\mathrm{Attn}(Q, K, V) = \mathrm{softmax}\!\left(\frac{Q K^\top}{\sqrt{d_k}}\right) V,$$
+
+where $Q, K \in \mathbb{R}^{T \times d_k}$ are queries and keys, $V \in \mathbb{R}^{T \times d_v}$
+are values, and $d_k$ is the key dimension. The $\sqrt{d_k}$ scaling is justified in §3.2.1: for
+random $\mathbf{q}, \mathbf{k}$ with i.i.d. zero-mean unit-variance components, $\mathbf{q}^\top\mathbf{k}$
+has variance $d_k$, so dividing by $\sqrt{d_k}$ keeps the softmax temperature constant as the
+head dimension changes — without it, large $d_k$ pushes the softmax into saturated regions
+where gradients vanish.
+
+Multi-head attention replaces the single projection $W_Q, W_K, W_V$ with $H$ per-head
+projections. For head $i \in \{1, \ldots, H\}$ at head dim $d_h = d_{\text{model}}/H$:
 
 $$\mathbf{Q}_i = X W_Q^{(i)},\quad \mathbf{K}_i = X W_K^{(i)},\quad \mathbf{V}_i = X W_V^{(i)},$$
 
-run scaled dot-product attention:
+with $W_Q^{(i)}, W_K^{(i)}, W_V^{(i)} \in \mathbb{R}^{d_{\text{model}} \times d_h}$. Each head
+computes its own attention
 
-$$\mathrm{head}_i = \mathrm{softmax}\!\left(\frac{\mathbf{Q}_i \mathbf{K}_i^\top}{\sqrt{d_h}}\right)\mathbf{V}_i,$$
+$$\mathrm{head}_i = \mathrm{softmax}\!\left(\frac{\mathbf{Q}_i \mathbf{K}_i^\top}{\sqrt{d_h}}\right) \mathbf{V}_i \in \mathbb{R}^{T \times d_h},$$
 
-concatenate and project back:
+and the outputs concatenate before a final linear projection $W_O \in \mathbb{R}^{d_{\text{model}} \times d_{\text{model}}}$:
 
-$$\mathrm{MHA}(X) = [\mathrm{head}_1; \ldots; \mathrm{head}_H]\, W_O.$$
+$$\mathrm{MHA}(X) = \bigl[\mathrm{head}_1 \,\Vert\, \cdots \,\Vert\, \mathrm{head}_H\bigr]\, W_O.$$
+
+Why split the projection rather than run $H$ full-width attentions? Two reasons in §3.2.2.
+First, parameter parity: the concatenated per-head projection matrices stack to a single matrix
+$W_Q = [W_Q^{(1)} \,\Vert\, \cdots \,\Vert\, W_Q^{(H)}] \in \mathbb{R}^{d_{\text{model}} \times d_{\text{model}}}$,
+so multi-head attention with $H$ heads at $d_h = d_{\text{model}}/H$ costs the same number of
+parameters as single-head attention at $d_k = d_{\text{model}}$. The split is free. Second,
+the lower per-head $d_k$ keeps each head's softmax inputs bounded, which interacts well with the
+$\sqrt{d_k}$ scaling.
+
+Why concatenate instead of average? Concatenation preserves all $H \cdot d_h = d_{\text{model}}$
+output dimensions and lets the downstream $W_O$ choose how to mix them. Averaging would force
+heads to agree on a single output and erase the specialization the architecture is designed to
+encourage.
+
+The causal-decoder version applies a mask $M \in \{0, -\infty\}^{T \times T}$ inside the softmax
+to forbid attending to future positions: $\mathrm{head}_i = \mathrm{softmax}((\mathbf{Q}_i \mathbf{K}_i^\top + M)/\sqrt{d_h})\, \mathbf{V}_i$
+with $M_{tt'} = -\infty$ for $t' > t$. This is what the language-model variants of the
+transformer use.
+
+**Parameter count.** The attention sub-layer carries
+$P_{\text{attn}} = 4 \cdot d_{\text{model}}^2$
+parameters: three $d_{\text{model}} \times d_{\text{model}}$ projection matrices (stacked from
+per-head pieces) plus one output projection. For Llama-1-65B at $d_{\text{model}} = 8192$, this
+is $4 \cdot 8192^2 \approx 268$M parameters per layer.
+
+**FLOP cost.** Per layer, the projections cost $4 \cdot T \cdot d_{\text{model}}^2$ FLOPs and the
+attention-score computation costs $2 \cdot H \cdot T^2 \cdot d_h = 2 \cdot T^2 \cdot d_{\text{model}}$
+FLOPs. The score matrix is the quadratic term that dominates at long $T$.
+
+**KV cache size.** At inference, each generated token writes $K, V \in \mathbb{R}^{H \cdot d_h}$
+to the cache, so cumulative cache size is
+
+$$M_{\text{KV}} = 2 \cdot L \cdot H \cdot d_h \cdot T \cdot \text{bytes/scalar},$$
+
+where $L$ is layer count and $T$ is context length. At $L = 80, H = 64, d_h = 128$, fp16
+($2$ bytes), $T = 128\text{K}$ — the headline DeepSeek-grade long-context setting — the cache is
+$2 \cdot 80 \cdot 64 \cdot 128 \cdot 128\,000 \cdot 2 \approx 335$ GB. This is the cost that
+killed pure MHA for long-context production inference and forced the MQA/GQA/MLA lineage.
+
+The asymmetry between train and inference matters: at training time, the per-head K and V are
+recomputed from $X$ every forward pass and never cached, so MHA's compute per layer is the
+quadratic-in-$T$ score matrix plus $O(T \cdot d_{\text{model}}^2)$ projections. At inference,
+the projections of the new token cost $O(d_{\text{model}}^2)$ but every prior K, V must remain
+resident in HBM to answer the next softmax. The architecture that is cheap to train is the same
+architecture that is expensive to decode — and decode is what production serves.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
+
+The implementation below shows the structural pieces — projection, head split, per-head
+softmax, concatenation, output projection. It is illustrative, not optimized: the in-place
+softmax and matmul fusion that production paths use (FlashAttention's tile loop) hide the
+per-head shape inside a kernel, but the operator definition is the one shown.
 
 ```python
 def mha(x, W_Q, W_K, W_V, W_O, H, mask=None):
     # x: [B, T, d_model]
     B, T, D = x.shape
     d_h = D // H
+    # Project and split into heads.
     q = (x @ W_Q).view(B, T, H, d_h).transpose(1, 2)  # [B, H, T, d_h]
-    k = (x @ W_K).view(B, T, H, d_h).transpose(1, 2)
-    v = (x @ W_V).view(B, T, H, d_h).transpose(1, 2)
-    logits = (q @ k.transpose(-2, -1)) / d_h**0.5
-    if mask is not None: logits = logits.masked_fill(mask, float("-inf"))
+    k = (x @ W_K).view(B, T, H, d_h).transpose(1, 2)  # [B, H, T, d_h]
+    v = (x @ W_V).view(B, T, H, d_h).transpose(1, 2)  # [B, H, T, d_h]
+    # Per-head scores: each head sees its own d_h-dim subspace.
+    logits = (q @ k.transpose(-2, -1)) / d_h**0.5     # [B, H, T, T]
+    if mask is not None:
+        logits = logits.masked_fill(mask, float("-inf"))
+    # Softmax over the key axis, then mix V.
     out = logits.softmax(-1) @ v                       # [B, H, T, d_h]
-    return out.transpose(1, 2).reshape(B, T, D) @ W_O.T
+    # Concatenate heads (transpose then reshape) and project.
+    return out.transpose(1, 2).reshape(B, T, D) @ W_O.T  # [B, T, d_model]
 ```
 
-<p class="section-eyebrow">§ 3 · Why it was eventually replaced</p>
-## The KV-cache problem
+The load-bearing structure: K and V are written per-head, with a separate $(T, d_h)$ tile
+per head per layer. Every variant in the lineage modifies exactly that step. MQA collapses to
+one shared K, V; GQA partitions heads into groups; MLA replaces per-head K, V with a single
+low-rank latent. Everything else — the softmax, the $\sqrt{d_h}$ scaling, the per-head split,
+the concatenation — survives.
 
-MHA has one cost that becomes intolerable at long context: each head has its own K, V. The KV
-cache per token per layer is $2 \cdot H \cdot d_h = 2 \cdot d_{\text{model}}$ floats. For a 64-head
-model at $d_{\text{model}} = 8192$, that is 32 KB per token per layer in fp16. At 128K context
-across 80 layers, the cache exceeds 300 GB — well past the practical inference budget.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the original paper reported, what later work confirmed
 
-The successor lineage tightened this constraint:
+The base Transformer at $d_{\text{model}} = 512, H = 8, L = 6$ scored 27.3 BLEU on WMT
+2014 En-De and 38.1 BLEU on En-Fr, beating every prior published result while training in 12
+hours on 8 P100s (Vaswani et al. 2017, Table 2). The transformer-big variant at
+$d_{\text{model}} = 1024, H = 16, L = 6$ pushed En-De to 28.4 and En-Fr to 41.8 (Table 2 rows
+4–5). The head-count ablation in Table 3 sweeps $H \in \{1, 4, 8, 16, 32\}$ at fixed parameter
+budget: $H = 1$ loses 0.9 BLEU vs $H = 8$; $H = 4, 8, 16$ are within 0.2 BLEU of each other;
+$H = 32$ regresses by 0.4 BLEU because per-head $d_h$ shrinks to 16 and individual heads lose
+representational capacity. This is the empirical justification for the canonical
+"$d_h$ between 64 and 128" range that every descendant inherits.
 
-- **MQA** (Shazeer 2019): one K, V shared across all heads. $H\times$ cache reduction, mild
-  quality cost.
-- **GQA** (Ainslie et al. 2023): partial sharing across groups. Most of MQA's savings without
-  the quality cost. See the [GQA entry](/llm-arch-kb/attention/gqa/).
-- **MLA** (DeepSeek 2024): compress K, V to a per-token latent. 5-7× smaller cache than MHA
-  and on-par quality. See the [MLA entry](/llm-arch-kb/attention/mla/).
+Independent reproductions of head specialization came quickly. Voita et al. (2019, "Analyzing
+Multi-Head Self-Attention", [arXiv 1905.09418](https://arxiv.org/abs/1905.09418)) showed by
+attention-head pruning that a subset of heads in a trained transformer specialize on
+interpretable patterns — positional (attending to the previous token), syntactic (attending to
+the dependency parent), and rare-token attention — while a large fraction (up to 48 of 48 heads
+in some layers) can be pruned with $<$1 BLEU loss. This is the strongest evidence that the
+multi-head split actually delivers specialization, not just nominal parallelism. Michel et
+al. (2019, "Are Sixteen Heads Really Better Than One?",
+[arXiv 1905.10650](https://arxiv.org/abs/1905.10650)) reached a similar conclusion: many heads
+are redundant after training, but the redundancy emerges from training dynamics that benefit
+from over-parameterization — pruning at initialization fails.
 
-For dense decoders shipping in 2024–26, plain MHA is rare — Llama 2 and later, every Qwen, every
-DeepSeek, every Gemma 2+ runs GQA or MLA instead. The adopters listed in this entry's
-frontmatter are all pre-GQA artifacts: Llama 1, OLMo 1, Gemma 1.
+For the KV-cache scaling story, the GQA paper of Ainslie et al. (2023,
+[arXiv 2305.13245](https://arxiv.org/abs/2305.13245), Figure 6) measured T5-XXL decode
+throughput as a function of cache size. MHA hits a memory wall at sequence 8K on a single TPU
+chip; collapsing to MQA gives a 12× decode speedup at modest quality cost; GQA-8 recovers most
+of the quality gap at 11.6× speedup. The MLA paper (DeepSeek-V2, 2024,
+[arXiv 2405.04434](https://arxiv.org/abs/2405.04434), Table 1) records that MHA at the same
+parameter budget would consume $\approx 7\times$ the KV cache of MLA at 128K context — the
+quantitative reason no frontier 2024+ decoder ships plain MHA.
 
-<p class="section-eyebrow">§ 4 · What MHA still tells us</p>
-## The conceptual frame
+The 2024–25 open-decoder census is telling: the original Llama-1 (65B) ran MHA across
+all 80 layers at $H = 64$; Llama-2 and every subsequent Llama variant switched to GQA; OLMo-1
+shipped MHA at OLMo's choice to mirror Llama-1's recipe, then OLMo-2 moved to GQA. Gemma-1 ran
+MHA at an unusually wide $d_h = 256$ (Gemma team 2024, [arXiv 2403.08295](https://arxiv.org/abs/2403.08295),
+§2), which is the last public production deployment of plain MHA at scale; Gemma-2 also
+switched. The transition is essentially complete in dense decoders; the only contexts where
+MHA still appears unmodified are short-context encoders (BERT-class) where the cache cost does
+not bind and full per-head expressivity is preferred.
 
-Two things from the 2017 paper remain load-bearing:
+No public sensitivity study exists that disentangles the per-head $d_h$ choice from the
+total $d_{\text{model}}$ at modern scale — most ablations vary $H$ at fixed
+$d_{\text{model}}$, which conflates the two. I don't know of a study at $d_{\text{model}} \ge 8\text{K}$
+that varies $d_h$ independently.
 
-1. **The scaled-dot-product attention kernel.** Every variant since — MQA, GQA, MLA, linear,
-   lightning — still computes some softmax over $\mathbf{Q}\mathbf{K}^\top$ before mixing values.
-   The shape of the inner-product attention has not been displaced.
-2. **The per-head subspace decomposition.** Multi-head specialization survives in every
-   descendant; the head count $H$ remains the unit of parallelism. The variants only change
-   how K and V are *shared* across heads, not whether heads exist.
+One under-discussed empirical detail: Vaswani et al. (2017) §5.3 trained with Adam at the
+warmup schedule $\eta = d_{\text{model}}^{-0.5} \cdot \min(s^{-0.5}, s \cdot w^{-1.5})$ with
+$w = 4000$ warmup steps, dropout $p_{\text{drop}} = 0.1$ on the attention output and the
+sub-layer residual, and label smoothing $\varepsilon_{ls} = 0.1$. Every subsequent
+MHA-using decoder we document picked up this recipe (or a close variant) before substituting
+GQA/MLA — the head-split was rarely the lever that mattered for fine-tuning behavior; the
+$d_h$ choice, the normalization placement, and the optimizer schedule were.
 
 <Summary>
-**MHA in one breath.** Run H independent attention heads in d_h-dim subspaces, concatenate, project.
-The KV cache is the cost that killed it for long-context production — every modern decoder
-shares K and V more aggressively (GQA, MLA) — but the heads-as-specialization framework
-remains the substrate every variant builds on.
+**MHA in one breath.** H independent attention heads in $d_h$-dim subspaces, concatenated and
+projected. The KV cache scaling at long context is the cost that retired it for production
+inference — every modern decoder shares K and V more aggressively (GQA, MLA). The per-head
+subspace decomposition itself survives in every descendant.
 </Summary>

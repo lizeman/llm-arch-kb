@@ -1,0 +1,47 @@
+---
+name: "Command R+ 104B"
+organization: "Cohere"
+release_date: "2024-04-04"
+parameters_total: "104B"
+context_length: 128000
+open_weights: true
+model_card_url: "https://huggingface.co/CohereForAI/c4ai-command-r-plus"
+disclosure_level: "documented"
+architecture:
+  positional: "RoPE"
+  normalization_placement: "Pre-Norm"
+  normalization_type: null
+  qk_norm: null
+  activation: null
+  attention: "GQA"
+  moe: null
+  other:
+    - "104B dense decoder"
+    - "Multilingual: 10 primary languages explicitly trained for"
+    - "Cohere release for non-commercial / research use (CC-BY-NC weights)"
+source_urls:
+  - "https://cohere.com/blog/command-r-plus-microsoft-azure"
+  - "https://huggingface.co/CohereForAI/c4ai-command-r-plus"
+notes: "Cohere's open-weights release at 104B dense. Public disclosure highlights GQA attention, RoPE, 128K context, and the multilingual training focus; some lower-level architecture fields (exact normalization type, activation) are not explicitly named in the blog or model card and are left null per the citation policy."
+---
+
+Command R+ 104B (April 2024) is Cohere's open-weights flagship — a 104B dense decoder with
+128K-token context, released for research and non-commercial use under CC-BY-NC. It was
+positioned as Cohere's frontier model for retrieval-augmented generation and tool use, with
+particular emphasis on multilingual performance across ten primary languages.
+
+What the public materials confirm about the architecture:
+
+- **GQA** attention. Cohere's blog and the Hugging Face model card both call out grouped-query
+  attention as part of the efficiency story at 104B scale and 128K context.
+- **RoPE** positional encoding.
+- **128K context** window.
+- Dense — no Mixture-of-Experts component.
+
+What is not in the publicly disclosed materials: exact layer count, head count, FFN
+expansion ratio, the precise normalization type (RMSNorm vs LayerNorm) and activation
+(SwiGLU vs GeGLU vs other). These fields are left `null` rather than inferred from the
+released model config, per the [citation policy](/llm-arch-kb/about/).
+
+For Cohere's lighter sibling release see Command R 35B; for the broader Cohere training and
+deployment context see the company's developer blog.

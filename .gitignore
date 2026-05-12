@@ -42,3 +42,6 @@ scripts/.font-cache/
 
 # claude code per-project
 .claude/settings.local.json
+
+# superpowers visual brainstorm scratch
+.superpowers/

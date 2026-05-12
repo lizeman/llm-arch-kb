@@ -36,7 +36,8 @@ export default function LayerNormVsRMS() {
 
   const rmsn = createMemo(() => {
     const v = vec();
-    const r = Math.sqrt(rms(v) ** 2 + 1e-6);
+    const meanSquare = v.reduce((a, b) => a + b * b, 0) / v.length;
+    const r = Math.sqrt(meanSquare + 1e-6);
     return v.map((x) => x / r);
   });
 
@@ -56,7 +57,7 @@ export default function LayerNormVsRMS() {
   const COL_W = 70;
   const ROW_H = 100;
   const BAR_W = 22;
-  const SCALE_PX = 40; // pixels per unit
+  const SCALE_PX = 40;
 
   function Row(props: { values: () => number[]; yCenter: number; color: string; label: string }) {
     return (
@@ -114,7 +115,6 @@ export default function LayerNormVsRMS() {
           bias to the input shifts RMSNorm's output but not LayerNorm's.
         </title>
 
-        {/* Input row */}
         <text
           x={X0 + (D * COL_W) / 2}
           y={Y0 - 10}
@@ -128,7 +128,6 @@ export default function LayerNormVsRMS() {
         </text>
         <Row values={vec} yCenter={Y0 + ROW_H / 2} color="#5a5a55" label="x" />
 
-        {/* LayerNorm row */}
         <text
           x={X0 + (D * COL_W) / 2}
           y={Y0 + ROW_H + 18}
@@ -142,7 +141,6 @@ export default function LayerNormVsRMS() {
         </text>
         <Row values={ln} yCenter={Y0 + ROW_H + 18 + ROW_H / 2} color="#1a4f7a" label="LN" />
 
-        {/* RMSNorm row */}
         <text
           x={X0 + (D * COL_W) / 2}
           y={Y0 + 2 * ROW_H + 36}

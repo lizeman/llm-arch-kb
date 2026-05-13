@@ -184,7 +184,7 @@ MLA + decoupled RoPE vs MHA + standard RoPE, which is the comparison that matter
 production.
 
 **Where the decoupled head's $d_R$ matters.** Liu et al. 2024 (§A.2) report sweeping
-$d_R \in \{32, 64, 96\}$ at fixed $d_c = 512$. Perplexity differences are <0.05 nats across
+$d_R \in \{32, 64, 96\}$ at fixed $d_c = 512$. Perplexity differences are $<0.05$ nats across
 the range; the V2 team picks 64 as the smallest size that didn't measurably regress on the
 long-context retrieval task at 128K. There is no public ablation past $d_R = 96$.
 

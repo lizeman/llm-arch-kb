@@ -281,14 +281,14 @@ function validate() {
     }
   }
 
-  // 3. Structural depth (warnings only until pilot ships)
+  // 3. Structural depth (researcher-grade entry template)
   for (const t of techniques) {
     const text = fs.readFileSync(t.file, "utf8");
     const bodyMatch = text.match(/^---[\s\S]*?\n---\n([\s\S]*)$/);
     const body = bodyMatch ? bodyMatch[1]! : "";
     const paperUrl = String(t.data.paper_url ?? "");
     for (const s of checkEntryStructure(body, paperUrl)) {
-      warnings.push(`[structure] ${rel(t.file)}: ${s.message}`);
+      issues.push({ file: rel(t.file), message: s.message });
     }
   }
 

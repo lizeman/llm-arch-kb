@@ -28,7 +28,7 @@ The v1 plan was an excellent engineering spec and a poor design brief. It enumer
 
 ### Primary goals
 
-- **Authoritative catalog** of meaningful architectural innovations in decoder-only LLMs (2017–present) at "medium deep-dive" depth — math, simple implementation sketch, tradeoffs, ablation results, and which **disclosed** production models adopt it.
+- **Authoritative catalog** of meaningful architectural innovations in decoder-only LLMs (2017–present) at researcher-grade depth — see `docs/superpowers/specs/2026-05-12-researcher-grade-entries-design.md` for the four-section template (Premise / Derivation / Reference implementation / Empirical evidence).
 - **Calm editorial design** — content reads naturally, typography carries the structure, no decorative chrome. Visual references: Stripe Press and Distill.pub.
 - **Selectively interactive** — high-value techniques get an animated SVG figure with sliders/toggles (e.g., rotate RoPE angles, slide GQA group count, animate MoE routing). Most entries are prose + math + code; figures are not mandatory.
 - **Comparative** — `/compare/` page renders a technique-matrix and model-matrix view.

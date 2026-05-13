@@ -25,10 +25,14 @@ export const katexMacros: Record<string, string> = {
   // Softmax + cousins
   "\\softmax": "\\operatorname{softmax}",
   "\\sm": "\\operatorname{softmax}",
+  "\\softplus": "\\operatorname{softplus}",
   "\\argmax": "\\operatorname*{arg\\,max}",
   "\\argmin": "\\operatorname*{arg\\,min}",
   "\\topk": "\\operatorname{top-k}",
   "\\KL": "\\operatorname{KL}",
+
+  // Calculus
+  "\\d": "\\mathrm{d}",
 
   // Linear-algebra helpers (parameterized via #1, #2)
   "\\norm": "\\left\\lVert #1 \\right\\rVert",

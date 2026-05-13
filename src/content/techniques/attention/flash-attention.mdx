@@ -74,7 +74,9 @@ FlashAttention solves this with the **online softmax** of Milakov & Gimelshein (
 partial blocks with maxima $m_1, m_2$ and denominators $\ell_1 = \sum_j e^{S_{1,j} - m_1},
 \ell_2 = \sum_j e^{S_{2,j} - m_2}$, the merged statistics are
 
-$$m = \max(m_1, m_2),\qquad \ell = e^{m_1 - m}\,\ell_1 + e^{m_2 - m}\,\ell_2.$$
+$$
+m = \max(m_1, m_2),\qquad \ell = e^{m_1 - m}\,\ell_1 + e^{m_2 - m}\,\ell_2.
+$$
 
 Why this and not "compute the row max separately, then softmax"? Because that requires
 two passes over $K$ — one for the max, one for the exponentiation — doubling the HBM
@@ -84,7 +86,9 @@ as new $K, V$ tiles stream in.
 Output accumulation uses a corresponding rescale. With running output $O_1$ accumulated under
 local max $m_1$, the merged output after seeing block 2 is
 
-$$O = e^{m_1 - m}\,\frac{\ell_1}{\ell}\,O_1 + e^{m_2 - m}\,\frac{\ell_2}{\ell}\,O_2.$$
+$$
+O = e^{m_1 - m}\,\frac{\ell_1}{\ell}\,O_1 + e^{m_2 - m}\,\frac{\ell_2}{\ell}\,O_2.
+$$
 
 The factor $e^{m_1 - m}$ corrects the earlier output for the new global max; the $\ell_1/\ell$
 re-weights it by the new denominator. The algebra reduces to a one-line update: each time a
@@ -94,7 +98,9 @@ gets added.
 The final per-row attention output written to HBM is the standard softmax-weighted average,
 read out of the running statistics after the full inner-loop pass:
 
-$$O_i = \frac{1}{\ell_i}\,\sum_{j=1}^N e^{S_{ij} - m_i}\,V_j,$$
+$$
+O_i = \frac{1}{\ell_i}\,\sum_{j=1}^N e^{S_{ij} - m_i}\,V_j,
+$$
 
 which equals $\mathrm{softmax}(S_i)\,V$ exactly — the online merge accumulates this sum
 without ever holding the full row $S_i$ in memory simultaneously.

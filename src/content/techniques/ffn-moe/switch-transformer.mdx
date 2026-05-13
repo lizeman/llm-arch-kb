@@ -61,7 +61,9 @@ contract, and the simplified single-term load-balance loss that every subsequent
 logits and $g(\mathbf{x}) = \mathrm{softmax}(\ell(\mathbf{x}))$ the gate distribution. The
 Switch layer routes to the single expert with the largest logit:
 
-$$i^*(\mathbf{x}) = \arg\max_{i \in [E]} \ell_i(\mathbf{x}),\qquad \mathrm{Switch}(\mathbf{x}) = g_{i^*(\mathbf{x})}(\mathbf{x}) \cdot f_{i^*(\mathbf{x})}(\mathbf{x}).$$
+$$
+i^*(\mathbf{x}) = \arg\max_{i \in [E]} \ell_i(\mathbf{x}),\qquad \mathrm{Switch}(\mathbf{x}) = g_{i^*(\mathbf{x})}(\mathbf{x}) \cdot f_{i^*(\mathbf{x})}(\mathbf{x}).
+$$
 
 The crucial detail (Fedus et al. 2021, eq. 1) is the *multiplicative gate value*
 $g_{i^*}(\mathbf{x})$ in front of the expert output. The argmax is non-differentiable, but
@@ -85,7 +87,9 @@ expert with the appropriate gate-weight renormalization. Under top-1 there is no
 choice. Switch formalizes the dispatch contract with an **expert capacity** parameter $C$
 (Fedus et al. 2021, eq. 3):
 
-$$\mathrm{capacity} = \frac{\mathrm{tokens\ per\ batch}}{\mathrm{num\ experts}} \cdot C = \frac{T}{E} \cdot C.$$
+$$
+\mathrm{capacity} = \frac{\mathrm{tokens\ per\ batch}}{\mathrm{num\ experts}} \cdot C = \frac{T}{E} \cdot C.
+$$
 
 Each expert handles at most $\lceil (T/E) \cdot C \rceil$ tokens per batch step. If
 $f_i \cdot T > (T/E) \cdot C$ — i.e., expert $i$ is over-subscribed — the excess tokens are
@@ -105,7 +109,9 @@ loss terms — an *importance* loss on the per-expert sum of gate weights, and a
 the per-expert dispatched-token count. Switch replaces these with a single product (Fedus et
 al. 2021, eq. 4):
 
-$$\mathcal{L}_{\mathrm{aux}} = \alpha \cdot E \cdot \sum_{i = 1}^{E} f_i \cdot P_i,$$
+$$
+\mathcal{L}_{\mathrm{aux}} = \alpha \cdot E \cdot \sum_{i = 1}^{E} f_i \cdot P_i,
+$$
 
 where for a batch of $T$ tokens
 - $f_i = \frac{1}{T} \sum_{t} \mathbb{1}[i^*(\mathbf{x}_t) = i]$ is the *fraction of tokens

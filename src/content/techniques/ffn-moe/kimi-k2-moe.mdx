@@ -67,13 +67,17 @@ The MoE layer's functional form is the DeepSeekMoE form, unchanged. For input $\
 \mathbb{R}^{d_{model}}$, $E_r = 384$ routed experts $\{f_1, \dots, f_{E_r}\}$ and $E_s = 1$
 shared expert $f^{(s)}$, top-$K$ routing with $K = 8$:
 
-$$\mathrm{MoE}(\mathbf{x}) = \underbrace{f^{(s)}(\mathbf{x})}_{\text{always on}} + \sum_{i \in \mathcal{T}_K(\mathbf{x})} g_i(\mathbf{x}) \cdot f_i(\mathbf{x}),$$
+$$
+\mathrm{MoE}(\mathbf{x}) = \underbrace{f^{(s)}(\mathbf{x})}_{\text{always on}} + \sum_{i \in \mathcal{T}_K(\mathbf{x})} g_i(\mathbf{x}) \cdot f_i(\mathbf{x}),
+$$
 
 with $\mathcal{T}_K(\mathbf{x}) = \mathrm{Top}_K\bigl(\sigma(\ell(\mathbf{x})) + b\bigr)$ — the
 top-$K$ of the *biased* gate, in the aux-loss-free style of DeepSeek V3 §3.4 — and the gate
 weights $g_i$ taken from the *unbiased* gate restricted to the selected set:
 
-$$g_i(\mathbf{x}) = \frac{\sigma(\ell_i(\mathbf{x}))}{\sum_{j \in \mathcal{T}_K(\mathbf{x})} \sigma(\ell_j(\mathbf{x}))},\quad i \in \mathcal{T}_K(\mathbf{x}).$$
+$$
+g_i(\mathbf{x}) = \frac{\sigma(\ell_i(\mathbf{x}))}{\sum_{j \in \mathcal{T}_K(\mathbf{x})} \sigma(\ell_j(\mathbf{x}))},\quad i \in \mathcal{T}_K(\mathbf{x}).
+$$
 
 The gate's nonlinearity is sigmoid $\sigma$ (per-expert independent), not softmax — same as
 DeepSeek V3's "sigmoid gate, grouped top-K" form (DeepSeek-AI 2024, §3.2). For the bias-update
@@ -99,7 +103,9 @@ weights better than Adam — at the cost of slightly more memory per step.
 MuonClip combines Muon with two clip layers. Let $W \in \mathbb{R}^{m \times n}$ be a weight
 matrix at training step $t$ with Muon update $\Delta W$. The MuonClip step is
 
-$$\widetilde{W}_t = W_{t-1} + \Delta W,\quad W_t = \frac{\widetilde{W}_t}{\max(1,\ \lVert \widetilde{W}_t \rVert / \tau)},$$
+$$
+\widetilde{W}_t = W_{t-1} + \Delta W,\quad W_t = \frac{\widetilde{W}_t}{\max(1,\ \lVert \widetilde{W}_t \rVert / \tau)},
+$$
 
 where $\lVert \cdot \rVert$ is the spectral (operator) norm and $\tau$ is a per-layer
 threshold. The clip is applied per-layer to attention QK projections and to MoE gate

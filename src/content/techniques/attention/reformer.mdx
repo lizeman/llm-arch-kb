@@ -48,7 +48,9 @@ Locality-sensitive hashing (LSH; Indyk & Motwani 1998, "Approximate Nearest Neig
 provides that primitive. An LSH family is a distribution over hash functions $h: \mathbb{R}^{d_h} \to \mathbb{Z}$
 with the property that for any pair $\mathbf{x}, \mathbf{y}$,
 
-$$\Pr_h\!\bigl[h(\mathbf{x}) = h(\mathbf{y})\bigr] \;=\; f\bigl(\mathrm{sim}(\mathbf{x}, \mathbf{y})\bigr),$$
+$$
+\Pr_h\!\bigl[h(\mathbf{x}) = h(\mathbf{y})\bigr] \;=\; f\bigl(\mathrm{sim}(\mathbf{x}, \mathbf{y})\bigr),
+$$
 
 where $\mathrm{sim}$ is some similarity measure and $f$ is monotone-increasing. For cosine
 similarity, Charikar's random-hyperplane hashing (Charikar 2002, STOC) gives an LSH family
@@ -80,7 +82,9 @@ costs $\le 0.1$ BPC on enwik8 — a small price.
 a random rotation matrix $R \in \mathbb{R}^{d_h \times b}$ where $b$ is the number of buckets
 (Kitaev et al. use $b = 64$). The hash is
 
-$$h(\mathbf{x}) \;=\; \arg\max_i \bigl[\,R^\top \mathbf{x}\,\bigr]_i \quad \text{or equivalently} \quad \arg\max_i \bigl[\,R^\top \mathbf{x};\, -R^\top \mathbf{x}\,\bigr]_i,$$
+$$
+h(\mathbf{x}) \;=\; \arg\max_i \bigl[\,R^\top \mathbf{x}\,\bigr]_i \quad \text{or equivalently} \quad \arg\max_i \bigl[\,R^\top \mathbf{x};\, -R^\top \mathbf{x}\,\bigr]_i,
+$$
 
 selecting the index of the largest signed projection. (The signed version doubles the effective
 bucket count and reduces tie-breaking ambiguity.) The result is an integer in $\{1, \ldots, b\}$.
@@ -90,7 +94,9 @@ $\Pr[h(\mathbf{x}) = h(\mathbf{y})]$ is monotone in $\cos(\angle(\mathbf{x}, \ma
 
 **Step 3: sort by hash, chunk into fixed-size groups.** Sort token positions by $h$:
 
-$$\pi \;=\; \mathrm{argsort}\bigl(h(\mathbf{x}_1), h(\mathbf{x}_2), \ldots, h(\mathbf{x}_N)\bigr).$$
+$$
+\pi \;=\; \mathrm{argsort}\bigl(h(\mathbf{x}_1), h(\mathbf{x}_2), \ldots, h(\mathbf{x}_N)\bigr).
+$$
 
 The sort costs $\Theta(N \log N)$ comparisons. Reformer then partitions the *sorted* sequence
 into chunks of fixed size $C$ (Kitaev et al. use $C = N / b = 128$ at $N = 8{,}192$). Within
@@ -112,7 +118,9 @@ Within-chunk attention plus one adjacent backward chunk gives effective receptiv
 $2C$ in the sorted axis, but at low chunk-boundary recall when a hash bucket spans the boundary.
 Kitaev et al. mitigate this with **multi-round hashing** (their § 2.4):
 
-$$\mathrm{out}_t \;=\; \sum_{r=1}^{R} \mathrm{Attn}_r(\mathbf{q}_t, K_{B_r(t)}, V_{B_r(t)}),$$
+$$
+\mathrm{out}_t \;=\; \sum_{r=1}^{R} \mathrm{Attn}_r(\mathbf{q}_t, K_{B_r(t)}, V_{B_r(t)}),
+$$
 
 where each round $r$ uses an independently sampled rotation matrix $R_r$ and produces its own
 bucketing $B_r$. The final output is the average (or attention-weighted combination) across
@@ -122,7 +130,9 @@ nearest-neighbor recovery (Kitaev et al. § 4.2).
 **Step 5: total complexity.** With $N$ tokens, $b$ buckets, $C = N/b$ chunk size, $R$ hash
 rounds:
 
-$$\mathrm{FLOPs}_{\text{LSH}} \;=\; \underbrace{\Theta(R \cdot N \cdot d_h \cdot b)}_{\text{hash projection}} \;+\; \underbrace{\Theta(R \cdot N \log N)}_{\text{sort}} \;+\; \underbrace{\Theta(R \cdot N \cdot C \cdot d_h)}_{\text{within-chunk attention}}.$$
+$$
+\mathrm{FLOPs}_{\text{LSH}} \;=\; \underbrace{\Theta(R \cdot N \cdot d_h \cdot b)}_{\text{hash projection}} \;+\; \underbrace{\Theta(R \cdot N \log N)}_{\text{sort}} \;+\; \underbrace{\Theta(R \cdot N \cdot C \cdot d_h)}_{\text{within-chunk attention}}.
+$$
 
 Choosing $C = \Theta(\sqrt{N})$ gives the canonical $\Theta(R \cdot N \sqrt{N} \cdot d_h)$
 cost. For $C = \log N$ (more buckets, smaller chunks) the cost is $\Theta(R \cdot N \log N \cdot d_h)$.
@@ -132,11 +142,15 @@ Memory is $\Theta(N d_h)$ — the $N \times N$ logit matrix is never materialize
 RevNets' reversible residual structure to remove activation memory. A reversible layer takes
 $(\mathbf{x}_1, \mathbf{x}_2)$ and produces
 
-$$\mathbf{y}_1 \;=\; \mathbf{x}_1 + F(\mathbf{x}_2), \qquad \mathbf{y}_2 \;=\; \mathbf{x}_2 + G(\mathbf{y}_1),$$
+$$
+\mathbf{y}_1 \;=\; \mathbf{x}_1 + F(\mathbf{x}_2), \qquad \mathbf{y}_2 \;=\; \mathbf{x}_2 + G(\mathbf{y}_1),
+$$
 
 where $F$ is the attention block and $G$ is the feed-forward block. The inverse is
 
-$$\mathbf{x}_2 \;=\; \mathbf{y}_2 - G(\mathbf{y}_1), \qquad \mathbf{x}_1 \;=\; \mathbf{y}_1 - F(\mathbf{x}_2).$$
+$$
+\mathbf{x}_2 \;=\; \mathbf{y}_2 - G(\mathbf{y}_1), \qquad \mathbf{x}_1 \;=\; \mathbf{y}_1 - F(\mathbf{x}_2).
+$$
 
 This means the input activations need not be stored during the forward pass — they can be
 *recomputed* during backprop from the output. Activation memory drops from $\Theta(L N d_{\text{model}})$

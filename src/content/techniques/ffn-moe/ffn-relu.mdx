@@ -68,21 +68,27 @@ varies only what sits between.
 Start from a textbook one-hidden-layer MLP applied to a single token's representation
 $\mathbf{x} \in \mathbb{R}^{d_{\text{model}}}$:
 
-$$\mathrm{MLP}(\mathbf{x}) \;=\; W_2\,\phi\bigl(W_1 \mathbf{x} + \mathbf{b}_1\bigr) + \mathbf{b}_2,$$
+$$
+\mathrm{MLP}(\mathbf{x}) \;=\; W_2\,\phi\bigl(W_1 \mathbf{x} + \mathbf{b}_1\bigr) + \mathbf{b}_2,
+$$
 
 with $W_1 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$,
 $W_2 \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$, biases of matching dimension,
 and elementwise nonlinearity $\phi$. This is the position-wise FFN with the row/column
 convention flipped. Vaswani et al. (2017, §3.3) wrote it in row-vector form,
 
-$$\mathrm{FFN}(\mathbf{x}) \;=\; \max\!\bigl(0,\; \mathbf{x} W_1 + \mathbf{b}_1\bigr)\, W_2 + \mathbf{b}_2,$$
+$$
+\mathrm{FFN}(\mathbf{x}) \;=\; \max\!\bigl(0,\; \mathbf{x} W_1 + \mathbf{b}_1\bigr)\, W_2 + \mathbf{b}_2,
+$$
 
 which is the same operation; the choice of $\phi = \max(0, \cdot)$ is what makes this
 specifically the ReLU FFN.
 
 **Why ReLU specifically.** Rewriting ReLU as a multiplicative gate exposes its structure:
 
-$$\mathrm{ReLU}(z) \;=\; z \cdot \mathbf{1}\{z > 0\}.$$
+$$
+\mathrm{ReLU}(z) \;=\; z \cdot \mathbf{1}\{z > 0\}.
+$$
 
 ReLU multiplies its input by a hard $\{0, 1\}$ gate driven by the sign of the input. Three
 consequences follow:
@@ -109,7 +115,9 @@ motivate the ratio.
 $d_{\text{model}} \times d_{\text{model}}$, holds $4 \cdot d_{\text{model}}^2$. Setting the
 two equal gives
 
-$$2 \cdot d_{\text{model}} \cdot d_{\text{ff}} \;=\; 4 \cdot d_{\text{model}}^2 \;\Longrightarrow\; d_{\text{ff}} \;=\; 2\,d_{\text{model}}.$$
+$$
+2 \cdot d_{\text{model}} \cdot d_{\text{ff}} \;=\; 4 \cdot d_{\text{model}}^2 \;\Longrightarrow\; d_{\text{ff}} \;=\; 2\,d_{\text{model}}.
+$$
 
 The actual choice $d_{\text{ff}} = 4\,d_{\text{model}}$ is twice that — Vaswani et al. (2017,
 §3.3) do not explicitly defend the factor, but the doubling lets the FFN dominate the
@@ -125,7 +133,9 @@ compact set; the $4\times$ ratio is empirically enough at transformer-base scale
 **Parameter and FLOP count.** Per layer, with batch $B$, sequence $T$, hidden
 $d = d_{\text{model}}$, expansion $f = d_{\text{ff}}/d_{\text{model}}$:
 
-$$\#\,\text{params} \;=\; 2\,d^2 f + d(f + 1), \qquad \#\,\text{FLOPs per token} \;\approx\; 2 \cdot d \cdot d_{\text{ff}} \;=\; 2 d^2 f.$$
+$$
+\#\,\text{params} \;=\; 2\,d^2 f + d(f + 1), \qquad \#\,\text{FLOPs per token} \;\approx\; 2 \cdot d \cdot d_{\text{ff}} \;=\; 2 d^2 f.
+$$
 
 At $d = 512$, $f = 4$, this is $\sim 2.1$M parameters per FFN and $\sim 2.1$M FLOPs per token
 per layer. Across 6 transformer-base layers, the FFNs alone hold $\sim 12.6$M parameters —

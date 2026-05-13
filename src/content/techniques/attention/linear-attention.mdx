@@ -45,7 +45,9 @@ generation.
 Katharopoulos et al. (2020, §3) frame this as a kernel-method problem. Any associative
 similarity function $\mathrm{sim}(\mathbf{q}, \mathbf{k})$ defines attention via
 
-$$\mathrm{Attn}(\mathbf{q}_i)_n = \frac{\sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j) \mathbf{v}_j}{\sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j)},$$
+$$
+\mathrm{Attn}(\mathbf{q}_i)_n = \frac{\sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j) \mathbf{v}_j}{\sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j)},
+$$
 
 and softmax is the choice $\mathrm{sim}(\mathbf{q}, \mathbf{k}) = e^{\mathbf{q}^\top \mathbf{k} / \sqrt{d_h}}$.
 If instead $\mathrm{sim}$ is *decomposable* — writable as
@@ -76,21 +78,29 @@ recall.
 Start from the unnormalized attention output for query $i$, dropping the $1/\sqrt{d_h}$ scale
 for notational clarity (it gets folded into $\phi$):
 
-$$y_i = \sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j)\,\mathbf{v}_j.$$
+$$
+y_i = \sum_{j=1}^T \mathrm{sim}(\mathbf{q}_i, \mathbf{k}_j)\,\mathbf{v}_j.
+$$
 
 Substitute the kernel decomposition $\mathrm{sim}(\mathbf{q}, \mathbf{k}) = \phi(\mathbf{q})^\top \phi(\mathbf{k})$
 with $\phi: \mathbb{R}^{d_h} \to \mathbb{R}^{d'}_{\ge 0}$ (non-negativity is required so the
 denominator stays positive):
 
-$$y_i = \sum_{j=1}^T \phi(\mathbf{q}_i)^\top \phi(\mathbf{k}_j)\,\mathbf{v}_j = \phi(\mathbf{q}_i)^\top \underbrace{\sum_{j=1}^T \phi(\mathbf{k}_j) \mathbf{v}_j^\top}_{=: S \,\in\, \mathbb{R}^{d' \times d_h}}.$$
+$$
+y_i = \sum_{j=1}^T \phi(\mathbf{q}_i)^\top \phi(\mathbf{k}_j)\,\mathbf{v}_j = \phi(\mathbf{q}_i)^\top \underbrace{\sum_{j=1}^T \phi(\mathbf{k}_j) \mathbf{v}_j^\top}_{=: S \,\in\, \mathbb{R}^{d' \times d_h}}.
+$$
 
 The sum no longer depends on $i$. Define the **state matrix**
 
-$$S = \sum_{j=1}^T \phi(\mathbf{k}_j)\,\mathbf{v}_j^\top \in \mathbb{R}^{d' \times d_h}, \qquad z = \sum_{j=1}^T \phi(\mathbf{k}_j) \in \mathbb{R}^{d'},$$
+$$
+S = \sum_{j=1}^T \phi(\mathbf{k}_j)\,\mathbf{v}_j^\top \in \mathbb{R}^{d' \times d_h}, \qquad z = \sum_{j=1}^T \phi(\mathbf{k}_j) \in \mathbb{R}^{d'},
+$$
 
 and the normalized attention is
 
-$$\mathrm{Attn}(\mathbf{q}_i) = \frac{\phi(\mathbf{q}_i)^\top S}{\phi(\mathbf{q}_i)^\top z}.$$
+$$
+\mathrm{Attn}(\mathbf{q}_i) = \frac{\phi(\mathbf{q}_i)^\top S}{\phi(\mathbf{q}_i)^\top z}.
+$$
 
 The denominator $\phi(\mathbf{q}_i)^\top z$ is the linear-attention analog of softmax's
 $\sum_j e^{\mathbf{q}^\top \mathbf{k}_j}$ — the partition function — and is what keeps the
@@ -111,11 +121,15 @@ magnitude, all in the absence of the $T \times T$ score matrix.
 **Causal recurrence.** For autoregressive decoding, the prefix sums need to update
 incrementally: when token $t$ arrives, the state increments by
 
-$$S_t = S_{t-1} + \phi(\mathbf{k}_t)\,\mathbf{v}_t^\top,\qquad z_t = z_{t-1} + \phi(\mathbf{k}_t),$$
+$$
+S_t = S_{t-1} + \phi(\mathbf{k}_t)\,\mathbf{v}_t^\top,\qquad z_t = z_{t-1} + \phi(\mathbf{k}_t),
+$$
 
 and the output is
 
-$$\mathrm{Attn}(\mathbf{q}_t) = \frac{\phi(\mathbf{q}_t)^\top S_t}{\phi(\mathbf{q}_t)^\top z_t}.$$
+$$
+\mathrm{Attn}(\mathbf{q}_t) = \frac{\phi(\mathbf{q}_t)^\top S_t}{\phi(\mathbf{q}_t)^\top z_t}.
+$$
 
 This is the paper's "Transformers are RNNs" claim (§3.3): the autoregressive variant is
 literally a recurrent neural network with hidden state $(S_t, z_t) \in \mathbb{R}^{d' \times

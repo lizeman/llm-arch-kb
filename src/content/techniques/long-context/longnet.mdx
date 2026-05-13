@@ -66,22 +66,30 @@ sequence dimension, and a demonstration at $N = 10^9$ tokens.
 **Starting point — local-window attention.** With window size $w$ and stride $r = 1$, the
 per-query computation is
 
-$$\mathbf{o}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \, K_{[t-w:t]}^\top}{\sqrt{d_h}}\right) V_{[t-w:t]}, \quad \mathrm{FLOPs} = O(w \cdot d_h).$$
+$$
+\mathbf{o}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \, K_{[t-w:t]}^\top}{\sqrt{d_h}}\right) V_{[t-w:t]}, \quad \mathrm{FLOPs} = O(w \cdot d_h).
+$$
 
 Compute per layer: $O(N w d_h)$. Receptive field per layer: $w$.
 
 **Step 1 — dilated indexing.** Replace contiguous keys with a *strided* set. For dilation rate
 $r$ and segment size $w$, the keys attended to by query $t$ are
 
-$$\mathcal{K}_r(t) = \left\{ t - r, t - 2r, \ldots, t - w \cdot r \right\}.$$
+$$
+\mathcal{K}_r(t) = \left\{ t - r, t - 2r, \ldots, t - w \cdot r \right\}.
+$$
 
 The query sees $w$ keys spaced $r$ apart, covering a span of $w \cdot r$ positions but
 sampling only $1/r$ of them. Mathematically this is *gather-then-attend*
 ([§2.2, Eq. 2](https://arxiv.org/abs/2307.02486)):
 
-$$\widetilde{K}^{(r)}_t = K[\mathcal{K}_r(t)],\quad \widetilde{V}^{(r)}_t = V[\mathcal{K}_r(t)],$$
+$$
+\widetilde{K}^{(r)}_t = K[\mathcal{K}_r(t)],\quad \widetilde{V}^{(r)}_t = V[\mathcal{K}_r(t)],
+$$
 
-$$\mathbf{o}^{(r)}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \, (\widetilde{K}^{(r)}_t)^\top}{\sqrt{d_h}}\right) \widetilde{V}^{(r)}_t.$$
+$$
+\mathbf{o}^{(r)}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \, (\widetilde{K}^{(r)}_t)^\top}{\sqrt{d_h}}\right) \widetilde{V}^{(r)}_t.
+$$
 
 A single dilated head at rate $r$ has compute $O(w d_h)$ per query — same as local
 attention — but a per-layer receptive field of $w \cdot r$.
@@ -100,7 +108,9 @@ sequence of contiguous-memory dense-attention kernels — fully Flash-Attention-
 (small $r$) or too coarsely (large $r$). LongNet mixes $k$ heads with geometrically-growing
 rates ([§2.3](https://arxiv.org/abs/2307.02486)):
 
-$$\{(w_i, r_i)\}_{i=1}^{k},\quad r_i = \alpha^{i-1},\ w_i = w_0 \cdot \beta^{i-1},$$
+$$
+\{(w_i, r_i)\}_{i=1}^{k},\quad r_i = \alpha^{i-1},\ w_i = w_0 \cdot \beta^{i-1},
+$$
 
 with $\alpha > 1$ (Ding et al. use $\alpha = 2$) and segment sizes $w_i$ that may also grow.
 The configuration in [Table 1](https://arxiv.org/abs/2307.02486) is
@@ -111,7 +121,9 @@ The mixture is *not* a simple sum of softmaxes — that would over-count positio
 multiple patterns. LongNet's combination weighs each pattern's softmax denominator
 proportionally to its participation ($\S 2.3$, Eq. 4):
 
-$$\mathbf{o}_t = \sum_{i=1}^{k} \frac{Z_i(t)}{\sum_{j=1}^{k} Z_j(t)} \, \mathbf{o}^{(r_i)}_t,\quad Z_i(t) = \sum_{j \in \mathcal{K}_{r_i}(t)} \exp\!\left( \mathbf{q}_t \cdot \mathbf{k}_j / \sqrt{d_h} \right).$$
+$$
+\mathbf{o}_t = \sum_{i=1}^{k} \frac{Z_i(t)}{\sum_{j=1}^{k} Z_j(t)} \, \mathbf{o}^{(r_i)}_t,\quad Z_i(t) = \sum_{j \in \mathcal{K}_{r_i}(t)} \exp\!\left( \mathbf{q}_t \cdot \mathbf{k}_j / \sqrt{d_h} \right).
+$$
 
 The $Z_i(t)$ are *exactly the softmax denominators* of each pattern's local computation; the
 mixing weight is each pattern's mass relative to the total. This is the standard online
@@ -128,7 +140,9 @@ overloading some heads with multiple patterns).
 
 **Step 4 — cost accounting.** Per layer, summing over patterns:
 
-$$\mathrm{FLOPs} \;\approx\; \sum_{i=1}^{k} N \cdot w_i \cdot d_h \;=\; N \cdot d_h \cdot \sum_{i=1}^{\lceil \log N \rceil} w_i.$$
+$$
+\mathrm{FLOPs} \;\approx\; \sum_{i=1}^{k} N \cdot w_i \cdot d_h \;=\; N \cdot d_h \cdot \sum_{i=1}^{\lceil \log N \rceil} w_i.
+$$
 
 With $w_i = w_0$ constant, this is $O(N \cdot w_0 \cdot \log N \cdot d_h)$ — sub-quadratic by
 a factor of $N / (w_0 \log N)$. With *growing* $w_i = w_0 \beta^{i-1}$ as in Table 1, the cost

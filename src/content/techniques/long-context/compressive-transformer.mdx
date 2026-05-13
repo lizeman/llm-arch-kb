@@ -56,7 +56,9 @@ short-term memory be a FIFO buffer $M \in \mathbb{R}^{n_m \times d}$, where $d$ 
 dimension. At the start of each chunk, the attention layer's keys and values are concatenated
 with $M$:
 
-$$\mathrm{Attn}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \mathrm{softmax}\!\left(\frac{\mathbf{Q}\,[K_M; K]^\top}{\sqrt{d_h}}\right) [V_M; V],$$
+$$
+\mathrm{Attn}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \mathrm{softmax}\!\left(\frac{\mathbf{Q}\,[K_M; K]^\top}{\sqrt{d_h}}\right) [V_M; V],
+$$
 
 with $\mathbf{Q} \in \mathbb{R}^{n_s \times d_h}$, $K, V \in \mathbb{R}^{n_s \times d_h}$ for
 the current chunk, and $K_M, V_M \in \mathbb{R}^{n_m \times d_h}$ from the buffer. After the
@@ -73,7 +75,9 @@ $\tilde{M}$ is the simpler one: oldest summaries fall off when it exceeds its si
 Attention then runs over *three* concatenated regions per layer
 ([§3.1](https://arxiv.org/abs/1911.05507)):
 
-$$\mathrm{Attn}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \cdot [K_{\tilde{M}};\, K_M;\, K]^\top}{\sqrt{d_h}}\right) [V_{\tilde{M}};\, V_M;\, V],$$
+$$
+\mathrm{Attn}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t \cdot [K_{\tilde{M}};\, K_M;\, K]^\top}{\sqrt{d_h}}\right) [V_{\tilde{M}};\, V_M;\, V],
+$$
 
 ordered from oldest (most-compressed) to newest. The effective per-layer context becomes
 $c \cdot n_{cm} + n_m + n_s$ tokens, at the cost of attending to only
@@ -103,7 +107,9 @@ gradients to learn what to preserve, but the signal is weak (the loss is over do
 predictions, not over the activations themselves). Rae et al. add an auxiliary
 *attention-reconstruction loss* ([§3.3, Eq. 4](https://arxiv.org/abs/1911.05507)):
 
-$$\mathcal{L}_{\text{ar}} = \sum_{\ell} \left\lVert \mathrm{Attn}_\ell(\mathbf{Q}, K_{\text{old}}, V_{\text{old}}) - \mathrm{Attn}_\ell(\mathbf{Q}, K_{\tilde{M}}, V_{\tilde{M}}) \right\rVert_2^2,$$
+$$
+\mathcal{L}_{\text{ar}} = \sum_{\ell} \left\lVert \mathrm{Attn}_\ell(\mathbf{Q}, K_{\text{old}}, V_{\text{old}}) - \mathrm{Attn}_\ell(\mathbf{Q}, K_{\tilde{M}}, V_{\tilde{M}}) \right\rVert_2^2,
+$$
 
 where $(K_{\text{old}}, V_{\text{old}})$ are the about-to-be-evicted activations and
 $(K_{\tilde{M}}, V_{\tilde{M}})$ are produced by $f_c$ applied to them. Crucially, this loss
@@ -122,7 +128,9 @@ outputs on the actual query distribution targets the right thing.
 chunk size, $n_m$ short-term memory size, $n_{cm}$ compressed memory size, with
 $T = c \cdot n_{cm} + n_m + n_s$. Per chunk:
 
-$$\mathrm{Attn\ FLOPs} \approx n_s \cdot (n_{cm} + n_m + n_s) \cdot d_h \cdot H,$$
+$$
+\mathrm{Attn\ FLOPs} \approx n_s \cdot (n_{cm} + n_m + n_s) \cdot d_h \cdot H,
+$$
 
 which is sub-linear in $T$ (depends on $n_{cm} + n_m + n_s$, not $T$). Compression cost is
 $O(n_s d^2)$ per chunk for attention-based $f_c$, amortized over $n_s$ tokens at $O(d^2)$

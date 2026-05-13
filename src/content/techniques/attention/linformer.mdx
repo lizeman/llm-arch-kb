@@ -62,14 +62,18 @@ Let $Q \in \mathbb{R}^{N \times d_h}$, $K \in \mathbb{R}^{N \times d_h}$, $V \in
 be the queries, keys, and values for one head ($H$ heads in parallel). Standard scaled
 dot-product attention is
 
-$$\mathrm{Attn}(Q, K, V) \;=\; \mathrm{softmax}\!\Bigl(\tfrac{1}{\sqrt{d_h}} Q K^\top\Bigr) V \;\in\; \mathbb{R}^{N \times d_h}.$$
+$$
+\mathrm{Attn}(Q, K, V) \;=\; \mathrm{softmax}\!\Bigl(\tfrac{1}{\sqrt{d_h}} Q K^\top\Bigr) V \;\in\; \mathbb{R}^{N \times d_h}.
+$$
 
 **Step 1: insert a sequence-axis projection.** Introduce two learnable matrices
 $E \in \mathbb{R}^{k \times N}$ and $F \in \mathbb{R}^{k \times N}$, where $k$ is a chosen rank
 (Wang et al. use $k = 128$ or $256$ regardless of $N$). Apply them to $K$ and $V$ along the
 sequence axis:
 
-$$\tilde{K} \;=\; E K \;\in\; \mathbb{R}^{k \times d_h}, \qquad \tilde{V} \;=\; F V \;\in\; \mathbb{R}^{k \times d_h}.$$
+$$
+\tilde{K} \;=\; E K \;\in\; \mathbb{R}^{k \times d_h}, \qquad \tilde{V} \;=\; F V \;\in\; \mathbb{R}^{k \times d_h}.
+$$
 
 Note that $E$ and $F$ act on the *sequence* dimension, not the feature dimension. The features
 $d_h$ are untouched. This is the load-bearing design choice: a feature-axis projection
@@ -79,7 +83,9 @@ attend to, which the low-rank result says is safe.
 
 **Step 2: attend against the projected sequence.** Replace $K, V$ with $\tilde{K}, \tilde{V}$:
 
-$$\mathrm{LinAttn}(Q, K, V) \;=\; \mathrm{softmax}\!\Bigl(\tfrac{1}{\sqrt{d_h}} Q \tilde{K}^\top\Bigr) \tilde{V} \;\in\; \mathbb{R}^{N \times d_h}.$$
+$$
+\mathrm{LinAttn}(Q, K, V) \;=\; \mathrm{softmax}\!\Bigl(\tfrac{1}{\sqrt{d_h}} Q \tilde{K}^\top\Bigr) \tilde{V} \;\in\; \mathbb{R}^{N \times d_h}.
+$$
 
 The logit matrix $Q \tilde{K}^\top$ is now $N \times k$, not $N \times N$. The softmax is over
 $k$ entries per row. The final matmul against $\tilde{V}$ is $N \times k \cdot k \times d_h$.
@@ -87,7 +93,9 @@ $k$ entries per row. The final matmul against $\tilde{V}$ is $N \times k \cdot k
 **Step 3: count the FLOPs.** Each query computes $k$ inner products against the $k$ projected
 keys, then weights $k$ projected values:
 
-$$\mathrm{FLOPs}_{\text{Linformer}} \;=\; \underbrace{\Theta(N k d_h)}_{Q \tilde{K}^\top} + \underbrace{\Theta(N k d_h)}_{\text{attn} \cdot \tilde{V}} + \underbrace{\Theta(N k d_h)}_{EK \text{ and } FV} \;=\; \Theta(N k d_h).$$
+$$
+\mathrm{FLOPs}_{\text{Linformer}} \;=\; \underbrace{\Theta(N k d_h)}_{Q \tilde{K}^\top} + \underbrace{\Theta(N k d_h)}_{\text{attn} \cdot \tilde{V}} + \underbrace{\Theta(N k d_h)}_{EK \text{ and } FV} \;=\; \Theta(N k d_h).
+$$
 
 Linear in $N$ at fixed $k$. The $EK$ and $FV$ projections themselves are $k \times N \cdot N \times d_h = \Theta(N k d_h)$ matmuls, so they cost the same as the attention step rather than dominating.
 
@@ -133,9 +141,13 @@ the decoder case via a feature-map kernel rather than a sequence-axis projection
 **Parameter count and complexity summary.** Per layer at head dim $d_h$, $H$ heads, sequence
 length $N$, rank $k$, with layerwise-shared projection:
 
-$$|\theta_{\text{Linformer}}| \;=\; \underbrace{4 H d_h^2}_{\text{QKVO projections}} + \underbrace{2 k N}_{\text{Linformer projections}},$$
+$$
+|\theta_{\text{Linformer}}| \;=\; \underbrace{4 H d_h^2}_{\text{QKVO projections}} + \underbrace{2 k N}_{\text{Linformer projections}},
+$$
 
-$$\mathrm{FLOPs}_{\text{Linformer}}/\text{layer} \;=\; \Theta(N k d_h H).$$
+$$
+\mathrm{FLOPs}_{\text{Linformer}}/\text{layer} \;=\; \Theta(N k d_h H).
+$$
 
 The FLOP saving vs. standard attention is the factor $k / N$.
 

@@ -63,14 +63,18 @@ position, where $d$ is the hidden width (often called $H$ in the paper; we use $
 collision with the head dimension in attention contexts). The components of $\mathbf{x}$ index
 the *feature* axis. LayerNorm reduces along that axis to produce two scalar summaries:
 
-$$\mu(\mathbf{x}) = \frac{1}{d}\sum_{i=1}^{d} x_i, \qquad \sigma^2(\mathbf{x}) = \frac{1}{d}\sum_{i=1}^{d}\bigl(x_i - \mu(\mathbf{x})\bigr)^2.$$
+$$
+\mu(\mathbf{x}) = \frac{1}{d}\sum_{i=1}^{d} x_i, \qquad \sigma^2(\mathbf{x}) = \frac{1}{d}\sum_{i=1}^{d}\bigl(x_i - \mu(\mathbf{x})\bigr)^2.
+$$
 
 The mean $\mu \in \mathbb{R}$ measures the dc offset of the activation across features; the
 variance $\sigma^2 \in \mathbb{R}$ measures the average squared deviation around that offset.
 Both are functions of $\mathbf{x}$ alone — no other tokens, no other batch elements, no moving
 average over training history. The normalized activation is
 
-$$\hat{\mathbf{x}} = \frac{\mathbf{x} - \mu(\mathbf{x})\,\mathbf{1}}{\sqrt{\sigma^2(\mathbf{x}) + \varepsilon}},$$
+$$
+\hat{\mathbf{x}} = \frac{\mathbf{x} - \mu(\mathbf{x})\,\mathbf{1}}{\sqrt{\sigma^2(\mathbf{x}) + \varepsilon}},
+$$
 
 where $\mathbf{1} \in \mathbb{R}^d$ is the all-ones vector and $\varepsilon > 0$ is a small
 constant (Ba et al. use $\varepsilon = 10^{-5}$ in the recurrent experiments of §6) added to
@@ -82,7 +86,9 @@ represent feature scales that the upstream weights have learned. The fix, identi
 BatchNorm's, is a learnable affine reparameterization with gain $\boldsymbol{\gamma} \in \mathbb{R}^d$
 and bias $\boldsymbol{\beta} \in \mathbb{R}^d$:
 
-$$\mathrm{LN}_{\boldsymbol{\gamma},\boldsymbol{\beta}}(\mathbf{x}) = \boldsymbol{\gamma} \odot \hat{\mathbf{x}} + \boldsymbol{\beta},$$
+$$
+\mathrm{LN}_{\boldsymbol{\gamma},\boldsymbol{\beta}}(\mathbf{x}) = \boldsymbol{\gamma} \odot \hat{\mathbf{x}} + \boldsymbol{\beta},
+$$
 
 where $\odot$ is the elementwise (Hadamard) product. The gain vector restores per-feature
 scale and the bias vector restores per-feature offset; together they make LayerNorm a strict
@@ -106,7 +112,9 @@ analysis correctly identifies why the centering step might matter and includes i
 after a standard quotient-rule expansion (Ba et al. §3, also derived in Xu et al.
 [arXiv 1911.07013](https://arxiv.org/abs/1911.07013) §3):
 
-$$\frac{\partial \hat{x}_i}{\partial x_j} = \frac{1}{\sqrt{\sigma^2 + \varepsilon}}\left(\delta_{ij} - \frac{1}{d} - \frac{\hat{x}_i\,\hat{x}_j}{d}\right),$$
+$$
+\frac{\partial \hat{x}_i}{\partial x_j} = \frac{1}{\sqrt{\sigma^2 + \varepsilon}}\left(\delta_{ij} - \frac{1}{d} - \frac{\hat{x}_i\,\hat{x}_j}{d}\right),
+$$
 
 where $\delta_{ij}$ is the Kronecker delta. The first term is the dominant identity-like
 contribution; the $-1/d$ term subtracts the gradient leaking through $\mu$; the

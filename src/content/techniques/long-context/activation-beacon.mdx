@@ -60,8 +60,10 @@ length $L$ (Zhang et al. use $L \in \{1024, 2048, 4096\}$,
 $\alpha \in \{2, 4, 8, 16, 32, 64, 128\}$ and append $k_i = \lceil L / \alpha \rceil$ learnable
 *beacon tokens* after the interval's real tokens:
 
-$$\underbrace{[x_1, \ldots, x_L]}_{\text{interval 1}} \, [\beta_1, \ldots, \beta_{k_1}],\;
-\underbrace{[x_{L+1}, \ldots, x_{2L}]}_{\text{interval 2}} \, [\beta_1, \ldots, \beta_{k_2}],\; \ldots$$
+$$
+\underbrace{[x_1, \ldots, x_L]}_{\text{interval 1}} \, [\beta_1, \ldots, \beta_{k_1}],\;
+\underbrace{[x_{L+1}, \ldots, x_{2L}]}_{\text{interval 2}} \, [\beta_1, \ldots, \beta_{k_2}],\; \ldots
+$$
 
 With $L = 1024, \alpha = 32$ we get $k = 32$ beacons per interval — a $32\times$ compression
 ratio of activations.
@@ -72,7 +74,9 @@ duplicates these matrices into a *parallel beacon set*
 $W_Q^{(\beta)}, W_K^{(\beta)}, W_V^{(\beta)}$ that are used *only* at beacon positions
 ([§3.2, Eq. 2](https://arxiv.org/abs/2401.03462)):
 
-$$\mathbf{q}_t, \mathbf{k}_t, \mathbf{v}_t = \begin{cases} W_Q h_t,\; W_K h_t,\; W_V h_t & t \text{ is a real token,} \\ W_Q^{(\beta)} h_t,\; W_K^{(\beta)} h_t,\; W_V^{(\beta)} h_t & t \text{ is a beacon.} \end{cases}$$
+$$
+\mathbf{q}_t, \mathbf{k}_t, \mathbf{v}_t = \begin{cases} W_Q h_t,\; W_K h_t,\; W_V h_t & t \text{ is a real token,} \\ W_Q^{(\beta)} h_t,\; W_K^{(\beta)} h_t,\; W_V^{(\beta)} h_t & t \text{ is a beacon.} \end{cases}
+$$
 
 These beacon-specific matrices are the *only* new trainable parameters. Real-token projections
 remain frozen at their pretrained values. Crucially, since $W^{(\beta)}$ shares the input
@@ -88,7 +92,9 @@ of interval $i$, and (b) all beacons from intervals $< i$. Formally, with $\math
 real-token positions of interval $i$ and $\mathcal{B}_i$ its beacon positions
 ([Figure 2](https://arxiv.org/abs/2401.03462)):
 
-$$\text{visible}(t) = \begin{cases} \{j \le t : j \in \mathcal{R}_i\} \cup \bigcup_{i' < i} \mathcal{B}_{i'} & t \in \mathcal{R}_i, \\ \mathcal{R}_i \cup \bigcup_{i' < i} \mathcal{B}_{i'} & t \in \mathcal{B}_i. \end{cases}$$
+$$
+\text{visible}(t) = \begin{cases} \{j \le t : j \in \mathcal{R}_i\} \cup \bigcup_{i' < i} \mathcal{B}_{i'} & t \in \mathcal{R}_i, \\ \mathcal{R}_i \cup \bigcup_{i' < i} \mathcal{B}_{i'} & t \in \mathcal{B}_i. \end{cases}
+$$
 
 Two consequences:
 
@@ -117,7 +123,9 @@ state is only allocated for $W^{(\beta)}$ ([§3.3](https://arxiv.org/abs/2401.03
 **Step 5 — cost accounting.** Let $T$ be total context length, $L$ interval size, $\alpha$
 condensing ratio, $H$ heads, $d_h$ head dimension. The KV cache after processing all of $T$:
 
-$$\text{KV-cache}(T) = \underbrace{2 H d_h \cdot L}_{\text{current interval, real tokens}} + \underbrace{2 H d_h \cdot \tfrac{T}{\alpha}}_{\text{all past beacons}}.$$
+$$
+\text{KV-cache}(T) = \underbrace{2 H d_h \cdot L}_{\text{current interval, real tokens}} + \underbrace{2 H d_h \cdot \tfrac{T}{\alpha}}_{\text{all past beacons}}.
+$$
 
 At $T = 400$K, $L = 1024$, $\alpha = 128$ the second term is $2 H d_h \cdot 3125 \approx
 3{,}200$ tokens-equivalent of KV cache — well *below* the $L = 1024$ local window. The model

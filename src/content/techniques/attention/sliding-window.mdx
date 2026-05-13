@@ -85,11 +85,15 @@ hidden state at position $t \in \{0, 1, \dots, T-1\}$, and let
 $W_Q, W_K, W_V \in \mathbb{R}^{d \times d_h}$ be the per-head projections. Define the query,
 key, and value at $t$:
 
-$$\mathbf{q}_t = W_Q^\top \mathbf{h}_t, \quad \mathbf{k}_t = W_K^\top \mathbf{h}_t, \quad \mathbf{v}_t = W_V^\top \mathbf{h}_t.$$
+$$
+\mathbf{q}_t = W_Q^\top \mathbf{h}_t, \quad \mathbf{k}_t = W_K^\top \mathbf{h}_t, \quad \mathbf{v}_t = W_V^\top \mathbf{h}_t.
+$$
 
 Standard causal attention computes, for query position $t$,
 
-$$\mathbf{o}_t = \sum_{s = 0}^{t} \alpha_{t, s}\, \mathbf{v}_s, \qquad \alpha_{t, s} = \frac{\exp\!\left( \mathbf{q}_t \cdot \mathbf{k}_s / \sqrt{d_h} \right)}{\sum_{s'=0}^{t} \exp\!\left(\mathbf{q}_t \cdot \mathbf{k}_{s'} / \sqrt{d_h}\right)}.$$
+$$
+\mathbf{o}_t = \sum_{s = 0}^{t} \alpha_{t, s}\, \mathbf{v}_s, \qquad \alpha_{t, s} = \frac{\exp\!\left( \mathbf{q}_t \cdot \mathbf{k}_s / \sqrt{d_h} \right)}{\sum_{s'=0}^{t} \exp\!\left(\mathbf{q}_t \cdot \mathbf{k}_{s'} / \sqrt{d_h}\right)}.
+$$
 
 The softmax in the denominator runs over $[0, t]$ — every prior token. Compute per query is
 $O(t \cdot d_h)$, and summing over queries gives the familiar $O(T^2 \cdot d_h)$ per layer.
@@ -98,11 +102,15 @@ $O(t \cdot d_h)$, and summing over queries gives the familiar $O(T^2 \cdot d_h)$
 $\mathcal{N}_t = [\max(0, t - W + 1), \ t]$ where $W$ is the window size. The mask zeroes
 every position outside $\mathcal{N}_t$ before the softmax:
 
-$$\alpha^{\text{SWA}}_{t, s} = \begin{cases} \dfrac{\exp\!\left( \mathbf{q}_t \cdot \mathbf{k}_s / \sqrt{d_h} \right)}{\sum_{s' \in \mathcal{N}_t} \exp\!\left(\mathbf{q}_t \cdot \mathbf{k}_{s'} / \sqrt{d_h}\right)} & s \in \mathcal{N}_t \\ 0 & \text{otherwise.} \end{cases}$$
+$$
+\alpha^{\text{SWA}}_{t, s} = \begin{cases} \dfrac{\exp\!\left( \mathbf{q}_t \cdot \mathbf{k}_s / \sqrt{d_h} \right)}{\sum_{s' \in \mathcal{N}_t} \exp\!\left(\mathbf{q}_t \cdot \mathbf{k}_{s'} / \sqrt{d_h}\right)} & s \in \mathcal{N}_t \\ 0 & \text{otherwise.} \end{cases}
+$$
 
 The output collapses to
 
-$$\mathbf{o}^{\text{SWA}}_t = \sum_{s \in \mathcal{N}_t} \alpha^{\text{SWA}}_{t, s}\, \mathbf{v}_s.$$
+$$
+\mathbf{o}^{\text{SWA}}_t = \sum_{s \in \mathcal{N}_t} \alpha^{\text{SWA}}_{t, s}\, \mathbf{v}_s.
+$$
 
 Per-query work drops from $O(t)$ scoring + softmax + reduction to $O(W)$ — independent of
 absolute position once $t \geq W - 1$. Summed over the sequence, per-layer compute is
@@ -122,7 +130,9 @@ tokens within $\mathcal{N}_t$, which themselves depend on layer-$(\ell-2)$ token
 *their* windows. Unrolled: the layer-$\ell$ representation at position $t$ depends on
 layer-$0$ inputs in a band of width
 
-$$R_\ell \;=\; \ell \cdot W \;+\; 1.$$
+$$
+R_\ell \;=\; \ell \cdot W \;+\; 1.
+$$
 
 For Mistral 7B with $W = 4096$ and $L = 32$ layers, $R_L \approx 131{,}073$ tokens
 ([Mistral 7B §2](https://arxiv.org/abs/2310.06825)) — well past its 32K training context.
@@ -158,7 +168,9 @@ long-range positional encoding ([Gemma 3 §2.1](https://arxiv.org/abs/2503.19786
 and $T$ sequence length. Per-layer FLOPs are $O(T^2 d_h)$ global and $O(T \cdot W \cdot d_h)$
 local. Total attention compute scales as
 
-$$C_{\text{attn}} \;=\; L_g \cdot T^2 d_h \;+\; (L - L_g) \cdot T \cdot W \cdot d_h.$$
+$$
+C_{\text{attn}} \;=\; L_g \cdot T^2 d_h \;+\; (L - L_g) \cdot T \cdot W \cdot d_h.
+$$
 
 For Gemma 3 with $L_g / L = 1/6$, $W = 1024$, $T = 128{,}000$, the global term is
 $\sim 16$ TFLOPs/layer and the local term is $\sim 0.13$ TFLOPs/layer — a 120× reduction on

@@ -53,7 +53,9 @@ import Summary from "~/components/Summary.astro";
 Rotary position embeddings ([Su et al., 2021](https://arxiv.org/abs/2104.09864)) rotate the $i$-th
 coordinate pair of every query and key by an angle proportional to the token's absolute position:
 
-$$\theta_i = b^{-2i/d_h}, \qquad \text{angle}(t, i) = t \cdot \theta_i,$$
+$$
+\theta_i = b^{-2i/d_h}, \qquad \text{angle}(t, i) = t \cdot \theta_i,
+$$
 
 with base $b = 10000$ in the original RoPE recipe. The head dimension $d_h$ is partitioned into
 $d_h/2$ rotation rates that form a geometric ladder from $\theta_0 = 1$ (one radian per position)
@@ -97,7 +99,9 @@ geometry, $\lambda_0 = 2\pi \approx 6.28$ positions at the fastest band and $\la
 \cdot 10000^{126/128} \approx 5.85 \times 10^4$ at the slowest. The *rotation count* over training
 window $L$ is
 
-$$r_i = \frac{L \, \theta_i}{2\pi} = \frac{L}{\lambda_i}.$$
+$$
+r_i = \frac{L \, \theta_i}{2\pi} = \frac{L}{\lambda_i}.
+$$
 
 A dimension with $r_i \gg 1$ has been "saturated" — it cycled through the unit circle many times
 and the model saw its full rotational support. A dimension with $r_i \ll 1$ has only ever swept a
@@ -106,7 +110,9 @@ fraction of the circle. This distinction drives every later decision
 
 **Step 1: Position Interpolation as uniform stretch.** PI rescales every angle by $1/s$:
 
-$$\theta_i^{\text{PI}} = \frac{\theta_i}{s}, \qquad s = \frac{L_\text{new}}{L}.$$
+$$
+\theta_i^{\text{PI}} = \frac{\theta_i}{s}, \qquad s = \frac{L_\text{new}}{L}.
+$$
 
 Every band's wavelength stretches by $s$. The slow bands benefit (their new angles still fall in
 the trained range), but the fast bands lose precision: two adjacent positions that previously had
@@ -118,7 +124,9 @@ is why PI needs fine-tuning even at modest $s$
 **Step 2: NTK-aware as band-dependent stretch.** Replacing the base $b$ with $b' = b \cdot s^{d_h
 / (d_h - 2)}$ produces
 
-$$\theta_i^{\text{NTK}} = (b')^{-2i/d_h} = \theta_i \cdot s^{-2i/(d_h - 2)},$$
+$$
+\theta_i^{\text{NTK}} = (b')^{-2i/d_h} = \theta_i \cdot s^{-2i/(d_h - 2)},
+$$
 
 which equals $\theta_i$ at $i = 0$ (fastest dimension untouched) and $\theta_i / s$ at $i = d_h/2
 - 1$ (slowest dimension matches PI). The rescaling factor is a smooth geometric ramp in $i$. This
@@ -128,23 +136,27 @@ says nothing about whether band $i$ has actually saturated over the training win
 head with the same base; the NTK-aware rescaling treats them the same.
 
 **Step 3: NTK-by-parts.** Peng et al. propose classifying dimensions by their saturation $r_i$
-rather than their index $i$. Define two cutoffs $r_\min$ and $r_\max$ on the rotation count:
+rather than their index $i$. Define two cutoffs $r_{\min}$ and $r_{\max}$ on the rotation count:
 
-- **Slow band** ($r_i \leq r_\min$): dimension has not saturated. Interpolate it (PI's recipe)
+- **Slow band** ($r_i \leq r_{\min}$): dimension has not saturated. Interpolate it (PI's recipe)
   because extrapolating untrained angles is the failure mode.
-- **Fast band** ($r_i \geq r_\max$): dimension has saturated. Leave it untouched. Both
+- **Fast band** ($r_i \geq r_{\max}$): dimension has saturated. Leave it untouched. Both
   extrapolated and interpolated angles fall inside the trained support.
-- **Middle band** ($r_\min < r_i < r_\max$): smoothly blend. Define the ramp
+- **Middle band** ($r_{\min} < r_i < r_{\max}$): smoothly blend. Define the ramp
 
-$$\gamma(r_i) = \begin{cases} 0 & r_i \geq r_\max \\ 1 & r_i \leq r_\min \\ \dfrac{r_\max - r_i}{r_\max - r_\min} & \text{otherwise}\end{cases}$$
+$$
+\gamma(r_i) = \begin{cases} 0 & r_i \geq r_{\max} \\ 1 & r_i \leq r_{\min} \\ \dfrac{r_{\max} - r_i}{r_{\max} - r_{\min}} & \text{otherwise}\end{cases}
+$$
 
 and apply
 
-$$\theta_i^{\text{YaRN}} = (1 - \gamma(r_i)) \, \theta_i + \gamma(r_i) \, \frac{\theta_i}{s}.$$
+$$
+\theta_i^{\text{YaRN}} = (1 - \gamma(r_i)) \, \theta_i + \gamma(r_i) \, \frac{\theta_i}{s}.
+$$
 
 At $\gamma = 0$ the original $\theta_i$ survives; at $\gamma = 1$ the band gets full PI rescaling;
 in between the band's effective rotation rate is a linear interpolation in $\theta_i$ between the
-two. The paper defaults to $r_\min = 1, r_\max = 32$ for Llama-2 7B/13B at $L = 4096$, which puts
+two. The paper defaults to $r_{\min} = 1, r_{\max} = 32$ for Llama-2 7B/13B at $L = 4096$, which puts
 roughly the fastest dimension pairs in the untouched fast band, the slowest in the interpolated
 slow band, and the remainder in the smooth middle
 ([Peng et al., 2023, §3.3 and Figure 2](https://arxiv.org/abs/2309.00071)).
@@ -164,7 +176,9 @@ measurable perplexity penalty independent of which rescaling scheme is chosen
 Their fix: divide attention logits by a temperature $t$ before the softmax, with $t$ chosen so
 the average per-query entropy matches the pretraining length. The empirically fit form is
 
-$$\frac{1}{\sqrt{t}} = 0.1 \, \ln s + 1, \qquad \text{equivalently} \qquad t = \frac{1}{(0.1 \ln s + 1)^2}.$$
+$$
+\frac{1}{\sqrt{t}} = 0.1 \, \ln s + 1, \qquad \text{equivalently} \qquad t = \frac{1}{(0.1 \ln s + 1)^2}.
+$$
 
 For $s = 16$ this gives $1/\sqrt{t} \approx 1.28$; for $s = 32$, $1/\sqrt{t} \approx 1.35$. The
 constants $0.1$ and $1$ were fit to Llama-1 7B and reused for Llama-2 7B/13B without per-model
@@ -267,7 +281,7 @@ alternatives, but the gap narrows when continued pretraining is generous.
 temperature term's contribution at very large $s$ (256+); the constants $0.1$ and $1$ were fit at
 moderate scales. Second, the perplexity-vs-retrieval divergence noted above means low PG19
 perplexity is not a sufficient proxy for long-context recall, but no replacement metric has
-become standard. Third, the choice of $r_\min, r_\max$ defaults is justified by visual inspection
+become standard. Third, the choice of $r_{\min}, r_{\max}$ defaults is justified by visual inspection
 in the paper's Figure 2; whether other architectures need different cutoffs is not systematically
 studied. [LongRoPE](/llm-arch-kb/positional/longrope/) sidesteps the cutoff question by treating
 the per-dimension factors as a search variable, which empirically recovers non-monotone schedules

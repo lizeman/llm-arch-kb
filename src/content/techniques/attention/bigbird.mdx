@@ -71,7 +71,9 @@ $(i, j) \in G$ means query $i$ attends to key $j$. Dense attention uses the comp
 $G_{\mathrm{full}} = [N]^2$. Sparse attention parameterizes a subset $G_{\mathrm{sparse}}
 \subseteq G_{\mathrm{full}}$:
 
-$$\mathrm{Attn}_i = \sum_{j: (i, j) \in G_{\mathrm{sparse}}} \mathrm{softmax}_j\!\left(\frac{\mathbf{q}_i \cdot \mathbf{k}_j}{\sqrt{d_h}}\right) \mathbf{v}_j.$$
+$$
+\mathrm{Attn}_i = \sum_{j: (i, j) \in G_{\mathrm{sparse}}} \mathrm{softmax}_j\!\left(\frac{\mathbf{q}_i \cdot \mathbf{k}_j}{\sqrt{d_h}}\right) \mathbf{v}_j.
+$$
 
 The cost per layer is $O(|G_{\mathrm{sparse}}| \cdot d_h)$, vs $O(N^2 \cdot d_h)$ for full
 attention. The question is what structure $G_{\mathrm{sparse}}$ must have to preserve full-
@@ -141,14 +143,18 @@ using a single random pattern that works for all positions.
 
 **The two theorems.** With $G_{\mathrm{BB}}$ as defined above:
 
-$$\mathbf{Theorem\ 1}: \text{The class of BigBird sequence-to-sequence functions is a universal approximator}$$
+$$
+\mathbf{Theorem\ 1}: \text{The class of BigBird sequence-to-sequence functions is a universal approximator}
+$$
 
 (Zaheer et al. 2020, §3). For any continuous permutation-equivariant $f: \mathbb{R}^{N \times
 d} \to \mathbb{R}^{N \times d}$ and any $\varepsilon > 0$, there exists a BigBird transformer
 with depth and width $\mathrm{poly}(N, 1/\varepsilon)$ that approximates $f$ within
 $\varepsilon$ uniformly.
 
-$$\mathbf{Theorem\ 2}: \text{BigBird is Turing complete.}$$
+$$
+\mathbf{Theorem\ 2}: \text{BigBird is Turing complete.}
+$$
 
 (Zaheer et al. 2020, §3.1). Given unbounded depth and arbitrary precision, a BigBird stack
 can simulate any Turing machine. Same statement as Pérez et al. 2019's result for full

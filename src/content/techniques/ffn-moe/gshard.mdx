@@ -80,7 +80,9 @@ softmaxed. Let $g_1(\mathbf{x}_s) = \max_i p_{s,i}$ be the top expert's gate val
 $g_2(\mathbf{x}_s)$ the runner-up's. Top-2 routing sends the token to *both* experts, weighted
 by their gate values:
 
-$$\mathrm{out}(\mathbf{x}_s) \;=\; g_1(\mathbf{x}_s) \cdot f_{i_1^*}(\mathbf{x}_s) \;+\; g_2(\mathbf{x}_s) \cdot f_{i_2^*}(\mathbf{x}_s),$$
+$$
+\mathrm{out}(\mathbf{x}_s) \;=\; g_1(\mathbf{x}_s) \cdot f_{i_1^*}(\mathbf{x}_s) \;+\; g_2(\mathbf{x}_s) \cdot f_{i_2^*}(\mathbf{x}_s),
+$$
 
 with $(i_1^*, i_2^*) = \mathrm{top2}(\mathbf{p}_s)$. The reasoning behind $K = 2$ rather than
 $K = 1$ — which Switch Transformer would later argue was sufficient — is that the second
@@ -100,7 +102,9 @@ allocating each expert a **capacity** $C$ that bounds the tokens it processes pe
 local group of $S$ tokens (with $G$ groups in the batch, $S = N/G$, so $N$ is the global batch
 size) and $E$ experts, the capacity is
 
-$$C \;=\; \frac{2 N}{G \cdot E} \;=\; \frac{2 S}{E},$$
+$$
+C \;=\; \frac{2 N}{G \cdot E} \;=\; \frac{2 S}{E},
+$$
 
 with the leading 2 reflecting top-2 routing — each token wants to dispatch to up to 2 experts,
 so the expected fan-out is 2. In practice GShard uses a capacity factor $\alpha \in [1, 2]$ so
@@ -127,9 +131,15 @@ expressed in Einstein summation:
 
 The forward pass becomes three einsum operations (paper Algorithm 2):
 
-$$\text{(dispatch)} \;\;\mathrm{einsum}(\text{"GSEC,GSM} \to \text{EGCM"}),$$
-$$\text{(expert FFN)} \;\;\mathrm{einsum}(\text{"EGCM,EMH} \to \text{EGCH"}),$$
-$$\text{(combine)} \;\;\mathrm{einsum}(\text{"GSEC,GECM} \to \text{GSM"}).$$
+$$
+\text{(dispatch)} \;\;\mathrm{einsum}(\text{"GSEC,GSM} \to \text{EGCM"}),
+$$
+$$
+\text{(expert FFN)} \;\;\mathrm{einsum}(\text{"EGCM,EMH} \to \text{EGCH"}),
+$$
+$$
+\text{(combine)} \;\;\mathrm{einsum}(\text{"GSEC,GECM} \to \text{GSM"}).
+$$
 
 The first reshape gathers per-expert input buffers; the second is the expert-wise FFN as a
 single grouped matmul (one matrix multiply per expert, parallel across experts); the third
@@ -143,7 +153,9 @@ an auxiliary loss to prevent gate collapse. The form (paper Section 2.2) is slig
 from the 2017 CV-squared losses — GShard uses a product term that Switch later formalized as
 its standard:
 
-$$\mathcal{L}_{\mathrm{aux}} \;=\; \frac{1}{E} \sum_{e=1}^{E} \frac{c_e}{S} \cdot m_e,$$
+$$
+\mathcal{L}_{\mathrm{aux}} \;=\; \frac{1}{E} \sum_{e=1}^{E} \frac{c_e}{S} \cdot m_e,
+$$
 
 where $c_e$ is the count of tokens dispatched to expert $e$ in the batch and $m_e$ is the mean
 gate probability assigned to expert $e$ across the batch. When dispatch is balanced

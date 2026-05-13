@@ -93,7 +93,9 @@ the residual connection itself — remains unnormalized.
 same: $\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + (\text{stuff})$ with no normalization on
 $\mathbf{x}_\ell$ itself. The backward Jacobian inherits the dominant identity:
 
-$$\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = \mathbf{I} + \mathbf{J}_{\mathrm{RMSNorm}}\bigl(\mathrm{FFN}(\mathbf{h}_\ell)\bigr)\, \mathbf{J}_{\mathrm{FFN}}(\mathbf{h}_\ell)\, \frac{\partial \mathbf{h}_\ell}{\partial \mathbf{x}_\ell},$$
+$$
+\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = \mathbf{I} + \mathbf{J}_{\mathrm{RMSNorm}}\bigl(\mathrm{FFN}(\mathbf{h}_\ell)\bigr)\, \mathbf{J}_{\mathrm{FFN}}(\mathbf{h}_\ell)\, \frac{\partial \mathbf{h}_\ell}{\partial \mathbf{x}_\ell},
+$$
 
 with $\partial \mathbf{h}_\ell / \partial \mathbf{x}_\ell = \mathbf{I} + \mathbf{J}_{\mathrm{RMSNorm}}(\mathrm{Attn}(\mathbf{x}_\ell))\, \mathbf{J}_{\mathrm{Attn}}(\mathbf{x}_\ell)$
 having the same identity-plus-correction shape. The depth product collapses to nearly
@@ -114,7 +116,9 @@ that downstream attention and FFN sublayers see.
 and after each sublayer (two norms per sublayer, four per block). OLMo 2's variant drops the
 input norm (one norm per sublayer, two per block). Algebraically:
 
-$$\text{Sandwich:}\; \mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \mathrm{Norm}_\text{post}\bigl(f_\ell(\mathrm{Norm}_\text{pre}(\mathbf{x}_\ell))\bigr), \qquad \text{OLMo 2:}\; \mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \mathrm{Norm}\bigl(f_\ell(\mathbf{x}_\ell)\bigr).$$
+$$
+\text{Sandwich:}\; \mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \mathrm{Norm}_\text{post}\bigl(f_\ell(\mathrm{Norm}_\text{pre}(\mathbf{x}_\ell))\bigr), \qquad \text{OLMo 2:}\; \mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \mathrm{Norm}\bigl(f_\ell(\mathbf{x}_\ell)\bigr).
+$$
 
 Both put a norm on the sublayer *output* — that is the load-bearing piece for bounding the
 residual contribution. OLMo 2's choice trades the redundant input normalization (the

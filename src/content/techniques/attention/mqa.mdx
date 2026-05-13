@@ -64,7 +64,9 @@ maximally — and serves as the contrastive baseline for everything in the linea
 Start from MHA. Each head $i$ has its own $\mathbf{Q}_i, \mathbf{K}_i, \mathbf{V}_i$ at head
 dim $d_h = d_{\text{model}}/H$, with the layer output
 
-$$\mathrm{MHA}(X) = \bigl[\mathrm{softmax}(\tfrac{1}{\sqrt{d_h}}\mathbf{Q}_i \mathbf{K}_i^\top)\, \mathbf{V}_i\bigr]_{i=1}^H \, W_O,$$
+$$
+\mathrm{MHA}(X) = \bigl[\mathrm{softmax}(\tfrac{1}{\sqrt{d_h}}\mathbf{Q}_i \mathbf{K}_i^\top)\, \mathbf{V}_i\bigr]_{i=1}^H \, W_O,
+$$
 
 where $\mathbf{Q}_i = X W_Q^{(i)}, \mathbf{K}_i = X W_K^{(i)}, \mathbf{V}_i = X W_V^{(i)}$
 and $W_Q^{(i)}, W_K^{(i)}, W_V^{(i)} \in \mathbb{R}^{d_{\text{model}} \times d_h}$.
@@ -73,11 +75,15 @@ Shazeer's modification (2019, §2.2): keep $H$ query projections, replace the pe
 W_V$ with a single shared pair $W_K, W_V \in \mathbb{R}^{d_{\text{model}} \times d_h}$. The
 result is
 
-$$\mathbf{Q}_i = X W_Q^{(i)} \quad (i = 1, \ldots, H),\qquad \mathbf{K} = X W_K,\quad \mathbf{V} = X W_V,$$
+$$
+\mathbf{Q}_i = X W_Q^{(i)} \quad (i = 1, \ldots, H),\qquad \mathbf{K} = X W_K,\quad \mathbf{V} = X W_V,
+$$
 
 with all heads attending over the same K, V matrix:
 
-$$\mathrm{MQA}(X) = \bigl[\mathrm{softmax}(\tfrac{1}{\sqrt{d_h}}\mathbf{Q}_i \mathbf{K}^\top)\, \mathbf{V}\bigr]_{i=1}^H \, W_O.$$
+$$
+\mathrm{MQA}(X) = \bigl[\mathrm{softmax}(\tfrac{1}{\sqrt{d_h}}\mathbf{Q}_i \mathbf{K}^\top)\, \mathbf{V}\bigr]_{i=1}^H \, W_O.
+$$
 
 Why this and not, say, average the per-head K, V after the fact? Because the cache is the
 asset to shrink, and averaged-after-the-fact still requires writing per-head K, V into the
@@ -95,11 +101,15 @@ while costing roughly the same quality.
 
 The per-token, per-layer K-cache and V-cache sizes drop from
 
-$$M_{\text{KV,MHA}} = 2 \cdot H \cdot d_h = 2 \cdot d_{\text{model}}$$
+$$
+M_{\text{KV,MHA}} = 2 \cdot H \cdot d_h = 2 \cdot d_{\text{model}}
+$$
 
 to
 
-$$M_{\text{KV,MQA}} = 2 \cdot d_h,$$
+$$
+M_{\text{KV,MQA}} = 2 \cdot d_h,
+$$
 
 an $H\times$ reduction. For the Llama-1-65B-shaped model above, this is $327\text{ GB} / 64
 \approx 5.1$ GB — within working set of a single A100.
@@ -108,7 +118,9 @@ an $H\times$ reduction. For the Llama-1-65B-shaped model above, this is $327\tex
 $P_{\text{MHA}} = 4 \cdot d_{\text{model}}^2$ (three projections at $d_{\text{model}}^2$ each
 plus $W_O$) to
 
-$$P_{\text{MQA}} = d_{\text{model}}^2 \cdot \left(2 + \tfrac{2}{H}\right),$$
+$$
+P_{\text{MQA}} = d_{\text{model}}^2 \cdot \left(2 + \tfrac{2}{H}\right),
+$$
 
 where the two full-rank terms are $W_Q$ and $W_O$ and the $2/H$ piece is the shared $W_K, W_V$
 at $d_{\text{model}} \times d_h$ each. For Llama-1-65B at $d_{\text{model}} = 8192, H = 64$:

@@ -84,7 +84,9 @@ import Summary from "~/components/Summary.astro";
 Self-attention as defined by Vaswani et al. (2017, §3.2) is permutation-equivariant: permuting the
 input tokens permutes the output tokens identically. The attention score between query at
 position $m$ and key at position $n$,
-$$a_{mn} = (W_Q \mathbf{x}_m)^\top (W_K \mathbf{x}_n) / \sqrt{d_h},$$
+$$
+a_{mn} = (W_Q \mathbf{x}_m)^\top (W_K \mathbf{x}_n) / \sqrt{d_h},
+$$
 is a symmetric bilinear function of the two embeddings. It contains no information about $m$,
 $n$, or $n - m$. For language — where "the dog bit the man" and "the man bit the dog" share a
 multiset of tokens but mean different things — a positional signal must be injected somewhere.
@@ -95,7 +97,9 @@ GPT-2, and GPT-3 replaced the sinusoidal table with a learned matrix
 $P \in \mathbb{R}^{T_{\max} \times d_{\text{model}}}$ of the same shape ([Devlin et al. 2018,
 §3.2](https://arxiv.org/abs/1810.04805); [Radford et al. 2019](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf)).
 Both share the additive form
-$$\mathbf{x}_t \leftarrow \mathbf{e}_{\text{tok}(t)} + \mathbf{p}_t.$$
+$$
+\mathbf{x}_t \leftarrow \mathbf{e}_{\text{tok}(t)} + \mathbf{p}_t.
+$$
 
 Three failures recur. First, the learned table is a hard cap. GPT-3's $P$ matrix has shape
 $2048 \times 12288$, $\sim 100$ MB at fp32, and is exactly undefined at position $2049$
@@ -124,7 +128,9 @@ Let $\mathbf{q}_m, \mathbf{k}_n \in \mathbb{R}^{d_h}$ denote a query at position
 at position $n$, where $d_h$ is the per-head dimension (even). The pre-softmax attention logit
 is $\langle \mathbf{q}_m, \mathbf{k}_n \rangle$. We seek functions $f_q, f_k$ such that the
 position-aware vectors $f_q(\mathbf{q}, m)$ and $f_k(\mathbf{k}, n)$ satisfy
-$$\langle f_q(\mathbf{q}, m), f_k(\mathbf{k}, n) \rangle \;=\; g(\mathbf{q}, \mathbf{k}, n - m) \tag{2.1}$$
+$$
+\langle f_q(\mathbf{q}, m), f_k(\mathbf{k}, n) \rangle \;=\; g(\mathbf{q}, \mathbf{k}, n - m) \tag{2.1}
+$$
 for some function $g$ that depends on the two raw vectors and the relative offset alone.
 [Su et al. 2021, §3.2](https://arxiv.org/abs/2104.09864) frame this as the defining property
 they want. The substitution $f_q(\mathbf{q}, m) = \mathbf{q}$, $f_k(\mathbf{k}, n) =
@@ -136,15 +142,21 @@ depend on absolute positions.
 
 **The 2-D case.** Specialize to $d_h = 2$. Identify $\mathbb{R}^2$ with $\mathbb{C}$ by
 $\mathbf{q} = q_0 + i q_1$. Define
-$$f_q(\mathbf{q}, m) = \mathbf{q}\, e^{i m \theta}, \qquad f_k(\mathbf{k}, n) = \mathbf{k}\, e^{i n \theta}, \tag{2.2}$$
+$$
+f_q(\mathbf{q}, m) = \mathbf{q}\, e^{i m \theta}, \qquad f_k(\mathbf{k}, n) = \mathbf{k}\, e^{i n \theta}, \tag{2.2}
+$$
 i.e. multiplication by a unit-modulus complex number that rotates the vector by angle
 $m\theta$. The Hermitian inner product is
-$$\langle f_q(\mathbf{q}, m), f_k(\mathbf{k}, n) \rangle_{\mathbb{C}} = (\mathbf{q}\, e^{i m \theta})^* (\mathbf{k}\, e^{i n \theta}) = \overline{\mathbf{q}}\, \mathbf{k}\, e^{i(n - m)\theta},$$
+$$
+\langle f_q(\mathbf{q}, m), f_k(\mathbf{k}, n) \rangle_{\mathbb{C}} = (\mathbf{q}\, e^{i m \theta})^* (\mathbf{k}\, e^{i n \theta}) = \overline{\mathbf{q}}\, \mathbf{k}\, e^{i(n - m)\theta},
+$$
 and the real part — which is what the dot product over $\mathbb{R}^2$ recovers — is
 $\operatorname{Re}(\overline{\mathbf{q}} \mathbf{k}\, e^{i(n-m)\theta})$, a function of
 $\mathbf{q}, \mathbf{k}, n - m$ only. Property (2.1) is satisfied. Equivalently, in matrix form,
 the same map is the planar rotation
-$$R_t = \begin{pmatrix} \cos(t\theta) & -\sin(t\theta) \\ \sin(t\theta) & \cos(t\theta) \end{pmatrix}, \qquad R_m^\top R_n = R_{n - m}, \tag{2.3}$$
+$$
+R_t = \begin{pmatrix} \cos(t\theta) & -\sin(t\theta) \\ \sin(t\theta) & \cos(t\theta) \end{pmatrix}, \qquad R_m^\top R_n = R_{n - m}, \tag{2.3}
+$$
 so $(R_m \mathbf{q})^\top (R_n \mathbf{k}) = \mathbf{q}^\top R_m^\top R_n \mathbf{k} =
 \mathbf{q}^\top R_{n - m} \mathbf{k}$. The dependence on $m$ and $n$ separately has cancelled.
 
@@ -153,15 +165,19 @@ Su et al. (2021, §3.2.2) lift the construction by partitioning the $d_h$ coordi
 $\mathbf{q}, \mathbf{k}$ into $d_h/2$ disjoint pairs $(q_{2i}, q_{2i+1})$ for
 $i = 0, 1, \dots, d_h/2 - 1$, and rotating each pair by its own frequency $\theta_i$. The
 position-$t$ rotation is the block-diagonal matrix
-$$R_t = \operatorname{diag}\!\bigl(R_t^{(0)}, R_t^{(1)}, \dots, R_t^{(d_h/2 - 1)}\bigr),
-\qquad R_t^{(i)} = \begin{pmatrix} \cos(t\theta_i) & -\sin(t\theta_i) \\ \sin(t\theta_i) & \cos(t\theta_i) \end{pmatrix}. \tag{2.4}$$
+$$
+R_t = \operatorname{diag}\!\bigl(R_t^{(0)}, R_t^{(1)}, \dots, R_t^{(d_h/2 - 1)}\bigr),
+\qquad R_t^{(i)} = \begin{pmatrix} \cos(t\theta_i) & -\sin(t\theta_i) \\ \sin(t\theta_i) & \cos(t\theta_i) \end{pmatrix}. \tag{2.4}
+$$
 Each $R_t^{(i)}$ is orthogonal, so $R_t$ is orthogonal; the product $R_m^\top R_n$ is
 block-diagonal with blocks $R_{n-m}^{(i)}$; the global identity
 $R_m^\top R_n = R_{n - m}$ holds dimension-pair by dimension-pair, and (2.1) holds in
 $\mathbb{R}^{d_h}$.
 
 **Frequency choice.** The frequencies are
-$$\theta_i = b^{-2i / d_h}, \qquad b = 10000, \quad i = 0, \dots, d_h/2 - 1, \tag{2.5}$$
+$$
+\theta_i = b^{-2i / d_h}, \qquad b = 10000, \quad i = 0, \dots, d_h/2 - 1, \tag{2.5}
+$$
 mirroring the wavelength geometric series of the sinusoidal embedding of [Vaswani et al. 2017,
 §3.5](https://arxiv.org/abs/1706.03762). The pair $i = 0$ rotates at $1$ radian per step
 (wavelength $2\pi \approx 6.3$ tokens); the pair $i = d_h/2 - 1$ rotates at $\sim b^{-1} =

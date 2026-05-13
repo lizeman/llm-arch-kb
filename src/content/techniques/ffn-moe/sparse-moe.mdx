@@ -73,7 +73,9 @@ $f_i : \mathbb{R}^d \to \mathbb{R}^d$. A learned gate produces logits over exper
 to the top $K$, and the layer output is the gate-weighted sum of the selected experts'
 outputs:
 
-$$\mathrm{MoE}(\mathbf{x}) \;=\; \sum_{i=1}^{E} G(\mathbf{x})_i \, f_i(\mathbf{x}),$$
+$$
+\mathrm{MoE}(\mathbf{x}) \;=\; \sum_{i=1}^{E} G(\mathbf{x})_i \, f_i(\mathbf{x}),
+$$
 
 where $G(\mathbf{x}) \in \mathbb{R}^E$ is sparse — only the top-$K$ entries are nonzero, so the
 sum reduces to a $K$-term combination at runtime.
@@ -83,7 +85,9 @@ expert whose initial random projection happens to be largest, freezing a near-ar
 assignment. The paper's Eq. 4 adds per-expert *learned* Gaussian noise on top of the linear
 gate score, so the routing decision is genuinely stochastic during training:
 
-$$H(\mathbf{x})_i \;=\; (\mathbf{x} W_g)_i \;+\; \xi_i \cdot \mathrm{softplus}\bigl((\mathbf{x} W_{\text{noise}})_i\bigr), \qquad \xi_i \sim \mathcal{N}(0, 1).$$
+$$
+H(\mathbf{x})_i \;=\; (\mathbf{x} W_g)_i \;+\; \xi_i \cdot \mathrm{softplus}\bigl((\mathbf{x} W_{\text{noise}})_i\bigr), \qquad \xi_i \sim \mathcal{N}(0, 1).
+$$
 
 Here $W_g, W_{\text{noise}} \in \mathbb{R}^{d \times E}$ are both learned, and the softplus
 guarantees the noise standard deviation is non-negative. The noise serves a dual purpose:
@@ -94,10 +98,14 @@ encourages exploration so collapsed experts can recover.
 **Step 2 — KeepTopK + softmax.** The paper's Eq. 5 sparsifies by setting non-top-$K$ logits to
 $-\infty$, then softmaxing over the survivors:
 
-$$\mathrm{KeepTopK}(\mathbf{v}, K)_i \;=\;
-\begin{cases} v_i & \text{if } v_i \in \mathrm{top}\text{-}K(\mathbf{v}), \\ -\infty & \text{otherwise,} \end{cases}$$
+$$
+\mathrm{KeepTopK}(\mathbf{v}, K)_i \;=\;
+\begin{cases} v_i & \text{if } v_i \in \mathrm{top}\text{-}K(\mathbf{v}), \\ -\infty & \text{otherwise,} \end{cases}
+$$
 
-$$G(\mathbf{x}) \;=\; \mathrm{softmax}\bigl(\mathrm{KeepTopK}(H(\mathbf{x}), K)\bigr).$$
+$$
+G(\mathbf{x}) \;=\; \mathrm{softmax}\bigl(\mathrm{KeepTopK}(H(\mathbf{x}), K)\bigr).
+$$
 
 The paper notes this introduces "theoretically scary discontinuities" — an infinitesimal
 change in $\mathbf{x}$ can change which expert is in the top-$K$ — but reports no empirical
@@ -108,13 +116,17 @@ loss directly rewards using all experts. The paper adds two auxiliary loss terms
 training objective. Define the per-expert *importance* over a batch $X$ of tokens as the
 column sum of gate values:
 
-$$\mathrm{Importance}(X)_i \;=\; \sum_{\mathbf{x} \in X} G(\mathbf{x})_i.$$
+$$
+\mathrm{Importance}(X)_i \;=\; \sum_{\mathbf{x} \in X} G(\mathbf{x})_i.
+$$
 
 A balanced router would have $\mathrm{Importance}(X)_i \approx |X| \cdot K / E$ for all $i$.
 The *importance loss* penalizes deviation via the squared coefficient of variation of this
 vector across experts (Eq. 7):
 
-$$\mathcal{L}_{\mathrm{importance}}(X) \;=\; w_{\mathrm{importance}} \cdot \mathrm{CV}\bigl(\mathrm{Importance}(X)\bigr)^2,$$
+$$
+\mathcal{L}_{\mathrm{importance}}(X) \;=\; w_{\mathrm{importance}} \cdot \mathrm{CV}\bigl(\mathrm{Importance}(X)\bigr)^2,
+$$
 
 with $\mathrm{CV}(\mathbf{v}) = \sigma(\mathbf{v}) / \mu(\mathbf{v})$ the standard
 mean-normalized scatter. Importance alone is not sufficient: an expert can have high
@@ -124,7 +136,9 @@ estimating, for each expert, the probability $P(\mathbf{x}, i)$ that token $\mat
 routed to it under the noisy gate — a smooth, differentiable approximation of the discrete
 dispatch count — and penalizing its CV:
 
-$$\mathrm{Load}(X)_i \;=\; \sum_{\mathbf{x} \in X} P(\mathbf{x}, i), \qquad \mathcal{L}_{\mathrm{load}}(X) \;=\; w_{\mathrm{load}} \cdot \mathrm{CV}\bigl(\mathrm{Load}(X)\bigr)^2.$$
+$$
+\mathrm{Load}(X)_i \;=\; \sum_{\mathbf{x} \in X} P(\mathbf{x}, i), \qquad \mathcal{L}_{\mathrm{load}}(X) \;=\; w_{\mathrm{load}} \cdot \mathrm{CV}\bigl(\mathrm{Load}(X)\bigr)^2.
+$$
 
 Both auxiliary weights are small ($w_{\mathrm{importance}} = w_{\mathrm{load}} = 10^{-2}$), so
 they nudge the gate toward balance without overwhelming the language-modeling signal.

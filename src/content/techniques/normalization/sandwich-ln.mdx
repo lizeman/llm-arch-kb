@@ -91,7 +91,9 @@ normalization-count for one half of each side's benefit.
 **Residual-stream norm scaling.** Suppose each block's perturbation has variance
 $\sigma^2$ per coordinate, i.i.d. across $\ell$. Then after $L$ layers,
 
-$$\mathbb{E}\bigl[\|\mathbf{x}_L\|_2^2\bigr] = \|\mathbf{x}_0\|_2^2 + L \cdot d \cdot \sigma^2,$$
+$$
+\mathbb{E}\bigl[\|\mathbf{x}_L\|_2^2\bigr] = \|\mathbf{x}_0\|_2^2 + L \cdot d \cdot \sigma^2,
+$$
 
 so $\|\mathbf{x}_L\|_2$ grows as $\sqrt{L \cdot d}\cdot \sigma$. The growth *law* is the
 same under Pre-Norm and Sandwich-LN — they both sum $L$ perturbations onto the residual.
@@ -115,7 +117,9 @@ $1/\sqrt{\ell}$ gradient-attenuation effect is mild rather than dominant.
 
 **Gradient flow.** The Jacobian of the Sandwich block with respect to $\mathbf{x}_\ell$ is
 
-$$\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = \mathbf{I} + \mathbf{J}_{\mathrm{Norm}_\text{post}} \cdot \mathbf{J}_{f_\ell} \cdot \mathbf{J}_{\mathrm{Norm}_\text{pre}}.$$
+$$
+\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = \mathbf{I} + \mathbf{J}_{\mathrm{Norm}_\text{post}} \cdot \mathbf{J}_{f_\ell} \cdot \mathbf{J}_{\mathrm{Norm}_\text{pre}}.
+$$
 
 The dominant $\mathbf{I}$ inherits from Pre-Norm — the residual addition is unmediated.
 The product of three Jacobians in the correction term is small at initialization (the

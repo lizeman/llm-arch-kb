@@ -29,7 +29,9 @@ import Summary from "~/components/Summary.astro";
 
 Standard scaled-dot-product attention computes, for each query $\mathbf{q}_t$,
 
-$$\mathrm{out}_t \;=\; \frac{\sum_{s} \exp(\mathbf{q}_t^\top \mathbf{k}_s / \sqrt{d_h}) \, \mathbf{v}_s}{\sum_{s} \exp(\mathbf{q}_t^\top \mathbf{k}_s / \sqrt{d_h})}.$$
+$$
+\mathrm{out}_t \;=\; \frac{\sum_{s} \exp(\mathbf{q}_t^\top \mathbf{k}_s / \sqrt{d_h}) \, \mathbf{v}_s}{\sum_{s} \exp(\mathbf{q}_t^\top \mathbf{k}_s / \sqrt{d_h})}.
+$$
 
 The exponential $\exp(\mathbf{q}^\top \mathbf{k} / \sqrt{d_h})$ is a positive-definite *kernel*
 $K(\mathbf{q}, \mathbf{k})$ on $\mathbb{R}^{d_h}$. By Mercer's theorem (or its generalization
@@ -40,7 +42,9 @@ $\phi: \mathbb{R}^{d_h} \to \mathcal{H}$.
 If $\phi$ is **finite-dimensional** with $\phi: \mathbb{R}^{d_h} \to \mathbb{R}^{r}$, then the
 attention numerator decomposes as
 
-$$\sum_s K(\mathbf{q}_t, \mathbf{k}_s) \mathbf{v}_s \;=\; \phi(\mathbf{q}_t)^\top \sum_s \phi(\mathbf{k}_s) \mathbf{v}_s^\top,$$
+$$
+\sum_s K(\mathbf{q}_t, \mathbf{k}_s) \mathbf{v}_s \;=\; \phi(\mathbf{q}_t)^\top \sum_s \phi(\mathbf{k}_s) \mathbf{v}_s^\top,
+$$
 
 and the inner sum $\sum_s \phi(\mathbf{k}_s) \mathbf{v}_s^\top \in \mathbb{R}^{r \times d_h}$
 no longer depends on $\mathbf{q}_t$. It can be computed once for all queries in $\Theta(N r d_h)$
@@ -65,7 +69,9 @@ features — the "+" in FAVOR+.
 
 **Step 1: factor the exponential kernel.** Write the softmax kernel as
 
-$$K_{\mathrm{SM}}(\mathbf{x}, \mathbf{y}) \;=\; \exp(\mathbf{x}^\top \mathbf{y}) \;=\; \exp(\tfrac{1}{2}\lVert \mathbf{x} \rVert^2) \exp(\tfrac{1}{2}\lVert \mathbf{y} \rVert^2) \exp\!\bigl(-\tfrac{1}{2}\lVert \mathbf{x} - \mathbf{y} \rVert^2\bigr).$$
+$$
+K_{\mathrm{SM}}(\mathbf{x}, \mathbf{y}) \;=\; \exp(\mathbf{x}^\top \mathbf{y}) \;=\; \exp(\tfrac{1}{2}\lVert \mathbf{x} \rVert^2) \exp(\tfrac{1}{2}\lVert \mathbf{y} \rVert^2) \exp\!\bigl(-\tfrac{1}{2}\lVert \mathbf{x} - \mathbf{y} \rVert^2\bigr).
+$$
 
 (The standard identity $\mathbf{x}^\top \mathbf{y} = \tfrac{1}{2}(\lVert\mathbf{x}\rVert^2 + \lVert\mathbf{y}\rVert^2 - \lVert\mathbf{x}-\mathbf{y}\rVert^2)$.)
 The first two factors are query-only and key-only normalizers. The third factor is the Gaussian
@@ -75,7 +81,9 @@ estimator from its Fourier transform.
 **Step 2: trigonometric random features (FAVOR, the original).** Rahimi & Recht's classical
 construction:
 
-$$\phi^{\mathrm{trig}}(\mathbf{x}) \;=\; \frac{1}{\sqrt{r}}\bigl[\cos(\boldsymbol{\omega}_1^\top \mathbf{x}), \sin(\boldsymbol{\omega}_1^\top \mathbf{x}), \ldots, \cos(\boldsymbol{\omega}_{r/2}^\top \mathbf{x}), \sin(\boldsymbol{\omega}_{r/2}^\top \mathbf{x})\bigr],$$
+$$
+\phi^{\mathrm{trig}}(\mathbf{x}) \;=\; \frac{1}{\sqrt{r}}\bigl[\cos(\boldsymbol{\omega}_1^\top \mathbf{x}), \sin(\boldsymbol{\omega}_1^\top \mathbf{x}), \ldots, \cos(\boldsymbol{\omega}_{r/2}^\top \mathbf{x}), \sin(\boldsymbol{\omega}_{r/2}^\top \mathbf{x})\bigr],
+$$
 
 with $\boldsymbol{\omega}_j \sim \mathcal{N}(0, I_{d_h})$. Then
 $\mathbb{E} \langle \phi^{\mathrm{trig}}(\mathbf{x}), \phi^{\mathrm{trig}}(\mathbf{y}) \rangle = \exp(-\tfrac{1}{2}\lVert \mathbf{x}-\mathbf{y}\rVert^2)$ exactly.
@@ -92,16 +100,22 @@ even at $r = 1{,}024$.
 **Step 3: positive random features (FAVOR+, the contribution).** Replace cosines/sines with
 exponentials:
 
-$$\phi^{+}(\mathbf{x}) \;=\; \frac{\exp(-\tfrac{1}{2}\lVert \mathbf{x}\rVert^2)}{\sqrt{r}} \bigl[\exp(\boldsymbol{\omega}_1^\top \mathbf{x}),\ \ldots,\ \exp(\boldsymbol{\omega}_r^\top \mathbf{x})\bigr] \;\in\; \mathbb{R}^{r}_{>0}.$$
+$$
+\phi^{+}(\mathbf{x}) \;=\; \frac{\exp(-\tfrac{1}{2}\lVert \mathbf{x}\rVert^2)}{\sqrt{r}} \bigl[\exp(\boldsymbol{\omega}_1^\top \mathbf{x}),\ \ldots,\ \exp(\boldsymbol{\omega}_r^\top \mathbf{x})\bigr] \;\in\; \mathbb{R}^{r}_{>0}.
+$$
 
 Every component is strictly positive. Choromanski et al. prove (Lemma 1) that
 
-$$\mathbb{E}_{\boldsymbol{\omega} \sim \mathcal{N}(0, I)} \langle \phi^{+}(\mathbf{x}), \phi^{+}(\mathbf{y}) \rangle \;=\; \exp(\mathbf{x}^\top \mathbf{y}) \;=\; K_{\mathrm{SM}}(\mathbf{x}, \mathbf{y}),$$
+$$
+\mathbb{E}_{\boldsymbol{\omega} \sim \mathcal{N}(0, I)} \langle \phi^{+}(\mathbf{x}), \phi^{+}(\mathbf{y}) \rangle \;=\; \exp(\mathbf{x}^\top \mathbf{y}) \;=\; K_{\mathrm{SM}}(\mathbf{x}, \mathbf{y}),
+$$
 
 so $\phi^{+}$ is an unbiased estimator of the softmax kernel. Variance is bounded by
 (Choromanski et al. Theorem 2)
 
-$$\mathrm{Var}\bigl[\langle \phi^{+}(\mathbf{x}), \phi^{+}(\mathbf{y}) \rangle\bigr] \;=\; \frac{1}{r}\exp(\lVert \mathbf{x}+\mathbf{y}\rVert^2)\bigl(\exp(\lVert\mathbf{x}+\mathbf{y}\rVert^2) - \exp(2\mathbf{x}^\top\mathbf{y})\bigr).$$
+$$
+\mathrm{Var}\bigl[\langle \phi^{+}(\mathbf{x}), \phi^{+}(\mathbf{y}) \rangle\bigr] \;=\; \frac{1}{r}\exp(\lVert \mathbf{x}+\mathbf{y}\rVert^2)\bigl(\exp(\lVert\mathbf{x}+\mathbf{y}\rVert^2) - \exp(2\mathbf{x}^\top\mathbf{y})\bigr).
+$$
 
 Two consequences: (i) variance decays as $\Theta(1/r)$, the standard random-feature rate; and
 (ii) variance is small when $\mathbf{x}$ and $\mathbf{y}$ have *aligned* (positively correlated)
@@ -119,7 +133,9 @@ In practice this halves the $r$ required for a fixed quality.
 **Step 5: assemble linear-time attention.** With $\Phi_Q = \phi^+(Q) \in \mathbb{R}^{N \times r}$
 and $\Phi_K = \phi^+(K) \in \mathbb{R}^{N \times r}$:
 
-$$\mathrm{out} \;=\; \mathrm{diag}(\Phi_Q (\Phi_K^\top \mathbf{1}))^{-1} \; \Phi_Q (\Phi_K^\top V).$$
+$$
+\mathrm{out} \;=\; \mathrm{diag}(\Phi_Q (\Phi_K^\top \mathbf{1}))^{-1} \; \Phi_Q (\Phi_K^\top V).
+$$
 
 Read this right-to-left: $\Phi_K^\top V \in \mathbb{R}^{r \times d_h}$ is a single matmul of
 size $\Theta(N r d_h)$ FLOPs; multiplying on the left by $\Phi_Q$ is another $\Theta(N r d_h)$;
@@ -129,9 +145,13 @@ $\Theta(N r d_h)$ — linear in $N$.
 For **causal** attention, the matmul becomes a prefix-sum recurrence (same as Linear
 Attention's, with $\phi^+$ in place of the identity-with-elu feature map):
 
-$$S_t \;=\; S_{t-1} + \phi^+(\mathbf{k}_t) \mathbf{v}_t^\top, \qquad z_t \;=\; z_{t-1} + \phi^+(\mathbf{k}_t),$$
+$$
+S_t \;=\; S_{t-1} + \phi^+(\mathbf{k}_t) \mathbf{v}_t^\top, \qquad z_t \;=\; z_{t-1} + \phi^+(\mathbf{k}_t),
+$$
 
-$$\mathrm{out}_t \;=\; \frac{\phi^+(\mathbf{q}_t)^\top S_t}{\phi^+(\mathbf{q}_t)^\top z_t}.$$
+$$
+\mathrm{out}_t \;=\; \frac{\phi^+(\mathbf{q}_t)^\top S_t}{\phi^+(\mathbf{q}_t)^\top z_t}.
+$$
 
 This recurrence is well-defined for autoregressive decoders — the projection $\phi^+$ acts on
 a single token at a time and does not mix across the time axis, unlike Linformer's $EK$.

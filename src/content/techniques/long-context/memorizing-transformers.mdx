@@ -58,7 +58,9 @@ compute, generalises across domains, and scales sub-linearly with memory size.
 \mathbb{R}^{d_h}$ be the query, key, value at position $t$ for one attention head. Standard
 causal attention over a *local* window of length $W$ is
 
-$$\mathbf{o}^{\text{local}}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{[t-W:t]}^\top}{\sqrt{d_h}}\right) V_{[t-W:t]}.$$
+$$
+\mathbf{o}^{\text{local}}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{[t-W:t]}^\top}{\sqrt{d_h}}\right) V_{[t-W:t]}.
+$$
 
 In Wu et al.'s setup $W$ matches the Transformer-XL recurrent context size (1024 or 2048
 tokens, [§3](https://arxiv.org/abs/2203.08913)). Anything older than $W$ has been evicted.
@@ -74,14 +76,18 @@ even at $|\mathcal{M}| = 10^9$ entries ([§3.1](https://arxiv.org/abs/2203.08913
 **Step 2 — retrieval at inference and training.** At every query position $t$ in layer
 $\ell^\star$, run a top-$k$ search on the external memory:
 
-$$\mathcal{N}_k(\mathbf{q}_t) = \mathrm{ANN\text{-}TopK}\!\left(\mathbf{q}_t,\; \{\mathbf{k}^{(m)}\}_{m \in \mathcal{M}}\right), \quad |\mathcal{N}_k| = k.$$
+$$
+\mathcal{N}_k(\mathbf{q}_t) = \mathrm{ANN\text{-}TopK}\!\left(\mathbf{q}_t,\; \{\mathbf{k}^{(m)}\}_{m \in \mathcal{M}}\right), \quad |\mathcal{N}_k| = k.
+$$
 
 Wu et al. use $k = 32$ or $k = 64$ ([Table 1](https://arxiv.org/abs/2203.08913)). The returned
 set $\{(\mathbf{k}^{(m)}, \mathbf{v}^{(m)})\}_{m \in \mathcal{N}_k(\mathbf{q}_t)}$ is treated
 as constants — no gradient flows back into $\mathcal{M}$. From these, compute an *external*
 attention output exactly as standard attention:
 
-$$\mathbf{o}^{\text{ext}}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{\mathcal{N}_k(\mathbf{q}_t)}^\top}{\sqrt{d_h}}\right) V_{\mathcal{N}_k(\mathbf{q}_t)}.$$
+$$
+\mathbf{o}^{\text{ext}}_t = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{\mathcal{N}_k(\mathbf{q}_t)}^\top}{\sqrt{d_h}}\right) V_{\mathcal{N}_k(\mathbf{q}_t)}.
+$$
 
 The external softmax is *independent* of the local softmax — two separate normalizations.
 
@@ -89,7 +95,9 @@ The external softmax is *independent* of the local softmax — two separate norm
 $\mathbf{o}^{\text{ext}}_t$ are combined via a per-head learnable scalar gate $g_h \in (0, 1)$
 ([Eq. 1, §3.2](https://arxiv.org/abs/2203.08913)):
 
-$$\mathbf{o}_t = (1 - \sigma(g_h)) \cdot \mathbf{o}^{\text{local}}_t + \sigma(g_h) \cdot \mathbf{o}^{\text{ext}}_t,$$
+$$
+\mathbf{o}_t = (1 - \sigma(g_h)) \cdot \mathbf{o}^{\text{local}}_t + \sigma(g_h) \cdot \mathbf{o}^{\text{ext}}_t,
+$$
 
 where $\sigma$ is the sigmoid and $g_h$ is a single scalar trained alongside everything else.
 Wu et al. choose the gate-then-mix form (rather than concatenating $K^{\text{local}}$ and
@@ -129,7 +137,9 @@ the same "open the gate when retrieval is useful" signal during early training.
 **Cost accounting.** Per query in the memory layer, with local window $W$ and retrieval
 budget $k$:
 
-$$\mathrm{FLOPs} \approx (W + k) \cdot d_h \;+\; T_{\mathrm{ANN}}(\mathbf{q}_t, |\mathcal{M}|).$$
+$$
+\mathrm{FLOPs} \approx (W + k) \cdot d_h \;+\; T_{\mathrm{ANN}}(\mathbf{q}_t, |\mathcal{M}|).
+$$
 
 With $W = 1024, k = 32$ the dense attention overhead is $\sim 3\%$ on top of the local-window
 attention. The ANN lookup cost depends on the index but scales as $O(\sqrt{|\mathcal{M}|})$ or

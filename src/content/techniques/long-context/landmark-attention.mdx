@@ -61,7 +61,9 @@ addressable handle inside the attention softmax.
 **Starting point.** Standard causal attention at position $t$ over a key/value cache of
 length $T$ computes
 
-$$\mathrm{Attn}(\mathbf{q}_t, K_{1:t}, V_{1:t}) = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{1:t}^\top}{\sqrt{d_h}}\right) V_{1:t},$$
+$$
+\mathrm{Attn}(\mathbf{q}_t, K_{1:t}, V_{1:t}) = \mathrm{softmax}\!\left(\frac{\mathbf{q}_t K_{1:t}^\top}{\sqrt{d_h}}\right) V_{1:t},
+$$
 
 with $\mathbf{q}_t \in \mathbb{R}^{d_h}$, $K_{1:t}, V_{1:t} \in \mathbb{R}^{t \times d_h}$.
 The $O(T)$ keys all participate in the same softmax; both memory and FLOPs scale as
@@ -73,8 +75,10 @@ $W$ tokens (Mohtashami & Jaggi use $W = 50$ in their LLaMA-7B fine-tune,
 *landmark token* $\boldsymbol{\ell}_b$ that participates in self-attention exactly like a
 real token:
 
-$$\underbrace{[x_1, \ldots, x_W, \boldsymbol{\ell}_1]}_{\text{block 1}},\;
-\underbrace{[x_{W+1}, \ldots, x_{2W}, \boldsymbol{\ell}_2]}_{\text{block 2}},\;\ldots$$
+$$
+\underbrace{[x_1, \ldots, x_W, \boldsymbol{\ell}_1]}_{\text{block 1}},\;
+\underbrace{[x_{W+1}, \ldots, x_{2W}, \boldsymbol{\ell}_2]}_{\text{block 2}},\;\ldots
+$$
 
 Each $\boldsymbol{\ell}_b$ is a sequence position; it has its own query, key, value via the
 shared $W_Q, W_K, W_V$, and through normal causal attention it absorbs information from the
@@ -88,7 +92,9 @@ softmax so that, for a query $\mathbf{q}_t$ and a non-landmark key $\mathbf{k}_j
 the *normalized* attention weight is the product of two factors —
 ([§3.2, Eq. 1](https://arxiv.org/abs/2305.16300)):
 
-$$\alpha_{t,j} \;=\; \underbrace{\frac{\exp(\mathbf{q}_t \cdot \boldsymbol{\ell}_b / \sqrt{d_h})}{\sum_{b'=1}^{\mathcal{B}(t)} \exp(\mathbf{q}_t \cdot \boldsymbol{\ell}_{b'} / \sqrt{d_h})}}_{\text{block-level (over landmarks)}} \;\cdot\; \underbrace{\frac{\exp(\mathbf{q}_t \cdot \mathbf{k}_j / \sqrt{d_h})}{\sum_{j' \in \text{block } b} \exp(\mathbf{q}_t \cdot \mathbf{k}_{j'} / \sqrt{d_h})}}_{\text{within-block (excluding landmark)}}.$$
+$$
+\alpha_{t,j} \;=\; \underbrace{\frac{\exp(\mathbf{q}_t \cdot \boldsymbol{\ell}_b / \sqrt{d_h})}{\sum_{b'=1}^{\mathcal{B}(t)} \exp(\mathbf{q}_t \cdot \boldsymbol{\ell}_{b'} / \sqrt{d_h})}}_{\text{block-level (over landmarks)}} \;\cdot\; \underbrace{\frac{\exp(\mathbf{q}_t \cdot \mathbf{k}_j / \sqrt{d_h})}{\sum_{j' \in \text{block } b} \exp(\mathbf{q}_t \cdot \mathbf{k}_{j'} / \sqrt{d_h})}}_{\text{within-block (excluding landmark)}}.
+$$
 
 The first factor is a softmax over *landmarks only* — exactly $\mathcal{B}(t)$ logits, one per
 block. The second factor is a per-block softmax over the $W$ ordinary keys, with the landmark
@@ -109,7 +115,9 @@ softmax above costs the same as dense attention. The point of the construction i
 the landmarks already trained, we can replace the inner softmax over *every* block with a
 sparse approximation:
 
-$$\widehat{\mathrm{Attn}}(\mathbf{q}_t) = \sum_{b \in \mathrm{TopK}(\mathbf{q}_t \cdot L)} \;\;\;\; \sum_{j \in \text{block } b} \alpha_{t,j} \, \mathbf{v}_j,$$
+$$
+\widehat{\mathrm{Attn}}(\mathbf{q}_t) = \sum_{b \in \mathrm{TopK}(\mathbf{q}_t \cdot L)} \;\;\;\; \sum_{j \in \text{block } b} \alpha_{t,j} \, \mathbf{v}_j,
+$$
 
 where $L = [\boldsymbol{\ell}_1, \ldots, \boldsymbol{\ell}_C] \in \mathbb{R}^{C \times d_h}$
 stacks the landmarks for the $C$ past blocks and $\mathrm{TopK}$ picks the highest-scoring
@@ -120,7 +128,9 @@ weight is treated as zero — the inner softmax never runs.
 **Step 4 — cost accounting.** Let $C = T / W$ be the number of past blocks at position $t$,
 $W$ the block size, $K$ the retrieval budget, $d_h$ the head dimension. Per query, per head:
 
-$$\mathrm{FLOPs} \approx \underbrace{C \cdot d_h}_{\text{landmark scoring}} + \underbrace{K \cdot W \cdot d_h}_{\text{in-block attention}} \;=\; d_h \cdot \left( \tfrac{T}{W} + K W \right).$$
+$$
+\mathrm{FLOPs} \approx \underbrace{C \cdot d_h}_{\text{landmark scoring}} + \underbrace{K \cdot W \cdot d_h}_{\text{in-block attention}} \;=\; d_h \cdot \left( \tfrac{T}{W} + K W \right).
+$$
 
 This is minimized at $W \approx \sqrt{T/K}$ — the classic two-level lookup balance. For
 $T = 32{,}768$, $W = 50$, $K = 2$ that gives $\approx 755 d_h$ FLOPs per query vs.

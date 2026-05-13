@@ -81,7 +81,9 @@ W_{K_I} \in \mathbb{R}^{d_c \times d_I}$ be the indexer's query and key projecti
 indexer hidden dim $d_I$ is much smaller than the main $d_c$ — the V3.2 report uses
 $d_I = 64$, vs $d_c = 512$ for the latent). For each query at $t$ the indexer scores
 
-$$s_t(k) = \frac{1}{\sqrt{d_I}}\,(\mathbf{h}_t W_{Q_I})^\top (\mathbf{c}^{KV}_k W_{K_I}), \qquad k = 1, \ldots, t-1.$$
+$$
+s_t(k) = \frac{1}{\sqrt{d_I}}\,(\mathbf{h}_t W_{Q_I})^\top (\mathbf{c}^{KV}_k W_{K_I}), \qquad k = 1, \ldots, t-1.
+$$
 
 This costs $O(t \cdot d_I)$ per query — linear in context, but with a constant
 $d_I / d_c \approx 1/8$ smaller than full MLA's per-key cost.
@@ -89,20 +91,26 @@ $d_I / d_c \approx 1/8$ smaller than full MLA's per-key cost.
 **Stage 2 — Selected attention over top-K keys.** Sort the indexer scores; gather the top
 $K$ historical positions:
 
-$$\mathcal{T}_t = \mathrm{argtopk}_k\, s_t(k), \qquad |\mathcal{T}_t| = K \ll t.$$
+$$
+\mathcal{T}_t = \mathrm{argtopk}_k\, s_t(k), \qquad |\mathcal{T}_t| = K \ll t.
+$$
 
 Run the full MLA attention restricted to the selected positions: project the cached latents
 to per-head K, V on the fly (the MLA absorption trick — see [MLA](/llm-arch-kb/attention/mla/)),
 compute the softmax-weighted output:
 
-$$\mathrm{output}_t = \mathrm{MLA}\!\bigl(\mathbf{h}_t, \{\mathbf{c}^{KV}_k\}_{k \in \mathcal{T}_t}\bigr) \in \mathbb{R}^{d_{\text{model}}}.$$
+$$
+\mathrm{output}_t = \mathrm{MLA}\!\bigl(\mathbf{h}_t, \{\mathbf{c}^{KV}_k\}_{k \in \mathcal{T}_t}\bigr) \in \mathbb{R}^{d_{\text{model}}}.
+$$
 
 This stage costs $O(K \cdot d_c)$ — the same per-key cost as full MLA, but over the small
 selected set $\mathcal{T}_t$ instead of all $t - 1$ positions.
 
 **Total per-token cost.**
 
-$$C_{\text{DSA}}(t) = \underbrace{O(t \cdot d_I)}_{\text{Stage 1}} + \underbrace{O(K \cdot d_c)}_{\text{Stage 2}}.$$
+$$
+C_{\text{DSA}}(t) = \underbrace{O(t \cdot d_I)}_{\text{Stage 1}} + \underbrace{O(K \cdot d_c)}_{\text{Stage 2}}.
+$$
 
 For $t = 128\text{K}, K = 2\text{K}, d_I = 64, d_c = 512$:
 Stage 1 contributes $128\,000 \cdot 64 \approx 8.2 \cdot 10^6$ ops; Stage 2 contributes
@@ -116,7 +124,9 @@ trains the indexer with a **distillation loss** against the full-attention patte
 frozen MLA teacher. Let $\boldsymbol{\alpha}_t \in \mathbb{R}^{t-1}$ be the teacher's
 softmax-attention weights (taken from a checkpoint where attention is computed densely):
 
-$$\mathcal{L}_{\text{indexer}} = \sum_t \mathrm{KL}\!\bigl(\mathrm{softmax}(s_t / \tau)\,\big\|\, \boldsymbol{\alpha}_t\bigr),$$
+$$
+\mathcal{L}_{\text{indexer}} = \sum_t \mathrm{KL}\!\bigl(\mathrm{softmax}(s_t / \tau)\,\big\|\, \boldsymbol{\alpha}_t\bigr),
+$$
 
 with temperature $\tau$ tuned so the indexer's softmax is calibrated to the teacher's. The
 full model trains end-to-end with this loss as an auxiliary term alongside the

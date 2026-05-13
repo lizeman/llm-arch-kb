@@ -44,18 +44,24 @@ about ReGLU's standing.
 Shazeer (2020, §1) writes the GLU-variant family in a single template parameterized by the
 gate activation $\phi$:
 
-$$\mathrm{FFN}_{\phi\mathrm{GLU}}(\mathbf{x}) \;=\; W_2\bigl[\bigl(\mathbf{x} W\bigr) \odot \phi\bigl(\mathbf{x} V\bigr)\bigr],$$
+$$
+\mathrm{FFN}_{\phi\mathrm{GLU}}(\mathbf{x}) \;=\; W_2\bigl[\bigl(\mathbf{x} W\bigr) \odot \phi\bigl(\mathbf{x} V\bigr)\bigr],
+$$
 
 with $W, V \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$,
 $W_2 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$, and elementwise $\odot$. The
 linear path $\mathbf{x} W$ carries the signal; the gate path $\phi(\mathbf{x} V)$ modulates
 it elementwise; $W_2$ projects back. ReGLU instantiates this with $\phi = \mathrm{ReLU}$:
 
-$$\mathrm{ReGLU}(\mathbf{x}) \;=\; \bigl(\mathbf{x} W\bigr) \odot \mathrm{ReLU}\bigl(\mathbf{x} V\bigr).$$
+$$
+\mathrm{ReGLU}(\mathbf{x}) \;=\; \bigl(\mathbf{x} W\bigr) \odot \mathrm{ReLU}\bigl(\mathbf{x} V\bigr).
+$$
 
 The structural difference from SwiGLU and GeGLU is that ReLU produces *hard zeros*:
 
-$$\mathrm{ReLU}(z) \;=\; z \cdot \mathbf{1}\{z > 0\} \;=\; \max(0, z).$$
+$$
+\mathrm{ReLU}(z) \;=\; z \cdot \mathbf{1}\{z > 0\} \;=\; \max(0, z).
+$$
 
 Wherever the gate input $\mathbf{x} V$ is non-positive, the gated output is *exactly* zero —
 not small-and-asymptotic-to-zero like Swish or GELU, but identically zero with identically
@@ -77,11 +83,15 @@ revive it. This is the same failure mode as plain ReLU FFN (Glorot, Bordes & Ben
 AISTATS, §3); the gated form does not avoid it. Swish and GELU pass small but nonzero
 gradients through their negative regions, allowing dead units to recover during training:
 
-$$\frac{\partial \mathrm{Swish}}{\partial z}\bigg|_{z \ll 0} \;\approx\; \sigma(z) \;>\; 0, \qquad \frac{\partial \mathrm{GELU}}{\partial z}\bigg|_{z \ll 0} \;\approx\; \Phi(z) \;>\; 0.$$
+$$
+\frac{\partial \mathrm{Swish}}{\partial z}\bigg|_{z \ll 0} \;\approx\; \sigma(z) \;>\; 0, \qquad \frac{\partial \mathrm{GELU}}{\partial z}\bigg|_{z \ll 0} \;\approx\; \Phi(z) \;>\; 0.
+$$
 
 In ReGLU the corresponding gradient is
 
-$$\frac{\partial \mathrm{ReLU}}{\partial z}\bigg|_{z \le 0} \;=\; 0,$$
+$$
+\frac{\partial \mathrm{ReLU}}{\partial z}\bigg|_{z \le 0} \;=\; 0,
+$$
 
 so the gate unit's recovery probability conditioned on being dead is exactly zero.
 
@@ -100,7 +110,9 @@ $d_{\text{ff}} = (8/3) \cdot d_{\text{model}}$ matched-parameter convention (Sha
 §2), the FFN's position-wise structure, and the bias-removal convention all carry over
 unchanged from the SwiGLU and GeGLU entries. Per-layer cost:
 
-$$\#\,\text{params} \;=\; 3 \cdot d \cdot d_{\text{ff}} \;=\; 8\,d^2, \qquad \#\,\text{FLOPs per token} \;\approx\; 16\,d^2,$$
+$$
+\#\,\text{params} \;=\; 3 \cdot d \cdot d_{\text{ff}} \;=\; 8\,d^2, \qquad \#\,\text{FLOPs per token} \;\approx\; 16\,d^2,
+$$
 
 at $d_{\text{ff}} = (8/3) d$. The wall-clock advantage of ReLU over Swish/GELU is small
 because the activation is not the bottleneck — matmuls dominate. ReLU is faster in the

@@ -86,7 +86,9 @@ it had become the dominant memory term, not the parameters.
 Concretely, for a model with $H$ query heads, head dimension $d_h$, and $L$ layers, Multi-Head
 Attention (Vaswani et al. 2017) stores
 
-$$\text{KV}_\text{MHA}(T) \;=\; 2 \cdot H \cdot d_h \cdot L \cdot T \quad \text{scalars}.$$
+$$
+\text{KV}_\text{MHA}(T) \;=\; 2 \cdot H \cdot d_h \cdot L \cdot T \quad \text{scalars}.
+$$
 
 Plugging in the Llama 2 70B shape — $H = 64$, $d_h = 128$, $L = 80$ — at fp16 the cache is
 $2 \cdot 2 \cdot 64 \cdot 128 \cdot 80 = 2{,}621{,}440$ bytes per token, i.e. 2.5 MiB/token, or
@@ -117,13 +119,17 @@ projections — and thus the expressive bottleneck — untouched.
 ($d$ = model dimension, e.g. $d = 8192$ for Llama 2 70B). MHA defines, for each head
 $i \in \{1, \ldots, H\}$,
 
-$$\mathbf{q}^{(i)}_t = W_Q^{(i)}\mathbf{h}_t,\quad \mathbf{k}^{(i)}_t = W_K^{(i)}\mathbf{h}_t,\quad \mathbf{v}^{(i)}_t = W_V^{(i)}\mathbf{h}_t,$$
+$$
+\mathbf{q}^{(i)}_t = W_Q^{(i)}\mathbf{h}_t,\quad \mathbf{k}^{(i)}_t = W_K^{(i)}\mathbf{h}_t,\quad \mathbf{v}^{(i)}_t = W_V^{(i)}\mathbf{h}_t,
+$$
 
 with $W_Q^{(i)}, W_K^{(i)}, W_V^{(i)} \in \mathbb{R}^{d_h \times d}$ and $d_h = d / H$ (Vaswani
 et al. 2017 §3.2). Head $i$'s contribution at decode step $t$, given cached
 $K^{(i)}_{<t} \in \mathbb{R}^{t \times d_h}$ and $V^{(i)}_{<t} \in \mathbb{R}^{t \times d_h}$, is
 
-$$\mathbf{o}^{(i)}_t \;=\; \mathrm{softmax}\!\left(\frac{\mathbf{q}^{(i)\top}_t K^{(i)\top}_{\le t}}{\sqrt{d_h}}\right) V^{(i)}_{\le t}.$$
+$$
+\mathbf{o}^{(i)}_t \;=\; \mathrm{softmax}\!\left(\frac{\mathbf{q}^{(i)\top}_t K^{(i)\top}_{\le t}}{\sqrt{d_h}}\right) V^{(i)}_{\le t}.
+$$
 
 The outputs concatenate across heads and are projected by $W_O \in \mathbb{R}^{d \times d}$.
 Cache footprint per token per layer is the size of all $(\mathbf{k}^{(i)}_t, \mathbf{v}^{(i)}_t)$:
@@ -134,9 +140,13 @@ groups of size $H/G$. Replace the $H$ key/value projections with $G$ of them,
 $W_K^{(g)}, W_V^{(g)} \in \mathbb{R}^{d_h \times d}$ for $g \in \{1, \ldots, G\}$. Define the
 group index of query head $i$ as $g(i) = \lceil i G / H \rceil$. The GQA forward pass is
 
-$$\mathbf{q}^{(i)}_t = W_Q^{(i)}\mathbf{h}_t,\quad \mathbf{k}^{(g)}_t = W_K^{(g)}\mathbf{h}_t,\quad \mathbf{v}^{(g)}_t = W_V^{(g)}\mathbf{h}_t,$$
+$$
+\mathbf{q}^{(i)}_t = W_Q^{(i)}\mathbf{h}_t,\quad \mathbf{k}^{(g)}_t = W_K^{(g)}\mathbf{h}_t,\quad \mathbf{v}^{(g)}_t = W_V^{(g)}\mathbf{h}_t,
+$$
 
-$$\mathbf{o}^{(i)}_t \;=\; \mathrm{softmax}\!\left(\frac{\mathbf{q}^{(i)\top}_t \, K^{(g(i))\top}_{\le t}}{\sqrt{d_h}}\right) V^{(g(i))}_{\le t}.$$
+$$
+\mathbf{o}^{(i)}_t \;=\; \mathrm{softmax}\!\left(\frac{\mathbf{q}^{(i)\top}_t \, K^{(g(i))\top}_{\le t}}{\sqrt{d_h}}\right) V^{(g(i))}_{\le t}.
+$$
 
 The cache stores only $G$ key and $G$ value vectors per token per layer, for a footprint of
 $2 G d_h$ scalars — exactly $H/G$ times smaller than MHA, and equal to MQA when $G = 1$
@@ -159,7 +169,9 @@ incompatible with averaging-init uptraining.
 
 **Parameter count.** The Q, K, V, O projection block costs
 
-$$P_\text{MHA} = 4 d^2, \qquad P_\text{GQA}(G) = d^2 \cdot \!\left(2 + \tfrac{2G}{H}\right), \qquad P_\text{MQA} = d^2 \cdot \!\left(2 + \tfrac{2}{H}\right),$$
+$$
+P_\text{MHA} = 4 d^2, \qquad P_\text{GQA}(G) = d^2 \cdot \!\left(2 + \tfrac{2G}{H}\right), \qquad P_\text{MQA} = d^2 \cdot \!\left(2 + \tfrac{2}{H}\right),
+$$
 
 so GQA saves $2 d^2 (1 - G/H)$ parameters per layer over MHA in the attention block — small in
 the global parameter budget, but the relevant savings are runtime: at decode the GEMM and the
@@ -167,7 +179,9 @@ cache read both shrink by $H/G$ on the K, V side.
 
 **KV-cache footprint.** Per layer, per token:
 
-$$\text{KV}_\text{GQA} \;=\; 2 \, G \, d_h \quad \text{scalars}, \qquad \frac{\text{KV}_\text{MHA}}{\text{KV}_\text{GQA}} = \frac{H}{G}.$$
+$$
+\text{KV}_\text{GQA} \;=\; 2 \, G \, d_h \quad \text{scalars}, \qquad \frac{\text{KV}_\text{MHA}}{\text{KV}_\text{GQA}} = \frac{H}{G}.
+$$
 
 For Llama 2 70B ($H = 64$, $G = 8$, $d_h = 128$, $L = 80$, fp16), this gives
 $2 \cdot 2 \cdot 8 \cdot 128 \cdot 80 = 327{,}680$ bytes/token = 320 KiB/token, or 40 GiB at
@@ -178,7 +192,9 @@ $T = 128$K — fitting on a single H100 80GB alongside weights, where the MHA eq
 procedure: given an MHA checkpoint with $H$ key/value heads, initialize each new GQA group's
 weights as the *mean* of the original heads assigned to that group,
 
-$$W_K^{(g)} \;\leftarrow\; \frac{1}{H/G} \sum_{i \,:\, g(i) = g} W_K^{(i)}, \qquad W_V^{(g)} \;\leftarrow\; \frac{1}{H/G} \sum_{i \,:\, g(i) = g} W_V^{(i)},$$
+$$
+W_K^{(g)} \;\leftarrow\; \frac{1}{H/G} \sum_{i \,:\, g(i) = g} W_K^{(i)}, \qquad W_V^{(g)} \;\leftarrow\; \frac{1}{H/G} \sum_{i \,:\, g(i) = g} W_V^{(i)},
+$$
 
 then continue pretraining for $\alpha \ll 1$ fraction of the original compute. The paper (§3.1,
 Figure 1) sweeps $\alpha$ on T5-XXL and finds quality plateaus at $\alpha \approx 0.05$ — uptraining

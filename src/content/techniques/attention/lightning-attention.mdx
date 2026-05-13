@@ -46,11 +46,15 @@ Linear-attention variants ([entry](/llm-arch-kb/attention/linear-attention/), Ka
 et al. 2020, [arXiv 2006.16236](https://arxiv.org/abs/2006.16236)) sidestep the quadratic by
 factoring the softmax kernel through a feature map $\phi$ and reordering the matmul:
 
-$$\mathrm{out}_t \;=\; \frac{\phi(\mathbf{q}_t)^\top \sum_{s \le t} \phi(\mathbf{k}_s) \mathbf{v}_s^\top}{\phi(\mathbf{q}_t)^\top \sum_{s \le t} \phi(\mathbf{k}_s)}.$$
+$$
+\mathrm{out}_t \;=\; \frac{\phi(\mathbf{q}_t)^\top \sum_{s \le t} \phi(\mathbf{k}_s) \mathbf{v}_s^\top}{\phi(\mathbf{q}_t)^\top \sum_{s \le t} \phi(\mathbf{k}_s)}.
+$$
 
 The running sum in the numerator and denominator is the prefix-sum recurrence
 
-$$S_t \;=\; S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top, \qquad z_t \;=\; z_{t-1} + \phi(\mathbf{k}_t),$$
+$$
+S_t \;=\; S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top, \qquad z_t \;=\; z_{t-1} + \phi(\mathbf{k}_t),
+$$
 
 which is $\Theta(T H d_h^2)$ FLOPs total — linear in $T$.
 
@@ -81,7 +85,9 @@ $\Phi_b = \phi(K_b) \in \mathbb{R}^{T_B \times d'}$ and $\Psi_b = \phi(Q_b) \in 
 **Step 1: split the output into intra-tile and inter-tile contributions.** For a query at
 position $t \in \mathcal{I}_b$, the causal sum splits as
 
-$$\mathrm{out}_t \;=\; \underbrace{\phi(\mathbf{q}_t)^\top \!\!\sum_{s \in \mathcal{I}_b,\, s \le t} \!\!\phi(\mathbf{k}_s)\mathbf{v}_s^\top}_{\text{intra-tile: depends only on tile } b} \;+\; \underbrace{\phi(\mathbf{q}_t)^\top S_{b-1}}_{\text{inter-tile: depends on past tiles}},$$
+$$
+\mathrm{out}_t \;=\; \underbrace{\phi(\mathbf{q}_t)^\top \!\!\sum_{s \in \mathcal{I}_b,\, s \le t} \!\!\phi(\mathbf{k}_s)\mathbf{v}_s^\top}_{\text{intra-tile: depends only on tile } b} \;+\; \underbrace{\phi(\mathbf{q}_t)^\top S_{b-1}}_{\text{inter-tile: depends on past tiles}},
+$$
 
 where $S_{b-1} = \sum_{s \le (b-1) T_B} \phi(\mathbf{k}_s) \mathbf{v}_s^\top \in \mathbb{R}^{d' \times d_h}$ is the running
 state at the boundary between tile $b-1$ and tile $b$. (Normalization is handled by a parallel
@@ -90,7 +96,9 @@ recurrence on $z_b$; we suppress it for clarity.)
 **Step 2: rewrite the intra-tile part as a dense matmul.** Because the sum runs only over the
 $\le T_B$ positions inside tile $b$, the contribution to all $T_B$ queries in the tile is
 
-$$\mathrm{out}_{\mathcal{I}_b}^{\text{intra}} \;=\; \bigl(\Psi_b \Phi_b^\top \odot M\bigr) V_b,$$
+$$
+\mathrm{out}_{\mathcal{I}_b}^{\text{intra}} \;=\; \bigl(\Psi_b \Phi_b^\top \odot M\bigr) V_b,
+$$
 
 where $M \in \{0, 1\}^{T_B \times T_B}$ is the lower-triangular causal mask and $\odot$ is
 Hadamard product. This is exactly an attention-shaped computation over a $T_B \times T_B$ tile,
@@ -103,7 +111,9 @@ $\Theta(T_B d' d_h)$ FLOPs per tile.
 
 **Step 4: update the running state.** At the boundary between tile $b$ and tile $b+1$,
 
-$$S_b \;=\; S_{b-1} + \Phi_b^\top V_b \;\in\; \mathbb{R}^{d' \times d_h}.$$
+$$
+S_b \;=\; S_{b-1} + \Phi_b^\top V_b \;\in\; \mathbb{R}^{d' \times d_h}.
+$$
 
 This is one $d' \times T_B \cdot T_B \times d_h$ matmul per tile, $\Theta(T_B d' d_h)$ FLOPs.
 
@@ -116,7 +126,9 @@ This is one $d' \times T_B \cdot T_B \times d_h$ matmul per tile, $\Theta(T_B d'
 The intra-tile term dominates only when $T_B \gtrsim d'$, which is the regime Qin et al. operate
 in ($T_B = 128$, $d' = d_h = 64$ or $128$). The total is
 
-$$\mathrm{FLOPs}_{\text{Lightning}} \;=\; \Theta(T \cdot T_B \cdot d_h \;+\; T \cdot d' \cdot d_h),$$
+$$
+\mathrm{FLOPs}_{\text{Lightning}} \;=\; \Theta(T \cdot T_B \cdot d_h \;+\; T \cdot d' \cdot d_h),
+$$
 
 linear in $T$ at fixed $T_B$, $d'$, $d_h$. Compare to FlashAttention's $\Theta(T^2 d_h)$ —
 Lightning Attention crosses over once $T_B + d' \lesssim T$.
@@ -132,7 +144,9 @@ Attention factors the *recurrence* rather than the masked-softmax kernel.
 
 **Memory footprint.** The peak HBM traffic per tile is
 
-$$\mathcal{O}\bigl(T_B \cdot d_h \;+\; d' \cdot d_h\bigr) \quad \text{bytes,}$$
+$$
+\mathcal{O}\bigl(T_B \cdot d_h \;+\; d' \cdot d_h\bigr) \quad \text{bytes,}
+$$
 
 independent of $T$. The full $T \times T$ logit matrix is never materialized; the only persistent
 state across tiles is $S_b \in \mathbb{R}^{d' \times d_h}$, a fixed $\Theta(d^2)$ matrix.

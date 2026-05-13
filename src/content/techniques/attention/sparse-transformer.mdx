@@ -64,7 +64,9 @@ attention head we choose one of two sparse attention patterns indexed by row pos
 
 **Pattern A — strided.** Each query $i$ attends to two index sets:
 
-$$A^{(1)}_i = \{j : \max(0, i - \ell) \leq j \leq i\},\qquad A^{(2)}_i = \{j : (i - j) \bmod \ell = 0,\ j \leq i\}.$$
+$$
+A^{(1)}_i = \{j : \max(0, i - \ell) \leq j \leq i\},\qquad A^{(2)}_i = \{j : (i - j) \bmod \ell = 0,\ j \leq i\}.
+$$
 
 The first set is the **local window** of the most recent $\ell$ tokens — same form as
 [SWA](/llm-arch-kb/attention/sliding-window/). The second set is the **strided long-range
@@ -75,7 +77,9 @@ $\sum_{i = 1}^{T} (\ell + i / \ell) \approx T \ell + T^2 / (2 \ell)$, minimized 
 
 **Pattern B — fixed.** Each query $i$ attends to:
 
-$$B^{(1)}_i = \{j : \lfloor j / \ell \rfloor = \lfloor i / \ell \rfloor,\ j \leq i\},\qquad B^{(2)}_i = \{j : (j \bmod \ell) \in S,\ j \leq i\}.$$
+$$
+B^{(1)}_i = \{j : \lfloor j / \ell \rfloor = \lfloor i / \ell \rfloor,\ j \leq i\},\qquad B^{(2)}_i = \{j : (j \bmod \ell) \in S,\ j \leq i\}.
+$$
 
 The first set is the **local block** of $\ell$ contiguous keys containing $i$. The second is
 a **fixed summary set** $S \subset \{0, 1, \dots, \ell - 1\}$ specifying positions within
@@ -119,7 +123,9 @@ quality.
 **Sparse attention as an unnormalized form.** With masked attention, the softmax over a sparse
 mask is computed by setting masked logits to $-\infty$ before the softmax, giving
 
-$$\mathrm{Attn}_i(\mathbf{q}_i, K, V) = \sum_{j \in S_i} \frac{\exp(\mathbf{q}_i \cdot \mathbf{k}_j / \sqrt{d_h})}{\sum_{j' \in S_i} \exp(\mathbf{q}_i \cdot \mathbf{k}_{j'} / \sqrt{d_h})} \mathbf{v}_j,$$
+$$
+\mathrm{Attn}_i(\mathbf{q}_i, K, V) = \sum_{j \in S_i} \frac{\exp(\mathbf{q}_i \cdot \mathbf{k}_j / \sqrt{d_h})}{\sum_{j' \in S_i} \exp(\mathbf{q}_i \cdot \mathbf{k}_{j'} / \sqrt{d_h})} \mathbf{v}_j,
+$$
 
 where $S_i$ is the per-query key set (here $A_i$ or $B_i$). The normalization is over the
 sparse $S_i$ only — the missing keys do not contribute mass.

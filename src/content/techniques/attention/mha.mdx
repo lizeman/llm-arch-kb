@@ -67,7 +67,9 @@ The starting point is the scaled dot-product attention of Vaswani et al. (2017) 
 sequence of $T$ tokens at width $d_{\text{model}}$, with $X \in \mathbb{R}^{T \times d_{\text{model}}}$
 the input, the operator is
 
-$$\mathrm{Attn}(Q, K, V) = \mathrm{softmax}\!\left(\frac{Q K^\top}{\sqrt{d_k}}\right) V,$$
+$$
+\mathrm{Attn}(Q, K, V) = \mathrm{softmax}\!\left(\frac{Q K^\top}{\sqrt{d_k}}\right) V,
+$$
 
 where $Q, K \in \mathbb{R}^{T \times d_k}$ are queries and keys, $V \in \mathbb{R}^{T \times d_v}$
 are values, and $d_k$ is the key dimension. The $\sqrt{d_k}$ scaling is justified in §3.2.1: for
@@ -79,16 +81,22 @@ where gradients vanish.
 Multi-head attention replaces the single projection $W_Q, W_K, W_V$ with $H$ per-head
 projections. For head $i \in \{1, \ldots, H\}$ at head dim $d_h = d_{\text{model}}/H$:
 
-$$\mathbf{Q}_i = X W_Q^{(i)},\quad \mathbf{K}_i = X W_K^{(i)},\quad \mathbf{V}_i = X W_V^{(i)},$$
+$$
+\mathbf{Q}_i = X W_Q^{(i)},\quad \mathbf{K}_i = X W_K^{(i)},\quad \mathbf{V}_i = X W_V^{(i)},
+$$
 
 with $W_Q^{(i)}, W_K^{(i)}, W_V^{(i)} \in \mathbb{R}^{d_{\text{model}} \times d_h}$. Each head
 computes its own attention
 
-$$\mathrm{head}_i = \mathrm{softmax}\!\left(\frac{\mathbf{Q}_i \mathbf{K}_i^\top}{\sqrt{d_h}}\right) \mathbf{V}_i \in \mathbb{R}^{T \times d_h},$$
+$$
+\mathrm{head}_i = \mathrm{softmax}\!\left(\frac{\mathbf{Q}_i \mathbf{K}_i^\top}{\sqrt{d_h}}\right) \mathbf{V}_i \in \mathbb{R}^{T \times d_h},
+$$
 
 and the outputs concatenate before a final linear projection $W_O \in \mathbb{R}^{d_{\text{model}} \times d_{\text{model}}}$:
 
-$$\mathrm{MHA}(X) = \bigl[\mathrm{head}_1 \,\Vert\, \cdots \,\Vert\, \mathrm{head}_H\bigr]\, W_O.$$
+$$
+\mathrm{MHA}(X) = \bigl[\mathrm{head}_1 \,\Vert\, \cdots \,\Vert\, \mathrm{head}_H\bigr]\, W_O.
+$$
 
 Why split the projection rather than run $H$ full-width attentions? Two reasons in §3.2.2.
 First, parameter parity: the concatenated per-head projection matrices stack to a single matrix
@@ -121,7 +129,9 @@ FLOPs. The score matrix is the quadratic term that dominates at long $T$.
 **KV cache size.** At inference, each generated token writes $K, V \in \mathbb{R}^{H \cdot d_h}$
 to the cache, so cumulative cache size is
 
-$$M_{\text{KV}} = 2 \cdot L \cdot H \cdot d_h \cdot T \cdot \text{bytes/scalar},$$
+$$
+M_{\text{KV}} = 2 \cdot L \cdot H \cdot d_h \cdot T \cdot \text{bytes/scalar},
+$$
 
 where $L$ is layer count and $T$ is context length. At $L = 80, H = 64, d_h = 128$, fp16
 ($2$ bytes), $T = 128\text{K}$ — the headline DeepSeek-grade long-context setting — the cache is

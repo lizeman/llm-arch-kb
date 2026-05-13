@@ -61,7 +61,9 @@ Start from the regularization perspective: imagine multiplying each pre-activati
 Bernoulli mask $m \in \{0, 1\}$ whose rate depends on $x$. The natural choice for
 "large $x$ likely to be kept, negative $x$ likely to be dropped" is
 
-$$\Pr\bigl[m = 1 \mid x\bigr] = \Phi(x) = \tfrac{1}{2}\bigl[1 + \mathrm{erf}\bigl(x / \sqrt{2}\bigr)\bigr],$$
+$$
+\Pr\bigl[m = 1 \mid x\bigr] = \Phi(x) = \tfrac{1}{2}\bigl[1 + \mathrm{erf}\bigl(x / \sqrt{2}\bigr)\bigr],
+$$
 
 where $\Phi$ is the standard normal cumulative distribution function. Hendrycks & Gimpel (2016,
 §2) call this the "GELU" gating: the unit fires with probability equal to the chance that a
@@ -70,12 +72,16 @@ Frey 2013) is explicit — both condition the keep-rate on the activation.
 
 The deterministic activation is the expectation of the stochastic mask applied to $x$:
 
-$$\mathrm{GELU}(x) \;=\; \mathbb{E}_{m \sim \mathrm{Bern}(\Phi(x))}\bigl[m \cdot x\bigr] \;=\; x \cdot \Phi(x).$$
+$$
+\mathrm{GELU}(x) \;=\; \mathbb{E}_{m \sim \mathrm{Bern}(\Phi(x))}\bigl[m \cdot x\bigr] \;=\; x \cdot \Phi(x).
+$$
 
 This is the canonical GELU. The single-symbol $\Phi$ hides the structure; expanding the CDF
 gives
 
-$$\mathrm{GELU}(x) \;=\; x \cdot \tfrac{1}{2}\bigl[1 + \mathrm{erf}\bigl(x / \sqrt{2}\bigr)\bigr] \;=\; \tfrac{x}{2} + \tfrac{x}{2}\,\mathrm{erf}\bigl(x / \sqrt{2}\bigr).$$
+$$
+\mathrm{GELU}(x) \;=\; x \cdot \tfrac{1}{2}\bigl[1 + \mathrm{erf}\bigl(x / \sqrt{2}\bigr)\bigr] \;=\; \tfrac{x}{2} + \tfrac{x}{2}\,\mathrm{erf}\bigl(x / \sqrt{2}\bigr).
+$$
 
 **Reading the shape.** $\mathrm{erf}(z)$ is the integral of a Gaussian density; it is
 odd-symmetric, saturates at $\pm 1$, and is roughly linear in a band around zero. Two regimes
@@ -102,7 +108,9 @@ smooth + slight non-monotonicity outperforms hard-zero ReLU at transformer scale
 **The derivative.** A closed-form gradient is required for autograd. Differentiating $x \cdot
 \Phi(x)$ via the product rule:
 
-$$\frac{\mathrm{d}\,\mathrm{GELU}(x)}{\mathrm{d}x} \;=\; \Phi(x) + x \cdot \phi(x),$$
+$$
+\frac{\mathrm{d}\,\mathrm{GELU}(x)}{\mathrm{d}x} \;=\; \Phi(x) + x \cdot \phi(x),
+$$
 
 where $\phi(x) = \tfrac{1}{\sqrt{2\pi}} e^{-x^2/2}$ is the standard normal density. The
 derivative is bounded, smooth, and nowhere zero — no dead-unit failure mode. Compared to
@@ -115,11 +123,15 @@ rational polynomial). Hendrycks & Gimpel (2016) propose two cheaper forms.
 
 The tanh approximation:
 
-$$\mathrm{GELU}_{\tanh}(x) \;\approx\; \tfrac{x}{2}\bigl[1 + \tanh\bigl(\sqrt{2/\pi}\,(x + 0.044715\,x^3)\bigr)\bigr].$$
+$$
+\mathrm{GELU}_{\tanh}(x) \;\approx\; \tfrac{x}{2}\bigl[1 + \tanh\bigl(\sqrt{2/\pi}\,(x + 0.044715\,x^3)\bigr)\bigr].
+$$
 
 The sigmoid approximation, which exposes the family connection to Swish:
 
-$$\mathrm{GELU}_{\sigma}(x) \;\approx\; x \cdot \sigma(1.702\,x).$$
+$$
+\mathrm{GELU}_{\sigma}(x) \;\approx\; x \cdot \sigma(1.702\,x).
+$$
 
 The 1.702 constant is the temperature that minimizes max absolute error against the exact
 $\Phi(x)$ form over $x \in [-10, 10]$ (Hendrycks & Gimpel 2016, §2). Swish at $\beta = 1$ is

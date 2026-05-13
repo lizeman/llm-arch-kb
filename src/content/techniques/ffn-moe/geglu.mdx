@@ -60,7 +60,9 @@ variants.
 Shazeer (2020, §1) parameterizes the GLU-variant family with a single placeholder activation
 $\phi$:
 
-$$\mathrm{FFN}_{\phi\mathrm{GLU}}(\mathbf{x}) \;=\; W_2 \bigl[\bigl(\mathbf{x} W\bigr) \odot \phi\bigl(\mathbf{x} V\bigr)\bigr],$$
+$$
+\mathrm{FFN}_{\phi\mathrm{GLU}}(\mathbf{x}) \;=\; W_2 \bigl[\bigl(\mathbf{x} W\bigr) \odot \phi\bigl(\mathbf{x} V\bigr)\bigr],
+$$
 
 with $W, V \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$,
 $W_2 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$, and $\odot$ elementwise. The
@@ -70,13 +72,17 @@ elementwise; $W_2$ projects back. The
 intuition that motivates the family. GeGLU instantiates the same scaffold with
 $\phi = \mathrm{GELU}$:
 
-$$\mathrm{GeGLU}(\mathbf{x}) \;=\; \bigl(\mathbf{x} W\bigr) \odot \mathrm{GELU}\bigl(\mathbf{x} V\bigr).$$
+$$
+\mathrm{GeGLU}(\mathbf{x}) \;=\; \bigl(\mathbf{x} W\bigr) \odot \mathrm{GELU}\bigl(\mathbf{x} V\bigr).
+$$
 
 SwiGLU instantiates it with $\phi = \mathrm{Swish}_\beta$ where
 $\mathrm{Swish}_\beta(z) = z \cdot \sigma(\beta z)$ and $\beta = 1$. The two activations are
 *almost* the same function. The sigmoid-approximation form of GELU,
 
-$$\mathrm{GELU}(z) \;\approx\; z \cdot \sigma\bigl(1.702 \cdot z\bigr),$$
+$$
+\mathrm{GELU}(z) \;\approx\; z \cdot \sigma\bigl(1.702 \cdot z\bigr),
+$$
 
 makes the relationship explicit: GELU is approximately Swish with inner-sigmoid temperature
 $\beta \approx 1.702$ instead of $\beta = 1$. Higher temperature means a sharper transition
@@ -116,8 +122,12 @@ GeGLU produces the same numbers.
 **Parameter and FLOP count.** Per layer, with $d = d_{\text{model}}$ and the matched
 convention $d_{\text{ff}} = (8/3) d$:
 
-$$\#\,\text{params} \;=\; 3 \cdot d \cdot d_{\text{ff}} \;=\; 8\,d^2,$$
-$$\#\,\text{FLOPs per token} \;\approx\; 3 \cdot 2 \cdot d \cdot d_{\text{ff}} \;=\; 16\,d^2.$$
+$$
+\#\,\text{params} \;=\; 3 \cdot d \cdot d_{\text{ff}} \;=\; 8\,d^2,
+$$
+$$
+\#\,\text{FLOPs per token} \;\approx\; 3 \cdot 2 \cdot d \cdot d_{\text{ff}} \;=\; 16\,d^2.
+$$
 
 Vanilla ReLU FFN at $4 \cdot d$ has $2 \cdot 4 \cdot d^2 = 8 d^2$ parameters and $8 d^2$ FLOPs
 per token — matched on parameters, doubled on FLOPs because the three projections double the

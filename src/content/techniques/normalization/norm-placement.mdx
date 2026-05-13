@@ -92,7 +92,9 @@ space; see its [own entry](/llm-arch-kb/normalization/olmo2-post-norm/) for the 
 intermediate state $\mathbf{x}_\ell$. Under the Post-Norm recursion, applying the chain rule
 through $\mathrm{Norm}$ at each layer gives, schematically (Xiong et al. §2 and Theorem 1):
 
-$$\frac{\partial L}{\partial \mathbf{x}_\ell} = \frac{\partial L}{\partial \mathbf{x}_L} \cdot \prod_{k=\ell}^{L-1} \mathbf{J}_{\mathrm{Norm}}\bigl(\mathbf{x}_k + f_k(\mathbf{x}_k)\bigr) \cdot \bigl(\mathbf{I} + \mathbf{J}_{f_k}(\mathbf{x}_k)\bigr),$$
+$$
+\frac{\partial L}{\partial \mathbf{x}_\ell} = \frac{\partial L}{\partial \mathbf{x}_L} \cdot \prod_{k=\ell}^{L-1} \mathbf{J}_{\mathrm{Norm}}\bigl(\mathbf{x}_k + f_k(\mathbf{x}_k)\bigr) \cdot \bigl(\mathbf{I} + \mathbf{J}_{f_k}(\mathbf{x}_k)\bigr),
+$$
 
 where $\mathbf{J}_g$ denotes the Jacobian of $g$. The key observation: the Jacobian of
 $\mathrm{Norm}$ is proportional to $1/\|\mathbf{x}_k + f_k(\mathbf{x}_k)\|$, but the
@@ -110,7 +112,9 @@ gradients are $\Theta(\sqrt{L})$ — the loss surface is poorly conditioned at d
 the residual addition operates on the unnormalized stream $\mathbf{x}_\ell$ directly. The
 Jacobian becomes (Xiong et al. Proposition 2):
 
-$$\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = \mathbf{I} + \mathbf{J}_{f_\ell}\bigl(\mathrm{Norm}(\mathbf{x}_\ell)\bigr) \cdot \mathbf{J}_{\mathrm{Norm}}(\mathbf{x}_\ell).$$
+$$
+\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = \mathbf{I} + \mathbf{J}_{f_\ell}\bigl(\mathrm{Norm}(\mathbf{x}_\ell)\bigr) \cdot \mathbf{J}_{\mathrm{Norm}}(\mathbf{x}_\ell).
+$$
 
 The identity $\mathbf{I}$ dominates at initialization because the inner Jacobian product is
 small (the sublayer is randomly initialized; its contribution starts near zero). The

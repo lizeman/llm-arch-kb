@@ -90,14 +90,18 @@ Take a single attention head with per-token query and key vectors $\mathbf{q}_t,
 where $t$ indexes the sequence position, $d_h$ is the per-head dimension (commonly 64 or
 128), and the per-head batch is $B \times H \times T$. The standard logit is
 
-$$s_{tj} = \frac{\mathbf{q}_t^\top \mathbf{k}_j}{\sqrt{d_h}}.$$
+$$
+s_{tj} = \frac{\mathbf{q}_t^\top \mathbf{k}_j}{\sqrt{d_h}}.
+$$
 
 The Cauchy–Schwarz bound is $|s_{tj}| \le \|\mathbf{q}_t\|_2\,\|\mathbf{k}_j\|_2 / \sqrt{d_h}$,
 so the logit magnitude is controlled entirely by the *norms* of $\mathbf{q}_t$ and $\mathbf{k}_j$.
 If those norms are bounded, the logits are bounded. The QK-Norm move is therefore to insert
 an explicit normalization on each query and key vector:
 
-$$\tilde{\mathbf{q}}_t = \frac{\mathbf{q}_t}{\|\mathbf{q}_t\|_2}, \qquad \tilde{\mathbf{k}}_j = \frac{\mathbf{k}_j}{\|\mathbf{k}_j\|_2}, \qquad s_{tj} = g \cdot \tilde{\mathbf{q}}_t^\top \tilde{\mathbf{k}}_j,$$
+$$
+\tilde{\mathbf{q}}_t = \frac{\mathbf{q}_t}{\|\mathbf{q}_t\|_2}, \qquad \tilde{\mathbf{k}}_j = \frac{\mathbf{k}_j}{\|\mathbf{k}_j\|_2}, \qquad s_{tj} = g \cdot \tilde{\mathbf{q}}_t^\top \tilde{\mathbf{k}}_j,
+$$
 
 with a learnable scalar gain $g \in \mathbb{R}$ (or, in some variants, a per-head gain vector)
 replacing the fixed $1/\sqrt{d_h}$. After normalization, $\tilde{\mathbf{q}}_t^\top \tilde{\mathbf{k}}_j = \cos\theta_{tj} \in [-1, 1]$
@@ -109,7 +113,9 @@ In practice the L2 normalization is implemented with a per-head RMSNorm rather t
 unit-norm projection. RMSNorm preserves the magnitude information up to a learnable
 per-feature gain $\boldsymbol{\gamma}_q, \boldsymbol{\gamma}_k \in \mathbb{R}^{d_h}$:
 
-$$\mathrm{RMSNorm}(\mathbf{x};\boldsymbol{\gamma}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x}}{\sqrt{\tfrac{1}{d_h}\sum_i x_i^2 + \varepsilon}},$$
+$$
+\mathrm{RMSNorm}(\mathbf{x};\boldsymbol{\gamma}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x}}{\sqrt{\tfrac{1}{d_h}\sum_i x_i^2 + \varepsilon}},
+$$
 
 so the output is rescaled to unit RMS and then per-feature reweighted. The dot product
 between two RMSNorm-ed vectors is no longer the cosine in general, but it is bounded by

@@ -67,7 +67,9 @@ specialization, retrain at production scale, and ship it open-weights under MIT.
 
 Start from the dense Llama-2 FFN at the position-wise layer:
 
-$$\mathrm{FFN}(\mathbf{x}) = W_2\bigl(\mathrm{SiLU}(W_1 \mathbf{x}) \odot W_3 \mathbf{x}\bigr),$$
+$$
+\mathrm{FFN}(\mathbf{x}) = W_2\bigl(\mathrm{SiLU}(W_1 \mathbf{x}) \odot W_3 \mathbf{x}\bigr),
+$$
 
 with $W_1, W_3 \in \mathbb{R}^{d_{ff} \times d_{model}}$ and $W_2 \in \mathbb{R}^{d_{model}
 \times d_{ff}}$. Mixtral 8x7B uses $d_{model} = 4096$, $d_{ff} = 14336$ (Jiang et al. 2024,
@@ -79,13 +81,17 @@ each parameterized exactly like the dense $\mathrm{FFN}$. A linear gate $W_g \in
 \times d_{model}}$ produces logits $\ell(\mathbf{x}) = W_g \mathbf{x} \in \mathbb{R}^E$. The
 layer output is
 
-$$\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathcal{T}(\mathbf{x})} g_i(\mathbf{x}) \cdot f_i(\mathbf{x}),$$
+$$
+\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathcal{T}(\mathbf{x})} g_i(\mathbf{x}) \cdot f_i(\mathbf{x}),
+$$
 
 where $\mathcal{T}(\mathbf{x}) = \mathrm{Top}_2\bigl(\ell(\mathbf{x})\bigr)$ is the index set
 of the two largest logits and the gate weights $g_i$ are the *renormalized softmax restricted
 to the selected pair*:
 
-$$g_i(\mathbf{x}) = \frac{\exp \ell_i(\mathbf{x})}{\sum_{j \in \mathcal{T}(\mathbf{x})} \exp \ell_j(\mathbf{x})},\quad i \in \mathcal{T}(\mathbf{x}).$$
+$$
+g_i(\mathbf{x}) = \frac{\exp \ell_i(\mathbf{x})}{\sum_{j \in \mathcal{T}(\mathbf{x})} \exp \ell_j(\mathbf{x})},\quad i \in \mathcal{T}(\mathbf{x}).
+$$
 
 This is the load-bearing difference from Sparse-MoE 2017's gate, which softmaxes over all $E$
 logits and then masks the non-top-$K$ entries to zero (Shazeer et al. 2017, eq. 3). The
@@ -117,7 +123,9 @@ ST-MoE (Zoph et al. 2022, Table 5), which reports a 0.3–0.6 perplexity point q
 Mixtral inherits the **load-balancing auxiliary loss** from Switch (Fedus et al. 2021, eq. 4),
 unchanged in form:
 
-$$\mathcal{L}_{\mathrm{aux}} = \alpha \cdot E \cdot \sum_{i = 1}^{E} f_i \cdot P_i,$$
+$$
+\mathcal{L}_{\mathrm{aux}} = \alpha \cdot E \cdot \sum_{i = 1}^{E} f_i \cdot P_i,
+$$
 
 where $f_i$ is the fraction of tokens in the batch whose top-2 set contains expert $i$ and
 $P_i$ is the gate's mean *softmax probability* (over all $E$, not over the selected pair) for

@@ -22,78 +22,197 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The original FFN
+## The position-wise sublayer
 
-The 2017 transformer's feed-forward sublayer is a two-layer MLP applied independently at each
-token position. The architecture is:
+The original transformer (Vaswani et al. 2017, "Attention Is All You Need", §3.3) interleaves
+two kinds of sublayer in each block: multi-head self-attention, which mixes information
+*across* token positions, and a feed-forward network, which transforms each token's
+representation *in place*. The feed-forward sublayer carries roughly two-thirds of the model's
+parameter budget — at $d_{\text{model}} = 512$, $d_{\text{ff}} = 2048$, $H = 8$, the FFN holds
+$2 \cdot d_{\text{model}} \cdot d_{\text{ff}} \approx 2{,}097{,}152$ parameters per layer
+versus the attention block's $4 \cdot d_{\text{model}}^2 \approx 1{,}048{,}576$. Whatever
+activation goes between the FFN's two projections therefore has outsized influence on
+training dynamics, parameter-bound work, and the model's representational capacity.
 
-$$\mathrm{FFN}_{\text{ReLU}}(\mathbf{x}) = \max(0, \mathbf{x}W_1 + \mathbf{b}_1)\, W_2 + \mathbf{b}_2.$$
+Three constraints shaped the 2017 choice.
 
-Two linear projections, a ReLU between them, and an additive bias on each. The hidden
-dimension $d_{\text{ff}}$ is chosen as $4 \cdot d_{\text{model}}$ — large enough that the ReLU
-gate creates a useful sparse representation, small enough to keep the FFN's parameter count
-balanced against the attention block.
+**Position-wise application.** The FFN had to apply independently to each token's hidden
+state. That ruled out anything with cross-token coupling (recurrence, convolutions of width >
+1). Equivalently, the FFN can be described as two $1{\times}1$ convolutions over the sequence
+length (Vaswani et al. 2017, §3.3 footnote): same operation at every position, no parameter
+sharing across the depth direction.
+
+**Stable optimization with Adam.** The transformer's training recipe inherited Adam from the
+2014 generation; the activation needed to interoperate with the Noam-Adam learning-rate
+schedule and the existing Xavier/Glorot initialization conventions without bespoke tuning.
+ReLU had a five-year track record of stable optimization (Glorot, Bordes & Bengio 2011, AISTATS;
+Krizhevsky, Sutskever & Hinton 2012, AlexNet) and was the default for almost every published
+deep architecture in 2016.
+
+**Throughput.** Inference and training had to scale to a wall-clock budget that allowed
+weekly experiments on a 2017 8-GPU node. Tanh and sigmoid required exponentials and were
+known to saturate and slow training (Glorot & Bengio 2010, "Understanding the difficulty of
+training deep feedforward neural networks", AISTATS); GELU (Hendrycks & Gimpel 2016) existed
+on arXiv but was untested at sequence-model scale; Swish would not be introduced until late
+2017. ReLU was the conservative choice with the most prior evidence.
+
+The 2017 FFN is what falls out: two linear projections with the simplest non-saturating
+nonlinearity between them, sized so the FFN's parameter count roughly matches the attention
+block. Every subsequent FFN variant in this knowledge base — GELU, GeGLU, ReGLU, SwiGLU,
+Mixtral's expert FFNs, DeepSeekMoE's expert FFNs — keeps this two-projection scaffold and
+varies only what sits between.
+
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From a one-hidden-layer MLP to the transformer FFN
+
+Start from a textbook one-hidden-layer MLP applied to a single token's representation
+$\mathbf{x} \in \mathbb{R}^{d_{\text{model}}}$:
+
+$$\mathrm{MLP}(\mathbf{x}) \;=\; W_2\,\phi\bigl(W_1 \mathbf{x} + \mathbf{b}_1\bigr) + \mathbf{b}_2,$$
+
+with $W_1 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$,
+$W_2 \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$, biases of matching dimension,
+and elementwise nonlinearity $\phi$. This is the position-wise FFN with the row/column
+convention flipped. Vaswani et al. (2017, §3.3) wrote it in row-vector form,
+
+$$\mathrm{FFN}(\mathbf{x}) \;=\; \max\!\bigl(0,\; \mathbf{x} W_1 + \mathbf{b}_1\bigr)\, W_2 + \mathbf{b}_2,$$
+
+which is the same operation; the choice of $\phi = \max(0, \cdot)$ is what makes this
+specifically the ReLU FFN.
+
+**Why ReLU specifically.** Rewriting ReLU as a multiplicative gate exposes its structure:
+
+$$\mathrm{ReLU}(z) \;=\; z \cdot \mathbf{1}\{z > 0\}.$$
+
+ReLU multiplies its input by a hard $\{0, 1\}$ gate driven by the sign of the input. Three
+consequences follow:
+
+- *Sparsity.* For symmetrically-initialized $W_1$ on a centered input, $\Pr[z > 0] \approx
+  \tfrac{1}{2}$, so roughly half of the FFN's $d_{\text{ff}}$ hidden units are zero at any
+  step. Empirical work from the AlexNet era (Krizhevsky et al. 2012) and earlier (Glorot,
+  Bordes & Bengio 2011, §3) showed this kind of activity-sparse code is both learnable and a
+  decent prior for deep networks.
+- *Constant gradient on the active half.* Where the gate is on, the gradient is exactly 1.
+  Where it is off, the gradient is exactly 0. No gradient saturation, no vanishing-gradient
+  problem from the activation itself.
+- *Dead-unit failure.* If $W_1[i, :] \cdot \mathbf{x} + \mathbf{b}_1[i] < 0$ for every $\mathbf{x}$
+  ever seen, unit $i$ outputs zero and receives no gradient — it is permanently dead. The same
+  Glorot et al. (2011) paper documents this failure mode at the same time it introduces the
+  activation.
+
+**Sizing the hidden dimension.** The original paper's choice is $d_{\text{ff}} = 4 \cdot
+d_{\text{model}}$: at $d_{\text{model}} = 512$, $d_{\text{ff}} = 2048$. Two pieces of math
+motivate the ratio.
+
+*Parameter balance.* The FFN holds $2 \cdot d_{\text{model}} \cdot d_{\text{ff}}$ parameters
+(biases are negligible). Multi-head attention, with $Q, K, V, O$ projections each of shape
+$d_{\text{model}} \times d_{\text{model}}$, holds $4 \cdot d_{\text{model}}^2$. Setting the
+two equal gives
+
+$$2 \cdot d_{\text{model}} \cdot d_{\text{ff}} \;=\; 4 \cdot d_{\text{model}}^2 \;\Longrightarrow\; d_{\text{ff}} \;=\; 2\,d_{\text{model}}.$$
+
+The actual choice $d_{\text{ff}} = 4\,d_{\text{model}}$ is twice that — Vaswani et al. (2017,
+§3.3) do not explicitly defend the factor, but the doubling lets the FFN dominate the
+per-block parameter count by 2:1, which the rest of the field carried forward without
+questioning until GPT-2 (Radford et al. 2019, §2.1) and BERT (Devlin et al. 2019, §3.1)
+quietly inherited the same $4\times$ ratio.
+
+*Information capacity.* A wider hidden layer gives the FFN more freedom to represent
+high-rank, low-correlation features per token. The Universal Approximation Theorem (Hornik
+1991) shows one hidden layer of sufficient width can approximate any continuous function on a
+compact set; the $4\times$ ratio is empirically enough at transformer-base scale.
+
+**Parameter and FLOP count.** Per layer, with batch $B$, sequence $T$, hidden
+$d = d_{\text{model}}$, expansion $f = d_{\text{ff}}/d_{\text{model}}$:
+
+$$\#\,\text{params} \;=\; 2\,d^2 f + d(f + 1), \qquad \#\,\text{FLOPs per token} \;\approx\; 2 \cdot d \cdot d_{\text{ff}} \;=\; 2 d^2 f.$$
+
+At $d = 512$, $f = 4$, this is $\sim 2.1$M parameters per FFN and $\sim 2.1$M FLOPs per token
+per layer. Across 6 transformer-base layers, the FFNs alone hold $\sim 12.6$M parameters —
+roughly two-thirds of the 65M total. This concentration of parameters is what makes the
+activation choice load-bearing.
+
+**Biases.** The original FFN has additive bias terms $\mathbf{b}_1, \mathbf{b}_2$. Subsequent
+work (GPT-J, PaLM, Llama, Gemma) drops them: at modern scale they account for $<0.1\%$ of
+parameters but they slightly complicate fused-kernel layouts, and Chowdhery et al. (2022, PaLM,
+§2) report no measurable quality loss from removing them. The 2017 FFN keeps them; every
+modern descendant in this knowledge base does not.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## The 2017 sublayer in five lines
 
 ```python
 def ffn_relu(x, W1, b1, W2, b2):
-    # x: [..., d_model]
-    # W1: [d_model, d_ff],  W2: [d_ff, d_model]
-    return torch.relu(x @ W1 + b1) @ W2 + b2
+    # x:  [B, T, d_model]
+    # W1: [d_model, d_ff]    b1: [d_ff]
+    # W2: [d_ff, d_model]    b2: [d_model]
+    h = (x @ W1 + b1).clamp_min(0.0)   # ReLU = clamp_min(0)
+    return h @ W2 + b2
 ```
 
-This is the FFN of the original transformer (Vaswani et al. 2017, §3.3). Every transformer
-variant that came after — encoder-decoder translation, BERT, GPT-1 through 3, T5 — used a
-close cousin, varying the activation but keeping the two-layer-with-nonlinearity shape.
+Position-wise: every token at every position is mapped independently, with the same weights
+across positions. The clamp_min form makes the gating structure explicit; equivalently,
+`F.relu(x @ W1 + b1) @ W2 + b2` or `torch.maximum(x @ W1 + b1, 0) @ W2 + b2`. Modern Llama-style
+FFNs replace this with a three-projection gated form; see the
+[SwiGLU entry](/llm-arch-kb/ffn-moe/swiglu/) for the displacement.
 
-<p class="section-eyebrow">§ 2 · What ReLU got right</p>
-## Sparsity, simplicity, throughput
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What replaced it, and by how much
 
-ReLU's appeal at the time:
+The 2017 transformer (Vaswani et al. 2017) shipped FFN-ReLU as part of the base-model
+specification (§5.1) and reported state-of-the-art BLEU on WMT14 En-De and En-Fr. Within five
+years, every dominant FFN benchmark moved to a different activation.
 
-- **Computationally trivial.** A single comparison plus a select. No exponentials, no
-  divisions. Faster on every hardware target than tanh, sigmoid, or GELU.
-- **Sparse activations.** Roughly half of FFN hidden units are zero on any given input,
-  matching empirical observations about sparse representations being learnable and useful.
-- **Gradient simplicity.** Gradient is exactly 1 for active units, exactly 0 for inactive — no
-  gradient saturation issues that plagued tanh-based MLPs.
-- **Empirical match to softmax-attention dynamics.** ReLU FFN trains stably with the standard
-  Adam-derived optimizers from 2017, no special initialization tricks needed.
+**GELU's margin.** Shazeer (2020, "GLU Variants Improve Transformer", arXiv
+[2002.05202](https://arxiv.org/abs/2002.05202), Table 1) ran the first systematic
+FFN-activation ablation on T5-base pretraining on C4. At matched FLOPs:
 
-The original transformer's success made the ReLU FFN the unstated default for the 2017–2020
-generation of language models.
+- $\mathrm{FFN}_{\mathrm{ReLU}}$: 1.997 log-perplexity
+- $\mathrm{FFN}_{\mathrm{GELU}}$: 1.983
+- $\mathrm{FFN}_{\mathrm{Swish}}$: 1.994
 
-<p class="section-eyebrow">§ 3 · What displaced it</p>
-## GELU and the GLU variants
+GELU beat ReLU by 0.014 in log-perplexity (~1.4% relative); Swish was nearly tied with ReLU.
+The empirical margin is small, but it is consistent: BERT (Devlin et al. 2019), GPT-2 (Radford
+et al. 2019), GPT-3 (Brown et al. 2020), and T5 (Raffel et al. 2020) all chose GELU and saw
+the same direction of improvement. By 2020, plain ReLU was no longer the default.
 
-Two trends pushed FFN-ReLU out of the modern stack:
+**GLU variants' larger margin.** The same Shazeer (2020) ablation showed gated FFNs cutting
+another 0.04 in log-perplexity at matched parameters:
 
-- **[GELU](/llm-arch-kb/ffn-moe/gelu/)** (Gaussian Error Linear Unit, Hendrycks & Gimpel 2016)
-  smooths the ReLU corner, which empirical work showed gives ~0.5 perplexity points improvement
-  on language modeling at matched compute. BERT, GPT-2, T5, and GPT-3 all chose GELU.
-- **[SwiGLU](/llm-arch-kb/ffn-moe/swiglu/) and [GeGLU](/llm-arch-kb/ffn-moe/geglu/)** (Shazeer
-  2020) replace the two-projection MLP with a three-projection bilinear gated form, which gives
-  another ~0.5 perplexity points at matched FLOPs. From Llama 1 onward this is the open-stack
-  default.
+- $\mathrm{FFN}_{\mathrm{ReGLU}}$: 1.953
+- $\mathrm{FFN}_{\mathrm{GEGLU}}$: 1.942
+- $\mathrm{FFN}_{\mathrm{SwiGLU}}$: 1.944
 
-By 2024 the Llama family, DeepSeek, Mistral, OLMo, and others had all moved to a GLU variant.
-ReLU FFN persists in older models (GPT-2/3 era encoders), in some specialized fast-inference
-deployments where the ReLU savings matter, and as a baseline in ablation studies.
+Plain ReLU to gated SwiGLU is a $\sim 0.05$ log-perplexity gap — about 3× larger than the
+ReLU-to-GELU gap. From Llama 1 (Touvron et al. 2023, "LLaMA: Open and Efficient Foundation
+Language Models", arXiv [2302.13971](https://arxiv.org/abs/2302.13971), §2.1) onward, the
+open-weights frontier ships SwiGLU or GeGLU; plain ReLU FFN does not appear in any
+production-decoder release in this knowledge base after 2022.
 
-<p class="section-eyebrow">§ 4 · The hidden-dim convention</p>
-## Why d_ff = 4 · d_model
+**Where ReLU FFN still appears.** Three settings preserve it. First, *legacy inference*: GPT-2
+weights are still hosted and served by many providers, all running the original ReLU FFN.
+Second, *ablation baselines*: every FFN-activation paper since 2020 includes plain ReLU FFN as
+the bottom-of-table comparison (Shazeer 2020 Table 1; Su et al. 2024 RoPE-V2 Table 6;
+follow-ups). Third, *retro-modern hybrids*: the "SoLU" line (Elhage et al. 2022,
+[Transformer Circuits Thread](https://transformer-circuits.pub/2022/solu/index.html), §1) and
+some sparse-FFN work (Mirzadeh et al. 2023, "ReLU Strikes Back", arXiv
+[2310.04564](https://arxiv.org/abs/2310.04564)) revisit ReLU for *interpretability* and
+*activation-sparsity* reasons — not because it beats SwiGLU on perplexity, but because its
+hard-zero gate is easier to reason about. Mirzadeh et al. (2023, §3) report up to 90% FFN
+activation sparsity from ReLU with a small perplexity penalty, which can translate to
+inference-time skipping of dead units. This use case is research-scale; no frontier release
+ships it.
 
-The original paper's $4\times$ ratio was empirically chosen — the FFN at $4\times$ matches the
-attention block's parameter count to within a constant factor at standard model widths,
-keeping the per-block compute roughly balanced between attention and FFN. Subsequent variants
-have adjusted this ratio: SwiGLU uses $\frac{8}{3} \cdot d_{\text{model}}$ (the third
-projection compensates), Mixtral's MoE uses larger ratios per expert because only a few
-experts activate per token, and so on. The $4\times$ convention itself is deprecated in modern
-designs but lingers in some open implementations of older models.
+**Public sensitivity studies.** The $4\times$ hidden-dim ratio has been re-examined
+occasionally (Tay et al. 2022, "Scaling Laws vs Model Architectures", arXiv
+[2207.10551](https://arxiv.org/abs/2207.10551), Table 4) but no systematic ablation of the
+ratio specifically for ReLU FFN exists at modern scale — the ratio question has migrated to
+the SwiGLU $8/3 \cdot d_{\text{model}}$ regime instead.
 
 <Summary>
-**FFN-ReLU in one breath.** Two linear projections at $4\times$ hidden expansion with ReLU
-between them, plus additive biases. The original 2017 transformer FFN. Displaced by GELU
-(smoother) and then by SwiGLU/GeGLU (gated bilinear) for ~1 perplexity point of gain in total.
-Still seen in older models and as an ablation baseline; not present in the modern open frontier
-stack.
+**FFN-ReLU in one breath.** Two linear projections at $d_{\text{ff}} = 4 \cdot d_{\text{model}}$
+with ReLU and additive biases between them. The original 2017 transformer FFN. Beaten by GELU
+by $\sim 1.4\%$ relative log-perplexity (Shazeer 2020, Table 1), then by SwiGLU/GeGLU by a
+further $\sim 2\%$. Still seen in older models, ablation baselines, and ReLU-for-sparsity
+research; not present in the modern open frontier stack.
 </Summary>

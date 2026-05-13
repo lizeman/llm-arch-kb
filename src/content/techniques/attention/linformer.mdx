@@ -27,76 +27,189 @@ import LinformerProjection from "~/components/figures/LinformerProjection";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Attention is low-rank in practice
+## Attention is approximately low-rank — bake that in
 
-Wang et al. observed that the attention matrix $P = \mathrm{softmax}(QK^\top / \sqrt{d_h})$ in
-a trained transformer has approximately low rank — a small number of singular values capture
-most of its mass. If the matrix is rank-$k$ with $k \ll N$, then there exists a rank-$k$
-factorization that approximates $P$ accurately.
+Standard self-attention over a sequence of length $N$ with head dimension $d_h$ computes an
+$N \times N$ probability matrix $P = \mathrm{softmax}(QK^\top/\sqrt{d_h})$ and then applies it
+to $V \in \mathbb{R}^{N \times d_h}$. Time and memory are $\Theta(N^2 d_h)$, and the dominant
+cost at $N \gtrsim d_h$ is the matrix $P$ itself, which carries $N^2$ logits regardless of
+content. At $N = 4{,}096$, a single attention head materializes 67 MB of fp32 logits per batch
+element before softmax — and the model has $H$ of these per layer.
 
-The architectural question: can you bake this low-rank structure into the model from training
-time, rather than discovering it post hoc? Linformer's bet: yes, via learned projections of
-K and V along the sequence dimension.
+Wang et al. (§ 2 and Figure 2 of [arXiv 2006.04768](https://arxiv.org/abs/2006.04768)) ran a
+singular-value analysis of $P$ in pretrained RoBERTa and observed that its singular spectrum
+decays rapidly: ~90% of the spectral energy is captured by the top-128 singular vectors at
+$N = 512$. They proved (their Theorem 1, via Johnson–Lindenstrauss) that for any softmax
+attention matrix and any $\varepsilon > 0$, there exists a rank-$k$ approximation with
+$k = \Theta(d_h \log(d_h) / \varepsilon^2)$ that achieves $\varepsilon$ error in the resulting
+output — and crucially, $k$ does not grow with $N$.
 
-<p class="section-eyebrow">§ 2 · The projection</p>
-## Squash N down to k
+The architectural question: can the low rank be enforced at training time rather than
+discovered post hoc on a trained model? Linformer's bet: yes, by projecting $K$ and $V$ along
+the sequence axis to a fixed dimension $k$ via two learned matrices. The resulting attention
+has $\Theta(N k d_h)$ cost — linear in $N$ — and trains end-to-end.
 
-Define two learnable matrices $E, F \in \mathbb{R}^{k \times N}$ that project along the
-sequence axis. Apply them to K and V:
+The predecessor lineage is the broader "fast transformer" line of 2019–2020 — Sparse
+Transformer ([entry](/llm-arch-kb/attention/sparse-transformer/)) commits to a structured
+sparsity pattern, Reformer ([entry](/llm-arch-kb/attention/reformer/)) hashes to learned
+buckets. Linformer differs by attacking the low-rank structure of the dense probability matrix
+itself, not the sparsity of its support.
 
-$$\tilde{K} = E K \in \mathbb{R}^{k \times d_h},\quad \tilde{V} = F V \in \mathbb{R}^{k \times d_h}.$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Project the sequence axis, not the feature axis
 
-Now compute attention against the projected keys and values:
+Let $Q \in \mathbb{R}^{N \times d_h}$, $K \in \mathbb{R}^{N \times d_h}$, $V \in \mathbb{R}^{N \times d_h}$
+be the queries, keys, and values for one head ($H$ heads in parallel). Standard scaled
+dot-product attention is
 
-$$\mathrm{Attn}(Q, K, V) = \mathrm{softmax}\!\left(\frac{Q \tilde{K}^\top}{\sqrt{d_h}}\right)\tilde{V}.$$
+$$\mathrm{Attn}(Q, K, V) \;=\; \mathrm{softmax}\!\Bigl(\tfrac{1}{\sqrt{d_h}} Q K^\top\Bigr) V \;\in\; \mathbb{R}^{N \times d_h}.$$
 
-The intermediate $Q \tilde{K}^\top$ matrix is $N \times k$, not $N \times N$. Total compute is
-$O(N \cdot k \cdot d_h)$ — linear in $N$.
+**Step 1: insert a sequence-axis projection.** Introduce two learnable matrices
+$E \in \mathbb{R}^{k \times N}$ and $F \in \mathbb{R}^{k \times N}$, where $k$ is a chosen rank
+(Wang et al. use $k = 128$ or $256$ regardless of $N$). Apply them to $K$ and $V$ along the
+sequence axis:
+
+$$\tilde{K} \;=\; E K \;\in\; \mathbb{R}^{k \times d_h}, \qquad \tilde{V} \;=\; F V \;\in\; \mathbb{R}^{k \times d_h}.$$
+
+Note that $E$ and $F$ act on the *sequence* dimension, not the feature dimension. The features
+$d_h$ are untouched. This is the load-bearing design choice: a feature-axis projection
+(reducing $d_h$ to $d' < d_h$) loses the model's representational dimensionality; a
+sequence-axis projection only loses the number of distinct "memory slots" the queries can
+attend to, which the low-rank result says is safe.
+
+**Step 2: attend against the projected sequence.** Replace $K, V$ with $\tilde{K}, \tilde{V}$:
+
+$$\mathrm{LinAttn}(Q, K, V) \;=\; \mathrm{softmax}\!\Bigl(\tfrac{1}{\sqrt{d_h}} Q \tilde{K}^\top\Bigr) \tilde{V} \;\in\; \mathbb{R}^{N \times d_h}.$$
+
+The logit matrix $Q \tilde{K}^\top$ is now $N \times k$, not $N \times N$. The softmax is over
+$k$ entries per row. The final matmul against $\tilde{V}$ is $N \times k \cdot k \times d_h$.
+
+**Step 3: count the FLOPs.** Each query computes $k$ inner products against the $k$ projected
+keys, then weights $k$ projected values:
+
+$$\mathrm{FLOPs}_{\text{Linformer}} \;=\; \underbrace{\Theta(N k d_h)}_{Q \tilde{K}^\top} + \underbrace{\Theta(N k d_h)}_{\text{attn} \cdot \tilde{V}} + \underbrace{\Theta(N k d_h)}_{EK \text{ and } FV} \;=\; \Theta(N k d_h).$$
+
+Linear in $N$ at fixed $k$. The $EK$ and $FV$ projections themselves are $k \times N \cdot N \times d_h = \Theta(N k d_h)$ matmuls, so they cost the same as the attention step rather than dominating.
+
+**Step 4: why is the approximation tight?** Wang et al. (Theorem 1 of [arXiv 2006.04768](https://arxiv.org/abs/2006.04768),
+restated):
+
+> For any $Q, K \in \mathbb{R}^{N \times d_h}$ and any $\varepsilon, \delta \in (0, 1)$, there
+> exists a matrix $E \in \mathbb{R}^{k \times N}$ with $k = \Theta(d_h \log d_h / \varepsilon^2)$
+> such that, with probability $\ge 1 - \delta$,
+> $$\bigl\lVert \mathrm{softmax}(QK^\top) v - \mathrm{softmax}(Q (EK)^\top) (E v) \bigr\rVert \;\le\; \varepsilon \lVert \mathrm{softmax}(QK^\top) v \rVert$$
+> simultaneously for every column $v$ of $V$.
+
+The proof reduces softmax-attention error to Johnson–Lindenstrauss inner-product preservation
+on the unnormalized logits, then exploits the Lipschitz constant of softmax. The key takeaway
+is that the required $k$ depends on $d_h$ (head dimension) and the target error, *not on
+$N$* — the projection rank can be a fixed hyperparameter and quality does not degrade as $N$
+grows. Empirically (Figure 4 of the paper), $k = 128$ is sufficient up to $N = 4{,}096$.
+
+**Step 5: parameter sharing.** A naive instantiation has $H$ pairs of $(E_h, F_h)$ matrices per
+layer, $2 H k N$ parameters total. Wang et al. sweep three sharing modes (§ 4.2):
+
+1. **Headwise**: separate $(E_h, F_h)$ per head — most parameters, best quality.
+2. **Key-Value shared**: $E_h = F_h$ within a head — half the params, ~0.1 GLUE points worse.
+3. **Layerwise shared**: one $(E, F)$ pair shared across all heads in a layer — fewest params,
+   best Pareto point.
+
+The recommended default is layerwise sharing, which adds $2 k N$ parameters per layer — roughly
+$0.5\%$ of the FFN's parameter count at typical $k, N$ scales.
+
+**Why this works only for encoders.** $E$ has shape $k \times N$, hard-coded at training time
+to the maximum sequence length $N_{\text{max}}$. Two consequences:
+
+- At inference time, the model cannot handle sequences longer than $N_{\text{max}}$ — the
+  projection has no defined behavior on out-of-range positions.
+- Causal masking is incompatible with $E K$. The projection mixes keys across all positions,
+  so a query at position $t$ ends up attending to $\tilde{K}_j = \sum_{s=1}^N E_{js} \mathbf{k}_s$
+  — a key that has already been contaminated by future positions $s > t$.
+
+Wang et al. address only the bidirectional (encoder) case. Subsequent work — Linear Attention
+(Katharopoulos et al. 2020), Performer ([entry](/llm-arch-kb/attention/performer/)) — solves
+the decoder case via a feature-map kernel rather than a sequence-axis projection.
+
+**Parameter count and complexity summary.** Per layer at head dim $d_h$, $H$ heads, sequence
+length $N$, rank $k$, with layerwise-shared projection:
+
+$$|\theta_{\text{Linformer}}| \;=\; \underbrace{4 H d_h^2}_{\text{QKVO projections}} + \underbrace{2 k N}_{\text{Linformer projections}},$$
+
+$$\mathrm{FLOPs}_{\text{Linformer}}/\text{layer} \;=\; \Theta(N k d_h H).$$
+
+The FLOP saving vs. standard attention is the factor $k / N$.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
 def linformer_attention(Q, K, V, E, F):
-    # Q, K, V: [B, T, d_h]
-    # E, F: [k, T_max]   (T_max is the maximum supported sequence length)
-    K_proj = einsum("kt,btd->bkd", E, K)        # [B, k, d_h]
-    V_proj = einsum("kt,btd->bkd", F, V)
-    logits = einsum("btd,bkd->btk", Q, K_proj) / d_h**0.5
-    return einsum("btk,bkd->btd", logits.softmax(-1), V_proj)
+    # Q, K, V: [B, T, d_h]            T <= T_max, fixed at training time
+    # E, F:    [k, T_max]              shared across heads in this layer
+    K_proj = einsum("kt,btd->bkd", E, K)            # [B, k, d_h]
+    V_proj = einsum("kt,btd->bkd", F, V)            # [B, k, d_h]
+    logits = einsum("btd,bkd->btk", Q, K_proj)      # [B, T, k]
+    logits = logits / d_h**0.5
+    attn   = logits.softmax(-1)                     # softmax over k, not over T
+    return einsum("btk,bkd->btd", attn, V_proj)      # [B, T, d_h]
 ```
 
-The projections $E, F$ are learned, shared across heads (in the original paper's recommended
-configuration), and sized $k \approx 256$ regardless of $N$.
+The load-bearing change vs. MHA is the two `einsum` projections that compress the sequence
+axis from $T$ to $k$ before any $Q$-dependent computation. The remaining attention is
+identical in shape to standard MHA with a "key sequence length" of $k$. The implementation
+fits in a single Hugging Face transformers patch (see `linformer-pytorch` by Lucidrains for a
+production-style version: [github.com/lucidrains/linformer](https://github.com/lucidrains/linformer)).
 
 <LinformerProjection client:visible />
 
-<p class="section-eyebrow">§ 3 · Why no production decoder uses Linformer</p>
-## The autoregressive problem
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Results
 
-The projection matrices $E, F$ have shape $k \times N$, which is fixed at training time. For
-encoder applications with bounded sequence length, this is fine. For autoregressive decoders,
-two problems arise:
+**Pretraining quality at fixed $N$ (Wang et al. 2020, Table 3).** A 12-layer Linformer with
+$k = 128$ trained on the same RoBERTa pretraining recipe at $N = 512$ matches the dense
+RoBERTa baseline within 0.5 GLUE points on average and matches on SQuAD-1.1. At $k = 256$ the
+gap closes to within 0.1 GLUE points. The paper reports a 1.5× wall-clock speedup at $N = 512$
+that grows to 5.5× at $N = 4{,}096$ (their Figure 3).
 
-1. **Variable-length inference**. At generation time the sequence grows token by token; an
-   $N$-fixed projection is incompatible with extending past training length.
-2. **Causal masking gets weird**. The projection mixes past and future keys before attention
-   ever runs; recovering a causal structure requires careful constraints on $E, F$ that the
-   original paper does not formalize.
+**Quality at long sequences (Table 3 again).** At $N = 1024$ and $N = 2048$, Linformer at
+$k = 256$ remains within ~0.3 GLUE points of the dense baseline that was *not* trained at these
+lengths — Linformer is the first transformer in their suite to support these sequence lengths
+on the same hardware. The paper does not have a dense-attention comparison at $N \ge 4{,}096$
+because it does not fit on the V100 hardware they used.
 
-Several follow-ups (Performer's random-feature kernel, Linear Attention's prefix-sum recurrence)
-address the autoregressive case via mathematically distinct mechanisms. Linformer itself
-remains an encoder technique.
+**Long Range Arena (Tay et al. 2020, [arXiv 2011.04006](https://arxiv.org/abs/2011.04006),
+Table 1).** Independent reproduction by the LRA benchmark suite scores Linformer at average
+51.36 across the five LRA tasks (ListOps 35.7, Text 53.9, Retrieval 52.3, Image 38.6, Pathfinder
+76.3), vs. 54.39 for the dense softmax-attention baseline — a ~3-point gap. Linformer is
+mid-pack among the LRA variants: better than Reformer (50.67) and Performer (51.41), worse than
+BigBird (55.0) and Longformer (53.5). LRA uses a fixed $N = 4{,}096$ across tasks, which is
+exactly the regime Linformer was designed for.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**Sensitivity to $k$ (Wang et al. Figure 4).** Quality is monotone-increasing in $k$ with a
+clear knee around $k = 128$ for $N \le 1{,}024$ and around $k = 256$ for $N \le 4{,}096$.
+Past $k = 512$ there is no measurable improvement and the speedup over dense attention shrinks
+toward 1×.
 
-On GLUE and IMDB (encoder tasks), Linformer at $k = 256$ matches the standard transformer
-within 0.5 quality points (Wang et al. Table 1), with $4$–$10$× lower compute at $N = 512$
-to $N = 4096$. At very long sequences ($N \geq 16K$) the gap widens to $\sim 1$ quality point
-but compute stays linear.
+**Sharing scheme (Wang et al. Table 5).** Layerwise sharing loses ~0.1–0.2 GLUE points vs.
+headwise sharing but uses $1/H$ as many projection parameters. Key-value sharing within a head
+($E = F$) is essentially free at $\le 0.1$ point cost. Their recommended default ships
+layerwise-shared projections.
 
-The technique never crossed into frontier decoder-only LLMs but its low-rank framing — the
-attention matrix is approximately rank-$k$ for small $k$ — informs the subsequent linear-attention
-research lineage. See the [Linear Attention entry](/llm-arch-kb/attention/linear-attention/)
-for the lineage descendant that does support autoregressive decoding.
+**Why no decoder LLM ships it.** Beyond the causality and variable-length issues laid out in
+§ 2, Wang et al. did not run a decoder-side ablation. Subsequent surveys (Tay et al. 2022,
+"Efficient Transformers: A Survey", [arXiv 2009.06732](https://arxiv.org/abs/2009.06732), §3.4)
+classify Linformer as a "fixed-pattern + low-rank" hybrid suitable only for the encoder
+setting. The lineage descendant that *does* work autoregressively is Linear Attention
+(Katharopoulos et al. 2020), which uses a feature-map kernel
+$\phi(\mathbf{q})^\top \phi(\mathbf{k})$ instead of a sequence-axis projection.
+
+**Independent reproduction.** The HuggingFace `nielsr/linformer` implementation reproduces
+the GLUE numbers within 0.3 points using $k = 128$; the FAIR `fairseq` reference shipped a
+Linformer variant in 2021 that reproduces the speedup curves on TPU v3 hardware.
+
+**No public production-LLM adoption.** I do not know of any frontier decoder-only LLM that
+ships Linformer. The technique persists in long-document encoder applications and as a baseline
+in efficient-attention research, but not in production generative models.
 
 <Summary>
 **Linformer in one breath.** Learn N→k projection matrices for K and V; attention becomes O(N·k)

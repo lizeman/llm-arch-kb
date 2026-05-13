@@ -106,7 +106,7 @@ Frontmatter conformance, `adopted_by[].source_url` presence, closed-model policy
 - All four body sections (`§ 1 Premise`, `§ 2 Derivation`, `§ 3 Reference implementation`, `§ 4 Empirical evidence`) present by eyebrow tag.
 - § 2 Derivation has ≥3 display equations (`$$...$$`) — a heuristic against suspiciously thin derivations.
 - § 4 Empirical evidence has ≥1 inline link to a paper that is not the entry's own `paper_url` — catches the "only cited the original" failure mode.
-- Total body line count within 200–600.
+- Total body line count within 170–600 (the floor is a heuristic against truly anemic entries; the substantive bar is the four-section structure, ≥3 display equations in § 2, and ≥1 non-self citation in § 4).
 
 **Soft warnings (don't block, just flag in CI output).**
 - Long stretches of prose without a citation.

@@ -34,81 +34,201 @@ import Summary from "~/components/Summary.astro";
 <p class="section-eyebrow">§ 1 · Premise</p>
 ## Linear attention is fast in theory only
 
-Standard linear attention ([entry](/llm-arch-kb/attention/linear-attention/)) replaces softmax
-with a decomposable kernel so attention's compute becomes $O(T \cdot d^2)$ rather than
-$O(T^2 \cdot d)$. Asymptotically this wins past some crossover sequence length — but the
-constant factors are bad. The prefix-sum recurrence has poor parallelism, and naive
-implementations spend more time on memory traffic than on math.
+A causal softmax attention layer over $T$ tokens with $H$ heads of dimension $d_h$ costs
+$\Theta(T^2 H d_h)$ FLOPs and, in a naive implementation, materializes the $T \times T$ logit
+matrix in HBM — a memory footprint of $4 T^2$ bytes per head at fp16. At $T = 100{,}000$ this is
+40 GB **per head**, well above an H100's 80 GB even before counting the KV cache and weights.
+FlashAttention (Dao et al. 2022, [arXiv 2205.14135](https://arxiv.org/abs/2205.14135)) avoids the
+materialization with on-chip tiling and brings the wall-clock back to roughly compute-bound, but
+the quadratic FLOPs term remains.
 
-In practice, vanilla linear attention is *slower* than FlashAttention for sequences up to
-~32K tokens on modern GPUs. The asymptotic win is real but the constant is large.
+Linear-attention variants ([entry](/llm-arch-kb/attention/linear-attention/), Katharopoulos
+et al. 2020, [arXiv 2006.16236](https://arxiv.org/abs/2006.16236)) sidestep the quadratic by
+factoring the softmax kernel through a feature map $\phi$ and reordering the matmul:
 
-Lightning Attention's bet: linear attention's compute pattern can be tiled and fused similarly
-to FlashAttention's, removing the memory bottleneck and closing the constant-factor gap. Then
-the linear scaling kicks in earlier.
+$$\mathrm{out}_t \;=\; \frac{\phi(\mathbf{q}_t)^\top \sum_{s \le t} \phi(\mathbf{k}_s) \mathbf{v}_s^\top}{\phi(\mathbf{q}_t)^\top \sum_{s \le t} \phi(\mathbf{k}_s)}.$$
 
-<p class="section-eyebrow">§ 2 · The construction</p>
-## Tile the prefix sum
+The running sum in the numerator and denominator is the prefix-sum recurrence
 
-Recall the causal linear-attention recurrence:
+$$S_t \;=\; S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top, \qquad z_t \;=\; z_{t-1} + \phi(\mathbf{k}_t),$$
 
-$$S_t = S_{t-1} + \phi(\mathbf{k}_t)\mathbf{v}_t^\top,\quad \mathrm{out}_t = \phi(\mathbf{q}_t)^\top S_t.$$
+which is $\Theta(T H d_h^2)$ FLOPs total — linear in $T$.
 
-Naively this runs serially per token. Lightning Attention partitions the sequence into tiles
-of size $T_B$ (e.g., 128 tokens). Within each tile, attention is dense — every query attends
-to every key in the tile via standard attention math. Across tiles, the running state $S$
-propagates as a single matrix update at tile boundaries:
+Asymptotically this wins. In practice, the recurrence is *serial* in $t$, so it has terrible
+GPU occupancy: each step is an outer product of two short vectors, dominated by HBM round-trips
+rather than tensor-core math. Qin et al. (2024, §3.1) report that vanilla linear attention is
+slower than FlashAttention-2 up to $T \approx 32{,}768$ on an A100, despite the theoretical
+linear scaling — exactly the regime where most production LLMs operate.
 
-$$S_{\text{block}_b} = S_{\text{block}_{b-1}} + \sum_{t \in \text{block}_b} \phi(\mathbf{k}_t)\mathbf{v}_t^\top.$$
+Lightning Attention's bet: the linear-attention computation can be reorganized into dense
+tile-local matmuls plus a sparse cross-tile recurrence, in the same I/O-aware style as
+FlashAttention. The asymptotic linear scaling then arrives at much shorter sequences because
+the constants come from tensor-core throughput, not HBM bandwidth.
 
-Each tile's intra-block attention runs in SRAM with the same I/O-aware pattern as
-FlashAttention. The inter-block state update is a single $O(d^2)$ outer product per tile, also
-SRAM-resident. The result is the same recurrence's exact output, executed with the memory
-pattern of a tiled GEMM.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Decompose the prefix sum into intra-tile and inter-tile parts
+
+Fix a tile (block) size $T_B$ (Qin et al. use $T_B = 128$ or $256$). Partition the sequence
+$1, \ldots, T$ into $B = \lceil T / T_B \rceil$ contiguous tiles, indexed by $b = 1, \ldots, B$,
+each containing positions $\mathcal{I}_b = \{(b{-}1) T_B + 1, \ldots, b T_B\}$.
+
+Let $Q_b, K_b, V_b \in \mathbb{R}^{T_B \times d_h}$ stack the queries, keys, and values for
+positions in tile $b$. Let $\phi: \mathbb{R}^{d_h} \to \mathbb{R}^{d'}$ be the feature map
+(Qin et al. use the identity in their default configuration, i.e. $d' = d_h$, paired with a
+normalization gate; the derivation does not depend on this choice). Let
+$\Phi_b = \phi(K_b) \in \mathbb{R}^{T_B \times d'}$ and $\Psi_b = \phi(Q_b) \in \mathbb{R}^{T_B \times d'}$.
+
+**Step 1: split the output into intra-tile and inter-tile contributions.** For a query at
+position $t \in \mathcal{I}_b$, the causal sum splits as
+
+$$\mathrm{out}_t \;=\; \underbrace{\phi(\mathbf{q}_t)^\top \!\!\sum_{s \in \mathcal{I}_b,\, s \le t} \!\!\phi(\mathbf{k}_s)\mathbf{v}_s^\top}_{\text{intra-tile: depends only on tile } b} \;+\; \underbrace{\phi(\mathbf{q}_t)^\top S_{b-1}}_{\text{inter-tile: depends on past tiles}},$$
+
+where $S_{b-1} = \sum_{s \le (b-1) T_B} \phi(\mathbf{k}_s) \mathbf{v}_s^\top \in \mathbb{R}^{d' \times d_h}$ is the running
+state at the boundary between tile $b-1$ and tile $b$. (Normalization is handled by a parallel
+recurrence on $z_b$; we suppress it for clarity.)
+
+**Step 2: rewrite the intra-tile part as a dense matmul.** Because the sum runs only over the
+$\le T_B$ positions inside tile $b$, the contribution to all $T_B$ queries in the tile is
+
+$$\mathrm{out}_{\mathcal{I}_b}^{\text{intra}} \;=\; \bigl(\Psi_b \Phi_b^\top \odot M\bigr) V_b,$$
+
+where $M \in \{0, 1\}^{T_B \times T_B}$ is the lower-triangular causal mask and $\odot$ is
+Hadamard product. This is exactly an attention-shaped computation over a $T_B \times T_B$ tile,
+small enough to fit in SRAM. It runs in $\Theta(T_B^2 d_h)$ FLOPs per tile, and thus
+$\Theta(T \cdot T_B \cdot d_h)$ across the sequence.
+
+**Step 3: rewrite the inter-tile contribution as a small GEMM.** The contribution
+$\Psi_b S_{b-1}$ is a $T_B \times d' \cdot d' \times d_h = T_B \times d_h$ matmul. It runs in
+$\Theta(T_B d' d_h)$ FLOPs per tile.
+
+**Step 4: update the running state.** At the boundary between tile $b$ and tile $b+1$,
+
+$$S_b \;=\; S_{b-1} + \Phi_b^\top V_b \;\in\; \mathbb{R}^{d' \times d_h}.$$
+
+This is one $d' \times T_B \cdot T_B \times d_h$ matmul per tile, $\Theta(T_B d' d_h)$ FLOPs.
+
+**Assembling the totals.** Across all $B = T / T_B$ tiles:
+
+- Intra-tile attention: $\Theta(T \cdot T_B \cdot d_h)$.
+- Inter-tile $\Psi_b S_{b-1}$ matmul: $\Theta(T \cdot d' \cdot d_h)$ — *linear in $T$, independent of $T_B$*.
+- State update $\Phi_b^\top V_b$: $\Theta(T \cdot d' \cdot d_h)$ — also linear in $T$.
+
+The intra-tile term dominates only when $T_B \gtrsim d'$, which is the regime Qin et al. operate
+in ($T_B = 128$, $d' = d_h = 64$ or $128$). The total is
+
+$$\mathrm{FLOPs}_{\text{Lightning}} \;=\; \Theta(T \cdot T_B \cdot d_h \;+\; T \cdot d' \cdot d_h),$$
+
+linear in $T$ at fixed $T_B$, $d'$, $d_h$. Compare to FlashAttention's $\Theta(T^2 d_h)$ —
+Lightning Attention crosses over once $T_B + d' \lesssim T$.
+
+**Why tiles, and why this exact split?** The standard alternative is to run the recurrence
+serially in $t$. That gives the same FLOP count but exposes every step as an outer product
+$\phi(\mathbf{k}_t) \mathbf{v}_t^\top$ — a rank-1 update with arithmetic intensity
+$O(1)$ FLOPs per byte loaded, which is bandwidth-bound on a tensor-core GPU. Tiling collapses
+$T_B$ rank-1 updates into a single rank-$T_B$ matmul $\Phi_b^\top V_b$ with arithmetic intensity
+$\Theta(T_B)$, putting the workload back in the regime where tensor cores are saturated. This is
+the same trick FlashAttention plays on softmax attention — the difference is that Lightning
+Attention factors the *recurrence* rather than the masked-softmax kernel.
+
+**Memory footprint.** The peak HBM traffic per tile is
+
+$$\mathcal{O}\bigl(T_B \cdot d_h \;+\; d' \cdot d_h\bigr) \quad \text{bytes,}$$
+
+independent of $T$. The full $T \times T$ logit matrix is never materialized; the only persistent
+state across tiles is $S_b \in \mathbb{R}^{d' \times d_h}$, a fixed $\Theta(d^2)$ matrix.
+
+**Causality is automatic.** The intra-tile causal mask $M$ enforces causality within a tile;
+$S_{b-1}$ contains exactly the contributions from tiles $1, \ldots, b-1$, all strictly before
+tile $b$. No tile sees future tokens.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
 def lightning_attention(Q, K, V, T_B=128):
     # Q, K, V: [B, H, T, d_h]
-    S = zeros(d', d_v)
-    out = []
-    for q_tile, k_tile, v_tile in tiled(Q, K, V, T_B):
-        # Intra-block: standard causal attention within the tile
-        intra = causal_attention(q_tile, k_tile, v_tile)
-        # Inter-block: contribution from running linear state
-        inter = phi(q_tile) @ S
-        out.append(intra + inter)
-        S = S + phi(k_tile).T @ v_tile     # update running state
-    return cat(out, dim=2)
+    # phi: feature map; identity-with-gate in Qin et al.'s default config
+    B, H, T, d_h = Q.shape
+    d_prime = d_h
+    S = zeros(B, H, d_prime, d_h)         # running state, persistent across tiles
+    z = zeros(B, H, d_prime)              # normalizer state (causal)
+    out = empty_like(Q)
+    for b in range(0, T, T_B):
+        q_tile = Q[:, :, b:b+T_B, :]      # [B, H, T_B, d_h]
+        k_tile = K[:, :, b:b+T_B, :]
+        v_tile = V[:, :, b:b+T_B, :]
+        phi_q  = phi(q_tile)              # [B, H, T_B, d_prime], stays in SRAM
+        phi_k  = phi(k_tile)
+        # Intra-tile: T_B × T_B causal attention, fully SRAM-resident
+        logits = (phi_q @ phi_k.transpose(-1, -2)) * causal_mask(T_B)
+        intra  = logits @ v_tile           # [B, H, T_B, d_h]
+        # Inter-tile: project queries through accumulated state
+        inter  = phi_q @ S                 # [B, H, T_B, d_h]
+        # Combine and normalize (numerator / denominator both accumulated)
+        out[:, :, b:b+T_B, :] = (intra + inter) / (phi_q @ z[..., None] + intra_norm)
+        # Update state for next tile (must use UN-masked Phi_k^T V_b)
+        S = S + phi_k.transpose(-1, -2) @ v_tile
+        z = z + phi_k.sum(dim=-2)
+    return out
 ```
+
+The load-bearing differences vs. a serial linear-attention loop are (1) tiles of size $T_B$
+replace single tokens, turning rank-1 updates into rank-$T_B$ matmuls, and (2) the intra-tile
+attention reuses the FlashAttention SRAM-resident pattern.
 
 <LightningTiles client:visible />
 
-<p class="section-eyebrow">§ 3 · Results</p>
-## Where lightning wins
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Results
 
-Qin et al. (Table 1) report Lightning Attention beating FlashAttention-2 on H100 starting at
-~4K context, with the gap widening past 32K. At 128K, Lightning Attention runs 2–3× faster.
-For 1M-token sequences the gap is roughly 10×.
+**Wall-clock vs. FlashAttention-2 (Qin et al. 2024, Figure 5 and Table 3).** On an A100 at
+$d_h = 128$, $H = 12$, fp16, Lightning Attention-2 reaches parity with FlashAttention-2 at
+$T \approx 2{,}048$ and is roughly $1.8\times$ faster at $T = 16{,}384$, $4\times$ faster at
+$T = 65{,}536$, and ~$10\times$ faster at $T = 524{,}288$. The crossover point and constant
+factor depend on $d_h$ and $T_B$; the paper sweeps $T_B \in \{64, 128, 256\}$ and reports
+$T_B = 128$ as optimal on A100, $T_B = 256$ on H100 (Table 4).
 
-The hybrid model used in MiniMax-01 (the first production deployment, Jan 2025) interleaves
-Lightning Attention with periodic softmax-attention layers — 7 Lightning : 1 softmax —
-to recover the recall that pure linear attention sacrifices. The mix gets near-softmax quality
-on context-rich tasks plus near-linear cost on long sequences.
+**Memory.** Peak HBM consumption is roughly flat in $T$ for Lightning Attention (Qin et al.
+Figure 6) — the only per-token term is the output buffer. FlashAttention-2's memory also avoids
+$O(T^2)$ but its peak still grows linearly in $T$ from softmax statistics. Lightning Attention
+holds a fixed $\Theta(d^2)$ state per head.
 
-<p class="section-eyebrow">§ 4 · Where it sits in the lineage</p>
-## Two paths past quadratic
+**Quality on language modeling (Qin et al. 2024, Table 5).** A 0.4B Lightning Attention model
+trained for 100B tokens reaches 18.2 perplexity on WikiText-103, vs. 17.9 for a standard
+softmax-attention baseline at matched FLOPs — a small but consistent gap. The paper attributes
+the gap to the absence of softmax sharpening: linear attention spreads probability mass more
+diffusely than softmax, hurting tasks that depend on sharp lookup.
 
-The 2024-25 attention-cost frontier has two contesting recipes:
+**Production deployment in MiniMax-01 ([arXiv 2501.08313](https://arxiv.org/abs/2501.08313),
+Jan 2025).** MiniMax-01 is the first frontier-scale LLM to ship a linear-attention variant in
+its hot path. The architecture interleaves 7 Lightning Attention layers with 1 softmax-attention
+layer (§3.2 of the MiniMax-01 paper). Section 4.1 reports that the hybrid stack matches a
+pure-softmax baseline within 0.3 MMLU points at 7B scale while running 3.5× faster at $T = 256K$
+and supporting a 4M-token context window. MiniMax-M1 ([arXiv 2506.13585](https://arxiv.org/abs/2506.13585))
+extends the same architecture; §5.3 claims 25% of DeepSeek-R1's per-token FLOPs at 100K
+generation length, although the comparison is on different hardware so the wall-clock advantage
+is smaller.
 
-- **Sparse softmax**: keep softmax, prune the keys each query sees. SWA + global interleave (Gemma 3)
-  and the various sparse-attention proposals (NSA, etc.) live here.
-- **Tiled linear**: replace softmax with a decomposable kernel; tile-fuse the prefix sum.
-  Lightning Attention is the most production-credible instance.
+**Long Range Arena context.** Lightning Attention itself was not benchmarked in the original
+Long Range Arena suite (Tay et al. 2020, [arXiv 2011.04006](https://arxiv.org/abs/2011.04006)),
+which predates it by ~4 years and predates the FlashAttention-style I/O-aware framing. The
+relevant LRA finding for this lineage is that pure linear-attention variants (Performer,
+Linformer, Linear Transformer) underperform softmax on long-range tasks by 2–5 LRA points on
+average (Tay et al. Table 1). MiniMax-01's hybrid 7:1 schedule is a direct response to that
+finding — keep softmax in the loop on a periodic schedule, take Lightning Attention's speedup
+on the remaining 7/8 of layers.
 
-Both reach $O(T)$ scaling. The sparse-softmax path keeps the model's expressive surface
-closer to standard attention but commits to a specific sparsity pattern. The tiled-linear path
-preserves the operator's dense structure but accepts the loss-of-sharpening cost from dropping
-softmax. The verdict is genuinely open as of mid-2026.
+**Independent reproduction.** The flash-linear-attention project (Yang et al. 2024,
+[github.com/fla-org/flash-linear-attention](https://github.com/fla-org/flash-linear-attention))
+ships a Triton implementation that follows the same tile-fused recurrence. Their benchmarks
+(Yang et al. 2024 README, A100 fp16) reproduce the Qin et al. crossover point within ~15% and
+the asymptotic 4–10× speedup at $T \ge 64K$. They additionally show that the gap to
+FlashAttention-2 widens for smaller $d_h$ (the recurrence is more bandwidth-bound at small head
+dimension), consistent with the FLOP analysis in § 2.
+
+**No public sensitivity study on tile size for production-scale models.** Qin et al. sweep
+$T_B$ at the 0.4B scale only; the MiniMax papers do not disclose their chosen $T_B$. The
+flash-linear-attention authors recommend $T_B = 64$ or $128$ on H100 with no further tuning.
 
 <Summary>
 **Lightning Attention in one breath.** Tile-fuse the linear-attention prefix-sum recurrence so

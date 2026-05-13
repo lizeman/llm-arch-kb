@@ -22,54 +22,171 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The third variant
+## The third sibling
 
-Shazeer's 2020 GLU-variants paper evaluated multiple choices for the gate activation:
+Shazeer (2020, "GLU Variants Improve Transformer", arXiv 2002.05202) evaluated several choices
+of gate activation in the bilinear FFN scaffold. Three survived as named variants in
+subsequent literature: GeGLU (GELU gate), SwiGLU (Swish gate), and ReGLU (ReLU gate). GeGLU and
+SwiGLU split the production frontier — Gemma uses GeGLU; Llama, DeepSeek, OLMo, Qwen, and the
+rest of the open-weights stack use SwiGLU. ReGLU is the third option that was within
+seed-noise distance on the only public ablation we have, and that no major release ships.
 
-- **GLU**: original Dauphin et al. 2017, $\phi = \sigma$ (sigmoid).
-- **ReGLU**: $\phi = \mathrm{ReLU}$.
-- **GeGLU**: $\phi = \mathrm{GELU}$.
-- **SwiGLU**: $\phi = \mathrm{Swish}$.
+The question worth answering for ReGLU specifically: *why didn't anyone pick it?* The
+[SwiGLU entry](/llm-arch-kb/ffn-moe/swiglu/) covers the shared GLU-variant derivation and the
+production-adoption pattern; the [GeGLU entry](/llm-arch-kb/ffn-moe/geglu/) covers the
+GeGLU-vs-SwiGLU comparison. This entry focuses on the ReLU-gate-specific behaviour, the
+dead-unit failure mode that the smooth gates avoid, and what Shazeer's Table 1 actually says
+about ReGLU's standing.
 
-All four follow the bilinear form $\mathrm{FFN}(\mathbf{x}) = W_2((W\mathbf{x}) \odot \phi(V\mathbf{x}))$.
-The differences are in the gate's smoothness, saturation behavior, and ability to produce hard
-zeros.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## What changes when the gate becomes ReLU
 
-ReGLU is the variant whose gate produces *hard zeros*: any negative gating input drops the
-corresponding output to zero, just like a vanilla ReLU. SwiGLU and GeGLU are smooth (no zeros);
-GLU's sigmoid never produces zero but approaches it asymptotically.
+Shazeer (2020, §1) writes the GLU-variant family in a single template parameterized by the
+gate activation $\phi$:
 
-<p class="section-eyebrow">§ 2 · The activation</p>
-## ReLU gate, bilinear form
+$$\mathrm{FFN}_{\phi\mathrm{GLU}}(\mathbf{x}) \;=\; W_2\bigl[\bigl(\mathbf{x} W\bigr) \odot \phi\bigl(\mathbf{x} V\bigr)\bigr],$$
 
-$$\mathrm{ReGLU}(\mathbf{x}) = \bigl(W\mathbf{x}\bigr) \odot \mathrm{ReLU}\bigl(V\mathbf{x}\bigr).$$
+with $W, V \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}$,
+$W_2 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}$, and elementwise $\odot$. The
+linear path $\mathbf{x} W$ carries the signal; the gate path $\phi(\mathbf{x} V)$ modulates
+it elementwise; $W_2$ projects back. ReGLU instantiates this with $\phi = \mathrm{ReLU}$:
+
+$$\mathrm{ReGLU}(\mathbf{x}) \;=\; \bigl(\mathbf{x} W\bigr) \odot \mathrm{ReLU}\bigl(\mathbf{x} V\bigr).$$
+
+The structural difference from SwiGLU and GeGLU is that ReLU produces *hard zeros*:
+
+$$\mathrm{ReLU}(z) \;=\; z \cdot \mathbf{1}\{z > 0\} \;=\; \max(0, z).$$
+
+Wherever the gate input $\mathbf{x} V$ is non-positive, the gated output is *exactly* zero —
+not small-and-asymptotic-to-zero like Swish or GELU, but identically zero with identically
+zero gradient.
+
+**The hard-zero region as a parameter-shedding mechanism.** Roughly half of the gate's
+hidden units have negative pre-activation at initialization. ReGLU therefore zeroes out about
+half of the $d_{\text{ff}}$ FFN hidden units per token at random points across the sequence.
+This is a sparsity-inducing property in its own right — for a fixed input distribution, the
+expected number of active FFN units per token is $\sim d_{\text{ff}}/2$ instead of the full
+$d_{\text{ff}}$. The
+[ReLU FFN entry](/llm-arch-kb/ffn-moe/ffn-relu/) discusses the same sparsity argument for the
+ungated case; it carries over to the gate.
+
+**The dead-gate failure mode.** A consequence of the hard zero is that a gate unit whose
+pre-activation $\mathbf{x} V[\cdot, i]$ is non-positive for every training example will be
+*permanently dead*. Its output is zero, its gradient is zero, and gradient descent cannot
+revive it. This is the same failure mode as plain ReLU FFN (Glorot, Bordes & Bengio 2011,
+AISTATS, §3); the gated form does not avoid it. Swish and GELU pass small but nonzero
+gradients through their negative regions, allowing dead units to recover during training:
+
+$$\frac{\partial \mathrm{Swish}}{\partial z}\bigg|_{z \ll 0} \;\approx\; \sigma(z) \;>\; 0, \qquad \frac{\partial \mathrm{GELU}}{\partial z}\bigg|_{z \ll 0} \;\approx\; \Phi(z) \;>\; 0.$$
+
+In ReGLU the corresponding gradient is
+
+$$\frac{\partial \mathrm{ReLU}}{\partial z}\bigg|_{z \le 0} \;=\; 0,$$
+
+so the gate unit's recovery probability conditioned on being dead is exactly zero.
+
+**Connection to mixture-of-experts.** The hard-zero gate is structurally analogous to a
+top-K = 1 expert selection without renormalization: each FFN hidden unit is "selected" or
+"rejected" by the sign of its gate input. From this angle ReGLU is a *very* coarse, per-unit
+expert routing. The
+[Mixtral MoE entry](/llm-arch-kb/ffn-moe/mixtral-moe/) and
+[DeepSeekMoE entry](/llm-arch-kb/ffn-moe/deepseek-moe/) make the same argument at expert
+granularity instead of unit granularity. The parallel breaks down at the loss: MoE adds an
+auxiliary balance loss to keep experts from collapsing onto a few favourites; ReGLU has no
+such safeguard, which is part of why the dead-gate problem persists.
+
+**What does not change.** The three-projection scaffold, the parameter count, the
+$d_{\text{ff}} = (8/3) \cdot d_{\text{model}}$ matched-parameter convention (Shazeer 2020,
+§2), the FFN's position-wise structure, and the bias-removal convention all carry over
+unchanged from the SwiGLU and GeGLU entries. Per-layer cost:
+
+$$\#\,\text{params} \;=\; 3 \cdot d \cdot d_{\text{ff}} \;=\; 8\,d^2, \qquad \#\,\text{FLOPs per token} \;\approx\; 16\,d^2,$$
+
+at $d_{\text{ff}} = (8/3) d$. The wall-clock advantage of ReLU over Swish/GELU is small
+because the activation is not the bottleneck — matmuls dominate. ReLU is faster in the
+microbenchmark by $\sim 2$–$5\times$ on the activation itself, but the activation is
+$\le 1\%$ of FFN wall-clock time, so the total speedup is below 1% in any practical layout.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## ReLU on the gate
 
 ```python
 def reglu_ffn(x, W, V, W2):
-    return F.relu(x @ V.T) * (x @ W.T) @ W2.T
+    # x:  [B, T, d_model]
+    # W:  [d_model, d_ff]   linear path
+    # V:  [d_model, d_ff]   gate path (ReLU)
+    # W2: [d_ff,   d_model]
+    gate = (x @ V).clamp_min(0.0)   # ReLU; hard zeros for negative inputs
+    return (gate * (x @ W)) @ W2
 ```
 
-Same three-projection structure as SwiGLU/GeGLU; the [8/3 · d_model](/llm-arch-kb/ffn-moe/swiglu/)
-parameter-matching rule applies identically.
+Identical structure to SwiGLU and GeGLU; only the activation on the gate changes. Production
+implementations are rare — Hugging Face Transformers does not ship a `ReGluMLP` reference; the
+T5x codebase exposes `gated_linear` with a configurable activation that defaults to GELU and
+can be set to ReLU, which is the closest thing to a canonical implementation.
 
-<p class="section-eyebrow">§ 3 · Why nobody ships it</p>
-## The hard-zero drawback
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Where ReGLU lands in Shazeer's table
 
-In Shazeer (2020) Table 1, ReGLU lands between SwiGLU and GLU on perplexity — slightly worse
-than SwiGLU and GeGLU but better than vanilla GLU. The reason it's rarely chosen in production
-despite this near-parity is the hard-zero gating: a dead gating unit zeroes out half of the
-FFN's effective capacity for that input, with no smooth gradient path back to "alive".
+Shazeer (2020, "GLU Variants Improve Transformer", arXiv
+[2002.05202](https://arxiv.org/abs/2002.05202), Table 1) is the only systematic head-to-head
+ablation of the GLU-variant family at matched parameters and FLOPs. The setup: pretrain
+T5-base (Raffel et al. 2020) on C4 with each variant in turn; report log-perplexity on the
+held-out dev split:
 
-Swish and GELU avoid this failure mode by producing small-but-nonzero outputs for negative
-inputs. The cost is slightly more compute per gate; the benefit is no dead units.
+- $\mathrm{FFN}_{\mathrm{ReLU}}$: 1.997
+- $\mathrm{FFN}_{\mathrm{GELU}}$: 1.983
+- $\mathrm{FFN}_{\mathrm{Swish}}$: 1.994
+- $\mathrm{FFN}_{\mathrm{GLU}}$ (sigmoid gate): 1.974
+- $\mathrm{FFN}_{\mathrm{Bilinear}}$ (no gate activation): 1.960
+- $\mathrm{FFN}_{\mathrm{ReGLU}}$: 1.953
+- $\mathrm{FFN}_{\mathrm{GEGLU}}$: 1.942
+- $\mathrm{FFN}_{\mathrm{SwiGLU}}$: 1.944
 
-Across the major open-weights families (Llama, OLMo, DeepSeek, Gemma), all four producers
-chose SwiGLU or GeGLU. ReGLU shows up occasionally in research baselines but not in production
-frontier decoders.
+ReGLU is third in the table after GeGLU and SwiGLU, by margins of 0.011 and 0.009 in
+log-perplexity respectively — small but consistent. ReGLU beats plain GLU (sigmoid gate) by
+0.021 and beats the bilinear-no-activation variant by 0.007. Tables 2–4 (GLUE, SuperGLUE,
+SQuAD finetuning) tell the same story: ReGLU is in the same noise band as the top GLU variants
+but consistently a touch below GeGLU and SwiGLU on most metrics.
+
+The gap between ReGLU and SwiGLU is roughly the same as the gap between vanilla GELU FFN and
+vanilla ReLU FFN — about 0.01 log-perplexity, an order of magnitude smaller than the
+ReLU-to-SwiGLU gap of $\sim 0.05$. So ReGLU is "nearly as good" as the production GLU variants
+on the only direct ablation we have. The puzzle is why no one ships it.
+
+**The dead-gate hypothesis.** The most commonly cited reason ReGLU does not appear in
+production is the dead-gate failure mode discussed in §2: a gate unit whose pre-activation is
+permanently negative receives zero gradient and stays dead forever, reducing the effective
+$d_{\text{ff}}$. Glorot, Bordes & Bengio (2011, AISTATS, §3) documented this for plain ReLU
+networks; the gated form does not avoid it. The empirical importance of this failure mode in
+the *gated* setting is not directly measured in Shazeer (2020) — the paper reports final
+quality numbers, not per-unit activity statistics — so the hypothesis is plausible but not
+proven from the published evidence.
+
+**No public downstream ablation.** No frontier model release in this knowledge base reports
+running a head-to-head ReGLU bake-off against SwiGLU at scale. The Llama, Gemma, DeepSeek, and
+OLMo technical reports each pick a gated variant (SwiGLU or GeGLU) and do not include ReGLU as
+a baseline. Hugging Face's GLU survey (Geiping & Schmidt 2023, "Cramming: Training a Language
+Model on a Single GPU in One Day", arXiv
+[2212.14034](https://arxiv.org/abs/2212.14034), Table 2) revisits a subset of Shazeer's
+ablations at 1-day training scale and reports the same ReGLU-near-the-leaders pattern at much
+smaller scale.
+
+**Niche revival from the ReLU-sparsity line.** Mirzadeh et al. (2023, "ReLU Strikes Back:
+Exploiting Activation Sparsity in Large Language Models", arXiv
+[2310.04564](https://arxiv.org/abs/2310.04564)) revisit the *plain* ReLU FFN (not ReGLU) for
+inference-time activation sparsity, reporting that the hard-zero gate enables skipping dead
+units at decode time for $\sim 2\times$ speedup. The same argument *could* apply to ReGLU's
+gate but the paper does not explicitly evaluate it, and no follow-up release this entry can
+cite has shipped a ReGLU-with-sparsity-skipping production model. ReGLU therefore remains in
+the position it has held since 2020: a viable but unadopted member of the GLU-variant family,
+within seed noise of the production winners on the one public ablation, and absent from every
+major release.
 
 <Summary>
-**ReGLU in one breath.** GLU-variant with ReLU as the gate. Functional but lossy: hard zeros
-from negative gating inputs kill some FFN capacity. Shazeer 2020 reports it within noise of
-SwiGLU and GeGLU on perplexity, but the dead-unit failure mode makes it the rarely-shipped
-third option.
+**ReGLU in one breath.** GLU-variant with ReLU as the gate. Third in Shazeer's Table 1
+(1.953 log-perplexity, vs 1.942 for GeGLU and 1.944 for SwiGLU) — within $\sim 0.01$ of the
+production winners. The hard-zero gate creates a dead-unit failure mode that the smooth Swish
+and GELU gates avoid; this is the most-cited reason no frontier release ships ReGLU despite
+the near-parity numbers.
 </Summary>

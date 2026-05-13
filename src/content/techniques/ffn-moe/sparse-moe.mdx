@@ -36,90 +36,238 @@ facets:
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Conditional computation, before it worked
+## Capacity vs. compute, before conditional computation worked
 
-Conditional computation — running different parts of a network on different inputs to scale
-capacity without scaling cost — had been studied since Bengio's mid-2010s "blocks of experts"
-work, but had not produced clear wins at scale. Two obstacles dominated:
+A dense feedforward layer's compute cost grows linearly with its parameter count. For a model
+with $P$ parameters processing $T$ tokens, the FFN consumes $\Theta(P \cdot T)$ FLOPs — and at
+2017's hardware budgets, that ceiling capped credible language models around a billion
+parameters. Bengio and collaborators had argued since 2013 that *conditional computation* —
+activating only a subset of parameters per example — was the principled way past the ceiling,
+but no published recipe had delivered a clear win at language-modeling scale.
 
-1. **Gate collapse.** Without intervention, the gating network learns to route most tokens to
-   a small subset of experts; the remaining experts never get gradient signal and stay
-   random-initialized.
-2. **Discrete routing breaks gradients.** Choosing the top-K experts is a discrete operation;
-   the gate network's gradient signal vanishes if you naively take an argmax.
+The obstacles were three:
 
-Shazeer et al. 2017's paper engineered both away and demonstrated 137B-parameter models on
-language modeling — outrageously large for 2017 — that beat dense baselines on per-token
-quality and converged in fewer wall-clock steps.
+1. **Gate collapse.** A learned router that picks $K$ of $E$ experts has no built-in pressure
+   toward uniform utilization. Without intervention the gate routes most tokens to a small
+   subset of experts; the unused experts never receive gradient and stay at initialization.
+   The model effectively becomes a dense network the size of the popular subset.
+2. **Discrete routing breaks gradient flow.** Top-$K$ selection is an arg-sort followed by a
+   threshold — not differentiable. A naive softmax-then-argmax gives the gate no learning
+   signal for which expert *should* have been chosen for tokens that were misrouted.
+3. **Shrinking batches per expert.** If a batch of $B$ tokens dispatches uniformly to $E$
+   experts at top-$K$ routing, each expert sees $K B / E$ tokens. For $E = 1024, K = 4, B =
+   1024$, that is 4 tokens per expert — far below the batch sizes hardware throughput needs.
 
-<p class="section-eyebrow">§ 2 · Noisy top-K gating</p>
-## The gradient trick
+Shazeer et al. engineered all three away simultaneously and demonstrated MoE language models
+with up to 137B parameters trained between LSTM layers on a 100-billion-word corpus — roughly
+two orders of magnitude past the prior dense ceiling, at compute cost matched to ~5B dense
+baselines. Every subsequent sparse-MoE design — GShard, Switch, Mixtral, DeepSeekMoE, Kimi K2
+— inherits the noisy-top-$K$ + auxiliary-balance-loss recipe introduced here.
 
-The gate computes logits, adds tunable per-expert Gaussian noise, and selects the top-K:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Noisy top-K gating with load balance
 
-$$g(\mathbf{x}) = \mathrm{softmax}\bigl(\mathrm{KeepTopK}(\mathbf{x} W_g + \boldsymbol{\epsilon},\ K)\bigr),$$
+Let $\mathbf{x} \in \mathbb{R}^{d}$ be the token's hidden state arriving at the MoE layer, and
+let $E$ be the number of experts. Each expert $i$ is itself a small feedforward network
+$f_i : \mathbb{R}^d \to \mathbb{R}^d$. A learned gate produces logits over experts, sparsifies
+to the top $K$, and the layer output is the gate-weighted sum of the selected experts'
+outputs:
 
-where $\boldsymbol{\epsilon}_i \sim \mathcal{N}(0,\ 1) \cdot \mathrm{softplus}(\mathbf{x} W_{\text{noise}})_i$
-and $\mathrm{KeepTopK}$ sets the non-top-K entries to $-\infty$ before softmax. The noise
-serves two purposes:
+$$\mathrm{MoE}(\mathbf{x}) \;=\; \sum_{i=1}^{E} G(\mathbf{x})_i \, f_i(\mathbf{x}),$$
 
-- It makes the routing decision a stochastic distribution, so gradients propagate via the
-  reparameterization-like trick of including the noise.
-- It encourages exploration: a single deterministic ranking would lock in early biases.
+where $G(\mathbf{x}) \in \mathbb{R}^E$ is sparse — only the top-$K$ entries are nonzero, so the
+sum reduces to a $K$-term combination at runtime.
 
-The output combines the selected experts' outputs weighted by their post-softmax gate values.
+**Step 1 — noisy logits.** A plain softmax of $\mathbf{x} W_g$ would route every token to the
+expert whose initial random projection happens to be largest, freezing a near-arbitrary
+assignment. The paper's Eq. 4 adds per-expert *learned* Gaussian noise on top of the linear
+gate score, so the routing decision is genuinely stochastic during training:
+
+$$H(\mathbf{x})_i \;=\; (\mathbf{x} W_g)_i \;+\; \xi_i \cdot \mathrm{softplus}\bigl((\mathbf{x} W_{\text{noise}})_i\bigr), \qquad \xi_i \sim \mathcal{N}(0, 1).$$
+
+Here $W_g, W_{\text{noise}} \in \mathbb{R}^{d \times E}$ are both learned, and the softplus
+guarantees the noise standard deviation is non-negative. The noise serves a dual purpose:
+during training it lets gradient flow through near-tied routing decisions (the gate can learn
+that expert $i$ would have been better than $j$ when their pre-noise scores are close), and it
+encourages exploration so collapsed experts can recover.
+
+**Step 2 — KeepTopK + softmax.** The paper's Eq. 5 sparsifies by setting non-top-$K$ logits to
+$-\infty$, then softmaxing over the survivors:
+
+$$\mathrm{KeepTopK}(\mathbf{v}, K)_i \;=\;
+\begin{cases} v_i & \text{if } v_i \in \mathrm{top}\text{-}K(\mathbf{v}), \\ -\infty & \text{otherwise,} \end{cases}$$
+
+$$G(\mathbf{x}) \;=\; \mathrm{softmax}\bigl(\mathrm{KeepTopK}(H(\mathbf{x}), K)\bigr).$$
+
+The paper notes this introduces "theoretically scary discontinuities" — an infinitesimal
+change in $\mathbf{x}$ can change which expert is in the top-$K$ — but reports no empirical
+instability, and the trick has held up in every subsequent MoE recipe.
+
+**Step 3 — preventing gate collapse.** Even with noisy routing, nothing in the cross-entropy
+loss directly rewards using all experts. The paper adds two auxiliary loss terms to the
+training objective. Define the per-expert *importance* over a batch $X$ of tokens as the
+column sum of gate values:
+
+$$\mathrm{Importance}(X)_i \;=\; \sum_{\mathbf{x} \in X} G(\mathbf{x})_i.$$
+
+A balanced router would have $\mathrm{Importance}(X)_i \approx |X| \cdot K / E$ for all $i$.
+The *importance loss* penalizes deviation via the squared coefficient of variation of this
+vector across experts (Eq. 7):
+
+$$\mathcal{L}_{\mathrm{importance}}(X) \;=\; w_{\mathrm{importance}} \cdot \mathrm{CV}\bigl(\mathrm{Importance}(X)\bigr)^2,$$
+
+with $\mathrm{CV}(\mathbf{v}) = \sigma(\mathbf{v}) / \mu(\mathbf{v})$ the standard
+mean-normalized scatter. Importance alone is not sufficient: an expert can have high
+importance from a few highly-confident routings while still seeing few distinct tokens, which
+is bad for throughput. The paper's *load loss* (Appendix A, Eq. 11) addresses this by
+estimating, for each expert, the probability $P(\mathbf{x}, i)$ that token $\mathbf{x}$ is
+routed to it under the noisy gate — a smooth, differentiable approximation of the discrete
+dispatch count — and penalizing its CV:
+
+$$\mathrm{Load}(X)_i \;=\; \sum_{\mathbf{x} \in X} P(\mathbf{x}, i), \qquad \mathcal{L}_{\mathrm{load}}(X) \;=\; w_{\mathrm{load}} \cdot \mathrm{CV}\bigl(\mathrm{Load}(X)\bigr)^2.$$
+
+Both auxiliary weights are small ($w_{\mathrm{importance}} = w_{\mathrm{load}} = 10^{-2}$), so
+they nudge the gate toward balance without overwhelming the language-modeling signal.
+
+**Why two losses and not one?** Importance and load measure different failure modes.
+Importance equalizes the *gate values*; load equalizes the (smoothed) *dispatch counts*. A
+gate that sends every token to expert 1 with probability 0.99 and to expert 2 with probability
+0.01 produces importance ratio 99:1 but load ratio also 99:1, so both losses fire. But a gate
+that sends *some* tokens to expert 1 with high confidence and routes the rest uniformly across
+experts 2–8 produces importance ratio that depends on the confident-share, while load is
+near-uniform. The two losses target distinct regimes of collapse, and the paper finds both are
+needed in practice. Switch Transformer would later fold these into a single product term
+$f_i \cdot P_i$ (see § 4 below); both formulations descend from the CV-of-utilization idea
+introduced here.
+
+**Step 4 — the shrinking-batch problem.** With top-$K$ routing across $E$ experts on a global
+batch of $B$ tokens, each expert sees on average $K B / E$ tokens. For $E = 1024$ and $K = 4$,
+even a $B = 8192$ batch leaves 32 tokens per expert per step — too small for matmul
+throughput. The paper combines two mitigations (Section 3.1):
+
+1. **Mixed data/model parallelism.** With $d$ data-parallel replicas, all replicas dispatch to
+   a shared expert pool, so each expert's effective batch is $d \cdot K B / E$ — a factor of
+   $d$ recovered.
+2. **Apply MoE convolutionally across timesteps.** In an LSTM language model the MoE layer is
+   reused at every position; pooling tokens across the unrolled sequence multiplies each
+   expert's batch by the sequence length $T$.
+
+Both tricks pre-date — and survive into — the transformer era. The "every device hosts every
+expert and all-to-all dispatch handles routing traffic" pattern in modern MoE implementations
+(GShard, Megablocks, Tutel) is the direct descendant of the convolutional + replicated
+dispatch in this paper.
+
+**Parameter count and compute.** For an MoE layer with $E$ experts, each a 2-layer FFN of
+hidden dim $d_{\mathrm{ff}}$ on top of model dim $d$, the parameter count is
+$E \cdot 2 d \cdot d_{\mathrm{ff}}$ plus the gate's $d \cdot E$ (negligible). Per-token FLOPs
+are $K \cdot 2 d \cdot d_{\mathrm{ff}} + d \cdot E$, dominated by the expert compute when
+$E \ll 2 d_{\mathrm{ff}}$, so increasing $E$ at fixed $K$ scales parameters without scaling
+per-token compute. This is the foundational lever: capacity decouples from FLOPs through the
+top-$K$ sparsity.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Noisy top-K gate
 
 ```python
 def noisy_topk_gate(x, W_g, W_noise, K):
-    clean_logits = x @ W_g.T
-    noise_stddev = F.softplus(x @ W_noise.T)
-    eps = torch.randn_like(clean_logits) * noise_stddev
-    logits = clean_logits + eps
-    topk_logits, topk_idx = logits.topk(K, dim=-1)
-    # KeepTopK then softmax over those K
+    # x: [B, T, d_model]   W_g, W_noise: [d_model, E]
+    clean_logits = x @ W_g                              # [B, T, E]
+    noise_std = F.softplus(x @ W_noise)                 # [B, T, E]
+    eps = torch.randn_like(clean_logits) * noise_std    # per-expert Gaussian
+    logits = clean_logits + eps                         # H(x) — Eq. 4
+
+    topk_logits, topk_idx = logits.topk(K, dim=-1)      # [B, T, K]
     masked = torch.full_like(logits, float("-inf"))
     masked.scatter_(-1, topk_idx, topk_logits)
-    return masked.softmax(-1), topk_idx
+    gate = masked.softmax(-1)                           # G(x) — Eq. 5
+    return gate, topk_idx
+
+def moe_layer(x, experts, gate, topk_idx):
+    # experts: list of E feedforward modules; gate: [B, T, E] sparse
+    out = torch.zeros_like(x)
+    for i, f in enumerate(experts):
+        mask = (topk_idx == i).any(dim=-1)              # tokens routed to expert i
+        if mask.any():
+            out[mask] += gate[mask, i:i+1] * f(x[mask])
+    return out
 ```
 
-<p class="section-eyebrow">§ 3 · Two loss terms</p>
-## Importance and load balance
+The toy implementation above iterates over experts to make the dispatch explicit; production
+versions (Megablocks, Tutel) replace the Python loop with a single all-to-all communication
+and a grouped GEMM. The auxiliary losses are added to the training objective separately and
+contribute no FLOPs at inference.
 
-To prevent gate collapse, Shazeer et al. add two auxiliary terms to the training loss:
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What 137B parameters bought in 2017
 
-- **Importance loss.** For each expert $i$, the *importance* $I_i$ is the sum of gate values
-  $g_i(\mathbf{x})$ across the batch. The importance loss penalizes the coefficient of variation
-  of $I_i$ across experts — pushing all experts toward equal aggregate utilization.
-- **Load loss.** Estimates the *probability* that expert $i$ receives nonzero traffic from each
-  token, again summing across the batch. Penalizes the coefficient of variation, ensuring the
-  expert dispatch is balanced not just in importance-weight but in token count.
+The paper's main language-modeling result (Table 1) is on the 1-Billion-Words benchmark with
+LSTM backbones. A dense 151M-parameter LSTM baseline reached test perplexity 30.6. The
+*low-budget* MoE — 4.3B parameters at top-4 routing through 512 experts — reached 34.1, with
+compute matched to the baseline. The *high-budget* configuration (4.4B parameters, more
+training compute) reached 28.0, beating the best published 1-Billion-Words result at the time
+while using "only 6% of the computation" of the prior leader.
 
-Both are scaled by a tiny coefficient ($\sim 10^{-2}$). Together they prevent the failure mode
-where the gate routes 90% of traffic to two of eight experts.
+On the 100-Billion-Words Google News corpus (Table 8), the paper scales the MoE to 32,768
+experts in a hierarchical gating arrangement (137B parameters total, 8B activated per step at
+top-4 routing). The 4-expert baseline reached test perplexity 47.0; the 65,536-expert MoE
+reached 28.9 — "39% lower than the computationally matched baseline" per the paper. This is
+the first published language-modeling result clearly demonstrating that capacity scaling via
+sparse experts outperforms equal-FLOPs dense scaling at outrageous parameter counts.
 
-Switch Transformer's load-balance loss (eq. 4 in Switch) is a simplified single-term version of
-the two losses here; the conceptual structure is the same.
+For machine translation (Tables 2–3), the paper reports WMT'14 En→Fr at 40.56 BLEU for an
+MoE with 2048 experts vs. 39.22 for the GNMT-baseline; En→De reaches 26.03 vs. 24.91. These
+were modest absolute gains, but the result that mattered at the time was the *compute
+efficiency* — the MoE matched or beat dense baselines while training in 6% of the FLOPs.
 
-<p class="section-eyebrow">§ 4 · Results and legacy</p>
-## What stuck
+**Hierarchical MoE (Appendix B).** At expert counts above ~$10^3$, the gate's $d \times E$
+matrix and the $E$-way softmax dominate the per-token cost. The paper introduces a two-level
+hierarchy (Eq. 12): a primary gate routes the token to one of $E_{\text{primary}}$ groups, and
+a secondary gate within that group picks $K$ experts from $E_{\text{secondary}}$ choices. Total
+expert count is $E_{\text{primary}} \cdot E_{\text{secondary}}$; gate FLOPs scale with the sum
+rather than the product. The 32,768-expert configuration uses this trick. Modern decoder-only
+MoEs have settled on flat routing with $E \le 384$ (Kimi K2's count, see
+[Kimi K2 MoE](/llm-arch-kb/ffn-moe/kimi-k2-moe/)) where flat routing is cheap enough — but the
+hierarchical-routing idea resurfaced briefly in mid-2024 explorations of $E > 1000$ in some
+preprints.
 
-Shazeer et al.'s 137B-parameter LSTM-based MoE on the 1-Billion-Words benchmark achieved
-significant perplexity reductions over dense baselines at ~4× less compute per token (Table 8).
-The architecture predates the transformer era — the experts in the original were LSTM
-sub-networks — but the gating recipe transferred unchanged.
+**Expert specialization.** The paper reports (Section 6) that the 2048-expert WMT model
+develops legible specialization: some experts strongly prefer punctuation tokens, some prefer
+function words, some prefer named-entity-like rare nouns. The paper's qualitative inspection
+of routing decisions is the first documented evidence that MoE experts learn distinguishable
+input distributions rather than partitioning tokens randomly under the load-balance pressure.
+Later work — particularly Mixtral 8x7B's analysis ([Jiang et al. 2024](https://arxiv.org/abs/2401.04088),
+§5) — would find that the specialization is less topic-aligned than originally hoped for
+transformer-era MoEs, but the basic phenomenon (non-uniform routing distributions per token
+type) is robust.
 
-Everything in this knowledge base's MoE category descends from this paper:
+**What followed.** Every entry downstream of this paper in this knowledge base inherits a
+recognizable subset of the recipe:
 
-- **GShard** (2020) scaled it to transformer encoders at 600B parameters via expert sharding.
-- **Switch Transformer** (2021) simplified to top-1 routing and replaced the two losses with one.
-- **Mixtral** (2024) re-adopted top-2 routing at production-quality scale.
-- **DeepSeekMoE** (2024) added fine-grained expert segmentation plus shared experts on top.
+- [GShard](/llm-arch-kb/ffn-moe/gshard/) (Lepikhin et al. 2020, [arXiv:2006.16668](https://arxiv.org/abs/2006.16668))
+  ports the noisy-top-$K$ + balance-loss idea to transformer encoders and adds expert capacity
+  + dispatch/combine tensors for sharded training.
+- [Switch Transformer](/llm-arch-kb/ffn-moe/switch-transformer/) (Fedus et al. 2021,
+  [arXiv:2101.03961](https://arxiv.org/abs/2101.03961)) simplifies to top-1 routing and
+  collapses the two auxiliary losses into a single product term $f_i \cdot P_i$ (their Eq. 4),
+  trading some expressivity for a much smaller dispatch graph.
+- [Mixtral 8x7B](/llm-arch-kb/ffn-moe/mixtral-moe/) (Jiang et al. 2024) returns to top-2
+  routing — the configuration GShard originally used — at production decoder quality.
+- [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) (Dai et al. 2024,
+  [arXiv:2401.06066](https://arxiv.org/abs/2401.06066)) adds fine-grained expert segmentation
+  + always-on shared experts; the routing math is identical to this paper's at the gate level.
 
-The lineage is intact and the foundational tricks — noisy top-K gating, auxiliary balance
-losses, sparse forward + sparse backward — all originate here.
+**No public sensitivity study at modern scale.** The 2017 paper's $K$, $E$, and noise-magnitude
+sweeps are on LSTM models with a 2017-era training stack. We are not aware of a public
+controlled study reproducing those sweeps at decoder-transformer scale with modern optimizers
+— the production MoEs cited above each pick a single $(E, K)$ configuration and report no
+sweep. The hyperparameter choices ($K \in \{1, 2, 6, 8\}$, $E \in \{8, 128, 256, 384\}$ across
+those papers) are best understood as empirical convergence across many shops rather than as
+the result of a published ablation grid.
 
 <Summary>
-**Sparse MoE in one breath.** Top-K gating with Gaussian noise plus two auxiliary balance
-losses. The 2017 demonstration that sparsely-gated networks can train end-to-end at outrageous
-scale; the root paper for every MoE entry in this knowledge base.
+**Sparse MoE in one breath.** Noisy top-$K$ gating ($G(\mathbf{x}) = \mathrm{softmax}(\mathrm{KeepTopK}(H(\mathbf{x}), K))$
+with $H$ carrying learned Gaussian noise) plus two auxiliary CV-of-utilization losses keep a
+mixture of $E$ feedforward experts trainable end-to-end. The 2017 paper that demonstrated 137B
+parameters at 8B activated trains better than dense baselines at matched FLOPs; the root paper
+for every MoE entry in this knowledge base.
 </Summary>

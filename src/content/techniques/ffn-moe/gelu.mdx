@@ -22,76 +22,194 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Past ReLU
+## What ReLU pays for its simplicity
 
-ReLU — $\max(0, x)$ — is biologically inspired and computationally trivial, but has two well-known
-costs: the hard zero kills gradients on negative inputs (the "dying ReLU" problem), and the kink
-at zero is non-differentiable, slightly complicating optimization-theory analysis.
+The 2017 transformer's FFN was a two-layer MLP with a ReLU between (Vaswani et al. 2017, §3.3).
+ReLU — $\max(0, x)$ — is a single comparison and a select, which is why the entire 2012–2016
+generation of vision and language models used it almost without exception. The cost of that
+simplicity becomes visible at three places.
 
-Smooth alternatives (sigmoid, tanh) restore differentiability but saturate at the extremes,
-killing gradients in a different way. Leaky variants of ReLU help with the dying-neuron problem
-but introduce arbitrary slope hyperparameters.
+**The kink at zero.** ReLU is not differentiable at $x = 0$; the subgradient takes any value
+in $[0, 1]$. Optimization-theory analyses have to add an "almost-everywhere differentiable"
+caveat. In practice the kink is harmless, but it forces every smoothness-based regularization
+argument to add an extra step.
 
-GELU's approach: take a probabilistically motivated smooth function that approximates ReLU's
-behavior on the bulk of the input distribution.
+**The dead-neuron regime.** Once a hidden unit's pre-activation $z$ has been driven negative for
+every training example, its output is permanently zero and its gradient is zero. The unit
+contributes nothing to the forward pass and cannot recover via gradient descent. Glorot, Bordes
+& Bengio (2011, "Deep Sparse Rectifier Neural Networks", §3) documented this failure mode at the
+same time they introduced ReLU; subsequent work used leaky variants (Maas et al. 2013; He et al.
+2015, PReLU; Clevert et al. 2015, ELU) to soften the negative half.
 
-<p class="section-eyebrow">§ 2 · The activation</p>
-## x weighted by P(X ≤ x)
+**The stochastic-regularization disconnect.** Dropout (Srivastava et al. 2014) multiplies each
+activation by an independent Bernoulli mask; zoneout, shake-shake, and other regularizers extend
+the idea. ReLU's deterministic gate has no obvious continuous-relaxation analogue. Adaptive
+dropout (Ba & Frey 2013) explicitly conditions the Bernoulli rate on the activation, suggesting
+a deterministic activation that already encodes "how likely is this unit to fire" would line
+up better with the dropout family.
 
-For input $x$, GELU multiplies $x$ by the probability that a standard normal random variable
-is less than or equal to $x$:
+Hendrycks & Gimpel (2016) build the activation directly from this last observation. The
+contribution: replace the deterministic gate $\mathbf{1}\{x > 0\}$ with the expected value of a
+stochastic gate driven by $x$ itself, where the gating variable is the cumulative probability of
+a standard normal — and discover empirically that the resulting smooth activation outperforms
+ReLU at the same compute cost.
 
-$$\mathrm{GELU}(x) = x \cdot \Phi(x) = x \cdot \tfrac{1}{2}\bigl[1 + \mathrm{erf}(x / \sqrt{2})\bigr].$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From a stochastic gate to a deterministic activation
 
-The intuition: rather than thresholding at zero like ReLU, weight $x$ by where it sits in the
-standard-normal distribution. Inputs much larger than zero get weight ~1 (similar to ReLU);
-inputs much smaller than zero get weight ~0 (similar to ReLU's negative half); inputs near
-zero get an intermediate weight that smooths the kink.
+Start from the regularization perspective: imagine multiplying each pre-activation $x$ by a
+Bernoulli mask $m \in \{0, 1\}$ whose rate depends on $x$. The natural choice for
+"large $x$ likely to be kept, negative $x$ likely to be dropped" is
 
-A widely-used approximation that avoids computing the error function:
+$$\Pr\bigl[m = 1 \mid x\bigr] = \Phi(x) = \tfrac{1}{2}\bigl[1 + \mathrm{erf}\bigl(x / \sqrt{2}\bigr)\bigr],$$
 
-$$\mathrm{GELU}(x) \approx x \cdot \sigma(1.702 \cdot x).$$
+where $\Phi$ is the standard normal cumulative distribution function. Hendrycks & Gimpel (2016,
+§2) call this the "GELU" gating: the unit fires with probability equal to the chance that a
+standard normal draw lands below the current input. The connection to adaptive dropout (Ba &
+Frey 2013) is explicit — both condition the keep-rate on the activation.
+
+The deterministic activation is the expectation of the stochastic mask applied to $x$:
+
+$$\mathrm{GELU}(x) \;=\; \mathbb{E}_{m \sim \mathrm{Bern}(\Phi(x))}\bigl[m \cdot x\bigr] \;=\; x \cdot \Phi(x).$$
+
+This is the canonical GELU. The single-symbol $\Phi$ hides the structure; expanding the CDF
+gives
+
+$$\mathrm{GELU}(x) \;=\; x \cdot \tfrac{1}{2}\bigl[1 + \mathrm{erf}\bigl(x / \sqrt{2}\bigr)\bigr] \;=\; \tfrac{x}{2} + \tfrac{x}{2}\,\mathrm{erf}\bigl(x / \sqrt{2}\bigr).$$
+
+**Reading the shape.** $\mathrm{erf}(z)$ is the integral of a Gaussian density; it is
+odd-symmetric, saturates at $\pm 1$, and is roughly linear in a band around zero. Two regimes
+follow.
+
+- *Large positive $x$:* $\Phi(x) \to 1$, so $\mathrm{GELU}(x) \to x$. The activation matches
+  identity for inputs well above zero, just like ReLU.
+- *Large negative $x$:* $\Phi(x) \to 0$, so $\mathrm{GELU}(x) \to 0$. The activation matches
+  zero for inputs well below zero, just like ReLU.
+- *Near zero:* $\Phi(x) \approx \tfrac{1}{2} + \tfrac{x}{\sqrt{2\pi}}$ to first order, so
+  $\mathrm{GELU}(x) \approx \tfrac{x}{2} + \tfrac{x^2}{\sqrt{2\pi}}$ — the kink is replaced by a
+  smooth quadratic transition.
+
+**The non-monotonic dip.** A subtle but important feature is that GELU is *not* monotonic. For
+$x$ slightly negative, the activation dips below zero, reaching a minimum near $x \approx
+-0.75$ with value $\approx -0.17$, before climbing back to zero. The dip exists because
+$x \cdot \Phi(x)$ is the product of a negative number with a small-but-positive probability;
+for very negative $x$, $\Phi(x)$ kills the term faster than $|x|$ grows. Swish (Ramachandran,
+Zoph & Le 2017, arXiv 1710.05941) shares this non-monotonic feature; Mish (Misra 2019) is a
+close relative. ReLU, ELU, and Leaky ReLU are all monotonic and therefore lack this
+property. Whether the dip helps or hurts is unsettled; what is empirically clear is that
+smooth + slight non-monotonicity outperforms hard-zero ReLU at transformer scale.
+
+**The derivative.** A closed-form gradient is required for autograd. Differentiating $x \cdot
+\Phi(x)$ via the product rule:
+
+$$\frac{\mathrm{d}\,\mathrm{GELU}(x)}{\mathrm{d}x} \;=\; \Phi(x) + x \cdot \phi(x),$$
+
+where $\phi(x) = \tfrac{1}{\sqrt{2\pi}} e^{-x^2/2}$ is the standard normal density. The
+derivative is bounded, smooth, and nowhere zero — no dead-unit failure mode. Compared to
+ReLU's $\mathbf{1}\{x > 0\}$ this passes a small gradient even for negative inputs (the
+$x \cdot \phi(x)$ term), which is the mechanism by which GELU rescues units that ReLU would
+leave dead.
+
+**Approximations.** Computing $\mathrm{erf}$ in hardware is expensive (typically a degree-7
+rational polynomial). Hendrycks & Gimpel (2016) propose two cheaper forms.
+
+The tanh approximation:
+
+$$\mathrm{GELU}_{\tanh}(x) \;\approx\; \tfrac{x}{2}\bigl[1 + \tanh\bigl(\sqrt{2/\pi}\,(x + 0.044715\,x^3)\bigr)\bigr].$$
+
+The sigmoid approximation, which exposes the family connection to Swish:
+
+$$\mathrm{GELU}_{\sigma}(x) \;\approx\; x \cdot \sigma(1.702\,x).$$
+
+The 1.702 constant is the temperature that minimizes max absolute error against the exact
+$\Phi(x)$ form over $x \in [-10, 10]$ (Hendrycks & Gimpel 2016, §2). Swish at $\beta = 1$ is
+$x \cdot \sigma(x)$; setting $\beta = 1.702$ recovers approximate GELU, which means GELU and
+Swish are essentially the same family parameterized by inner-sigmoid temperature.
+
+**Computational complexity.** A single GELU evaluation needs one erf (or one tanh, or one
+sigmoid) plus a few adds and a multiply: $O(1)$ per scalar input, same complexity class as
+ReLU but with a higher constant. The exact erf form is ~5× slower than ReLU on most hardware;
+the sigmoid approximation closes that gap to roughly 2×. In transformer training the FFN GELU
+is rarely the bottleneck — matmuls dominate — so the wall-clock penalty is typically below 1%.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Three forms
 
 ```python
+# Exact: erf-based form. PyTorch's F.gelu(x, approximate="none") matches this.
 def gelu_exact(x):
+    # x: [..., d]
     return x * 0.5 * (1.0 + (x / 2**0.5).erf())
 
-def gelu_approx(x):
+# tanh approximation: GPT-2 / BERT-base shipped with this for hardware-friendly tanh.
+def gelu_tanh(x):
+    inner = (2 / math.pi)**0.5 * (x + 0.044715 * x.pow(3))
+    return 0.5 * x * (1.0 + inner.tanh())
+
+# Sigmoid approximation: cheapest; equivalent to Swish with beta=1.702.
+def gelu_sigmoid(x):
     return x * (1.702 * x).sigmoid()
 ```
 
-PyTorch's `F.gelu` defaults to the exact form. Most production inference uses the approximation
-for ~5% wall-clock speedup with negligible quality difference.
+Each variant is roughly equivalent in final-model quality; the tanh form is the OpenAI default
+(used in BERT, GPT-2, GPT-3 reference implementations), the exact form is PyTorch's default
+since 1.4. Mixed-precision training is well-behaved for all three: GELU has bounded gradient,
+no $\log$, no division by activation-dependent quantities.
 
-<p class="section-eyebrow">§ 3 · Results</p>
-## Empirical evidence
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the original paper showed, and what came after
 
-Hendrycks & Gimpel (2016, Table 1) report GELU edging out ReLU and ELU on MNIST + CIFAR-10 +
-CIFAR-100 by 0.5–1.5 quality points. The headline application came later: BERT (Devlin et al.
-2018), GPT-2 (Radford et al. 2019), and GPT-3 (Brown et al. 2020) all used GELU as their FFN
-activation, citing the same smoothness motivation.
+Hendrycks & Gimpel (2016, §3) benchmarked GELU against ReLU and ELU on five small tasks: MNIST
+classification, MNIST autoencoder reconstruction, Tweet part-of-speech tagging, TIMIT
+phone-frame recognition, and CIFAR-10/100 image classification. GELU edged out ReLU in 4 of 5
+tasks and ELU in 3 of 5 — by margins of 0.5–1.5 percentage points (Figure 2, Figure 3). The
+margin was small and the tasks were small; the result by itself would not have moved the
+field. What did was the next two years of empirical work on transformers.
 
-For dense transformer FFNs through ~2022, GELU was the standard choice. The 2024-26 frontier
-has largely moved on:
+**BERT** (Devlin et al. 2019, "BERT: Pre-training of Deep Bidirectional Transformers for
+Language Understanding", arXiv [1810.04805](https://arxiv.org/abs/1810.04805), §3.1) used GELU
+in every FFN, citing Hendrycks & Gimpel directly. **GPT-2** (Radford et al. 2019, "Language
+Models are Unsupervised Multitask Learners", §2) and **GPT-3** (Brown et al. 2020, "Language
+Models are Few-Shot Learners", arXiv [2005.14165](https://arxiv.org/abs/2005.14165), §2.1) did
+the same. **RoBERTa** (Liu et al. 2019, arXiv [1907.11692](https://arxiv.org/abs/1907.11692))
+kept GELU when redoing BERT pretraining. By 2020 GELU was the default for the dense
+transformer FFN — not because any single ablation made an overwhelming case, but because every
+serious replication kept it.
 
-- **SwiGLU** ([entry](/llm-arch-kb/ffn-moe/swiglu/)): replaces plain GELU with a gated bilinear
-  form using Swish. Adopted by Llama / DeepSeek / OLMo.
-- **GeGLU** ([entry](/llm-arch-kb/ffn-moe/geglu/)): replaces plain GELU with a gated bilinear
-  form *using GELU as the gate*. Adopted by Gemma.
+The first systematic FFN-activation ablation in the transformer era was Shazeer (2020,
+"GLU Variants Improve Transformer", arXiv
+[2002.05202](https://arxiv.org/abs/2002.05202), Table 1). Pretraining T5-base on the C4
+corpus, the paper measured log-perplexity at matched FLOPs:
 
-Note the asymmetry: SwiGLU drops GELU entirely; GeGLU keeps GELU inside the gate. Both are
-empirically better than plain GELU FFN at matched parameter count.
+- $\mathrm{FFN}_{\mathrm{ReLU}}$: 1.997
+- $\mathrm{FFN}_{\mathrm{GELU}}$: 1.983
+- $\mathrm{FFN}_{\mathrm{Swish}}$: 1.994
 
-<p class="section-eyebrow">§ 4 · Where it survives</p>
-## Still in the gate
+GELU beat ReLU by ~0.014 in log-perplexity at matched compute — about 1.4% relative — and
+edged Swish in the ungated FFN. The story does not end there: the gated variants in the same
+table (GEGLU 1.942, SwiGLU 1.944) cut another 0.04 in log-perplexity. The
+[GeGLU entry](/llm-arch-kb/ffn-moe/geglu/) and [SwiGLU entry](/llm-arch-kb/ffn-moe/swiglu/)
+cover those numbers; what matters here is that *standalone* GELU is the strongest non-gated
+activation Shazeer measured.
 
-GELU is no longer the dominant FFN activation but it is *inside* every GeGLU layer in Gemma 1 / 2 / 3.
-It also remains the default in encoder-only models that haven't migrated to gated FFNs
-(BERT-base, RoBERTa, DeBERTa). The activation itself is not deprecated; the *ungated* FFN
-that used to wrap it is.
+**Where GELU still lives.** The 2024–2026 frontier moved to gated FFNs, but GELU is the gate
+in GeGLU (Gemma 1/2/3 all use GeGLU; see the [GeGLU entry](/llm-arch-kb/ffn-moe/geglu/)). The
+activation itself is not deprecated; what is deprecated is the *ungated* FFN that used to wrap
+it. Encoder-only models that have not migrated to gated FFNs — BERT-base, RoBERTa, DeBERTa —
+still ship plain GELU. Decoder-only LLMs from 2017–2022 (GPT-2, GPT-3, GPT-Neo, GPT-J, OPT,
+BLOOM) all use plain GELU; the migration to SwiGLU starts with Llama 1 in early 2023.
+
+**Public sensitivity studies.** Beyond Shazeer (2020), there is no large-scale public ablation
+of approximation form (exact vs tanh vs sigmoid) on transformer perplexity. Folklore holds the
+three are within 0.1% perplexity; this matches the small-task numbers in Hendrycks & Gimpel
+(2016, §3) but has not been re-measured at modern scale. Closed labs (OpenAI, Anthropic,
+Google) do not publish FFN-activation ablations at frontier scale, so what GPT-4 or Claude or
+Gemini use internally is not a question this entry can answer.
 
 <Summary>
-**GELU in one breath.** Multiply x by the standard normal CDF Φ(x). Smooth, probabilistically-
-motivated; replaced ReLU as the default transformer FFN activation in 2018-22. Now sits inside
-GeGLU rather than as a standalone FFN nonlinearity; SwiGLU dropped GELU altogether.
+**GELU in one breath.** $\mathrm{GELU}(x) = x \cdot \Phi(x)$ — multiply the input by the
+probability that a standard normal lands below it. Smooth, non-monotonic, bounded gradient,
+no dead-neuron failure mode. The default transformer FFN activation through ~2022 (BERT,
+GPT-2, GPT-3). Now sits inside GeGLU rather than as a standalone FFN nonlinearity; SwiGLU
+dropped GELU altogether but inherits the same family.
 </Summary>

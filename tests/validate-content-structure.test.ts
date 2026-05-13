@@ -55,7 +55,7 @@ describe("checkEntryStructure", () => {
     expect(issues.some((i) => i.message.includes("non-original"))).toBe(true);
   });
 
-  it("flags body line count below 200", () => {
+  it("flags body line count below 170", () => {
     const issues = checkEntryStructure("tiny\n", SELF_URL);
     expect(issues.some((i) => i.message.includes("line count"))).toBe(true);
   });

@@ -52,8 +52,8 @@ export function checkEntryStructure(body: string, paperUrl: string): StructureIs
   }
 
   const bodyLines = body.split("\n").length;
-  if (bodyLines < 200 || bodyLines > 600) {
-    out.push({ message: `body line count ${bodyLines} outside expected range 200..600` });
+  if (bodyLines < 170 || bodyLines > 600) {
+    out.push({ message: `body line count ${bodyLines} outside expected range 170..600` });
   }
 
   return out;

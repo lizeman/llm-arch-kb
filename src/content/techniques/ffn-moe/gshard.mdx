@@ -25,88 +25,253 @@ import GshardCapacity from "~/components/figures/GshardCapacity";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Before MoE worked at scale
+## From LSTM-era sparse MoE to transformer-era infrastructure
 
-The Shazeer et al. 2017 Sparse MoE paper had shown sparse top-K routing could work in language
-modeling but only at modest scales (~5B parameters). Pushing past that required answering two
-hard infrastructure questions:
+The Shazeer et al. 2017 paper (see [Sparsely-Gated MoE](/llm-arch-kb/ffn-moe/sparse-moe/)) had
+established that noisy top-$K$ gating plus auxiliary balance losses lets a mixture of
+feedforward experts train end-to-end. But that paper's experiments were LSTM-based and topped
+out at 137B parameters. Three years later, two things were different. First, the transformer
+had displaced the LSTM as the dominant encoder for large-scale machine translation. Second,
+the per-token compute budget for state-of-the-art translation had grown enough that a sparse
+MoE in the FFN block was now the right intervention point — not in some auxiliary branch as
+in 2017.
 
-1. **How do you shard hundreds of experts across hardware?** Each expert lives on a different
-   device; tokens have to be routed across the network and the resulting traffic patterns are
-   irregular.
-2. **How do you handle the dispatch step itself?** Different tokens go to different experts;
-   the per-expert input is variable-length; standard tensor ops require fixed shapes.
+What was *not* in place yet was the systems plumbing. The 2017 paper had used 64–128 GPUs and
+treated expert dispatch as an in-graph for-loop. Scaling to thousands of experts across
+thousands of accelerator cores raised two specific problems the 2017 work had not had to
+solve:
 
-GShard answered both, and demonstrated 600B-parameter sparse-MoE models on multilingual
-translation. The infrastructure plumbing it introduced — `dispatch_tensor`, `combine_tensor`,
-`expert_capacity` — is still the conceptual basis for every distributed-MoE training framework.
+1. **How do you shard hundreds of experts across hardware?** Each expert is a 2-layer FFN
+   that has to fit somewhere; for $E = 2048$ experts of FFN hidden dim 8192 on top of model
+   dim 2048, each expert is $\sim 67$ M parameters, and 2048 of them is $\sim 137$ B
+   parameters in the MoE layer alone. No single accelerator holds this; experts live on
+   different devices and tokens must be routed across the network.
+2. **How do you handle the dispatch step in a static-shape tensor program?** Different
+   tokens go to different experts; per-expert input is variable-length; standard XLA / TF
+   compiler ops require fixed shapes. The naive solution (pad each expert to the maximum
+   possible batch) wastes most of the compute.
 
-<p class="section-eyebrow">§ 2 · Top-2 routing</p>
-## The recipe Switch later simplified
+GShard's contribution was answering both with primitives that survive into every modern MoE
+training framework. The auto-sharding bit (the `gshard.shard` annotations on the tensor
+program) was the original framing in the paper title, but the load-bearing innovation for the
+MoE entry in this knowledge base is the **expert-capacity dispatch** formalism — fixed-shape
+`dispatch_tensor` and `combine_tensor` primitives that let a static-shape compiler emit
+efficient code for sparse routing. Every subsequent transformer-era MoE entry (Switch,
+Mixtral, DeepSeekMoE) inherits this dispatch model.
 
-For each token, GShard computes gate logits $g(\mathbf{x}) \in \mathbb{R}^E$ over $E$ experts.
-The top-2 indices are selected, normalized, and the token is routed to both:
+The paper's flagship empirical demonstration was a 600B-parameter multilingual translation
+model trained on 2048 TPU-v3 cores in 4 days that achieved +13.5 BLEU averaged across 100
+language pairs vs. an ensemble of bilingual dense baselines. That headline is what made
+"sparse MoE at frontier scale" credible to the broader research community.
 
-$$\mathrm{out}(\mathbf{x}) = g_{i^*}(\mathbf{x}) \cdot f_{i^*}(\mathbf{x}) + g_{j^*}(\mathbf{x}) \cdot f_{j^*}(\mathbf{x}),$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Top-2 routing with expert capacity and second-place randomization
 
-where $(i^*, j^*) = \mathrm{top2}(g)$. The two outputs are weighted by their normalized gate
-values and summed.
+GShard's MoE layer (Section 2 of the paper) inherits the gate-then-dispatch structure from
+[Sparsely-Gated MoE](/llm-arch-kb/ffn-moe/sparse-moe/) — see that entry for the
+foundational top-$K$ derivation, including the auxiliary balance loss as a CV-of-utilization
+penalty. This section focuses on what is genuinely new in GShard: the choice of $K = 2$ with a
+specific second-place handling rule, the **expert capacity** formalism, and the dispatch /
+combine tensor primitives.
 
-The reasoning behind top-2 rather than top-1 (which Switch later argued was enough): the second
-expert gives the gating network gradient signal even when the first choice is dominant. If the
-gate routes everything to expert A and never to B, B's weights cannot adjust to be the right
-"runner up" for future tokens. Top-2 keeps the gate's choices reversible.
+**Top-2 with a randomized second pick.** For each token $\mathbf{x}_s$ (the paper indexes
+tokens by $s$ inside a group $g$), the gate produces logits $\mathbf{p}_s \in \mathbb{R}^E$,
+softmaxed. Let $g_1(\mathbf{x}_s) = \max_i p_{s,i}$ be the top expert's gate value and
+$g_2(\mathbf{x}_s)$ the runner-up's. Top-2 routing sends the token to *both* experts, weighted
+by their gate values:
+
+$$\mathrm{out}(\mathbf{x}_s) \;=\; g_1(\mathbf{x}_s) \cdot f_{i_1^*}(\mathbf{x}_s) \;+\; g_2(\mathbf{x}_s) \cdot f_{i_2^*}(\mathbf{x}_s),$$
+
+with $(i_1^*, i_2^*) = \mathrm{top2}(\mathbf{p}_s)$. The reasoning behind $K = 2$ rather than
+$K = 1$ — which Switch Transformer would later argue was sufficient — is that the second
+expert gives gradient signal for the runner-up branch. If the gate locks onto expert A and
+never dispatches to B, B's weights cannot adjust to be the right runner-up for future tokens.
+
+GShard adds a subtle further trick: the *second* expert is dispatched stochastically. After
+computing $g_2$, the second-place dispatch fires only with probability $g_2$ (i.e., the gate
+value itself acts as the routing probability). When the second expert is *not* dispatched,
+the output reduces to $g_1 \cdot f_{i_1^*}(\mathbf{x}_s)$ — top-1. This conserves expert
+capacity (see below) by skipping low-confidence secondary assignments.
+
+**Expert capacity.** A natural problem with top-$K$ routing in a static-shape compiler: if
+expert $i$ happens to be the top choice for too many tokens in a batch, the input buffer for
+expert $i$ has to be allocated to its worst-case occupancy. GShard formalizes this by
+allocating each expert a **capacity** $C$ that bounds the tokens it processes per batch. For a
+local group of $S$ tokens (with $G$ groups in the batch, $S = N/G$, so $N$ is the global batch
+size) and $E$ experts, the capacity is
+
+$$C \;=\; \frac{2 N}{G \cdot E} \;=\; \frac{2 S}{E},$$
+
+with the leading 2 reflecting top-2 routing — each token wants to dispatch to up to 2 experts,
+so the expected fan-out is 2. In practice GShard uses a capacity factor $\alpha \in [1, 2]$ so
+$C = \alpha \cdot 2 S / E$; the paper reports $\alpha = 1.0$ as adequate at the 2048-expert
+scale.
+
+When an expert is at capacity, additional tokens are **dropped**: the gate output for the
+overflowing dispatch is replaced by zero, and the corresponding additive contribution to the
+MoE output vanishes. The residual connection around the MoE block still carries the token's
+information unchanged, so a dropped token is not "lost" — it just skips the MoE layer for this
+forward pass. The paper argues this is a clean way to handle imbalance without dynamic-shape
+allocation: capacity is statically known at compile time, the dispatch buffer is fixed-shape,
+and the compiler can emit efficient grouped matmuls.
+
+**Dispatch and combine tensors.** The mechanical implementation uses two binary tensors
+expressed in Einstein summation:
+
+- $\mathsf{dispatch}\_\mathsf{tensor} \in \{0, 1\}^{G \times S \times E \times C}$: position
+  $(g, s, e, c)$ is 1 iff token $s$ in group $g$ is sent to slot $c$ of expert $e$. By
+  construction every $(g, s)$-slice has at most 2 nonzero entries (top-2), and every
+  $(e, c)$-slice has at most 1 (capacity is exact).
+- $\mathsf{combine}\_\mathsf{weights} \in \mathbb{R}^{G \times S \times E \times C}$: same
+  shape, but stores the gate values $g_1, g_2$ where the dispatch tensor is 1.
+
+The forward pass becomes three einsum operations (paper Algorithm 2):
+
+$$\text{(dispatch)} \;\;\mathrm{einsum}(\text{"GSEC,GSM} \to \text{EGCM"}),$$
+$$\text{(expert FFN)} \;\;\mathrm{einsum}(\text{"EGCM,EMH} \to \text{EGCH"}),$$
+$$\text{(combine)} \;\;\mathrm{einsum}(\text{"GSEC,GECM} \to \text{GSM"}).$$
+
+The first reshape gathers per-expert input buffers; the second is the expert-wise FFN as a
+single grouped matmul (one matrix multiply per expert, parallel across experts); the third
+scatter-adds back into per-token outputs. The dispatch tensor's structure means the dispatch
+step is an all-to-all collective across the expert-parallel devices: tokens at device $d_1$
+that route to an expert hosted on device $d_2$ travel via the all-to-all. The auto-sharding
+machinery emits the all-to-all automatically from the einsum's sharded layout.
+
+**Load balancing.** Like [Sparsely-Gated MoE](/llm-arch-kb/ffn-moe/sparse-moe/), GShard adds
+an auxiliary loss to prevent gate collapse. The form (paper Section 2.2) is slightly different
+from the 2017 CV-squared losses — GShard uses a product term that Switch later formalized as
+its standard:
+
+$$\mathcal{L}_{\mathrm{aux}} \;=\; \frac{1}{E} \sum_{e=1}^{E} \frac{c_e}{S} \cdot m_e,$$
+
+where $c_e$ is the count of tokens dispatched to expert $e$ in the batch and $m_e$ is the mean
+gate probability assigned to expert $e$ across the batch. When dispatch is balanced
+($c_e / S \approx 1/E$ and $m_e \approx 1/E$ for all $e$), the sum is $1/E$; deviations
+increase the product term and the loss penalizes them. Switch Transformer's Eq. 4 is the same
+formula multiplied by $\alpha N$ and is documented in
+[Switch Transformer § 2](/llm-arch-kb/ffn-moe/switch-transformer/).
+
+**Parameter count and complexity.** For an MoE layer with $E$ experts at FFN hidden dim
+$d_{\mathrm{ff}}$ on top of model dim $d$, the parameter count is
+$E \cdot 2 d \cdot d_{\mathrm{ff}}$ plus the gate's $d \cdot E$ (negligible). Per-token FLOPs
+are $K \cdot 2 d \cdot d_{\mathrm{ff}} + d \cdot E$, which for $K = 2, d = 2048, d_{\mathrm{ff}}
+= 8192, E = 2048$ comes to $\sim 67$ M parameters per token and the same FLOPs as a single
+dense FFN of that hidden dim. Total MoE parameters at $E = 2048$ are $\sim 137$ B — and that
+is per MoE layer. With 36 MoE layers in the 600B model, the bulk of the model's parameters
+live in expert weights.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Top-2 dispatch sketch
 
 ```python
-def gshard_layer(x, experts, gate, expert_capacity):
-    logits = gate(x)                          # [B, T, E]
-    top2_logits, top2_idx = logits.topk(2, dim=-1)
-    weights = top2_logits.softmax(-1)         # [B, T, 2]
-    # Each token goes to two experts; capacity policy applies per expert
-    return dispatch_and_combine(x, experts, top2_idx, weights, expert_capacity)
+def gshard_layer(x, experts, W_g, expert_capacity):
+    # x: [G, S, d_model]   experts: list of E feedforward modules
+    logits = x @ W_g                                # [G, S, E]
+    p = logits.softmax(-1)
+    top2_p, top2_idx = p.topk(2, dim=-1)            # [G, S, 2]
+    g1, g2 = top2_p[..., 0], top2_p[..., 1]
+
+    # Stochastic second-expert routing: keep with prob g2
+    keep_second = (torch.rand_like(g2) < g2)
+    weights = torch.stack([g1, g2 * keep_second.float()], dim=-1)
+
+    # Dispatch tensor: [G, S, E, C] binary
+    dispatch, combine_weights = build_dispatch(top2_idx, weights, expert_capacity)
+
+    # Three einsums: gather, expert FFN, scatter
+    expert_in   = torch.einsum("GSEC,GSM->EGCM", dispatch, x)
+    expert_out  = torch.stack([f(expert_in[e]) for e, f in enumerate(experts)], dim=0)
+    moe_out     = torch.einsum("GSEC,EGCM->GSM", combine_weights, expert_out)
+    return moe_out
 ```
 
-<p class="section-eyebrow">§ 3 · Expert capacity and token dropping</p>
-## What to do when an expert is full
+The toy `build_dispatch` would, for each $(g, s)$ row, look up the two target experts and
+assign them to the next free capacity slots; tokens for which no slot is available are
+silently dropped (their row of `dispatch` is all-zero). Production implementations (e.g.,
+[Megablocks](https://github.com/databricks/megablocks)) replace the stochastic Python with
+fused kernels and add tracking for the dropped-token rate.
 
-A natural problem with top-K routing: if expert $i$ is the top choice for too many tokens in a
-batch, dispatching all of them to one device creates load imbalance and OOM risk. GShard's fix:
-**expert capacity** $C = \alpha \cdot T / E$, where $T$ is batch size, $E$ is expert count, and
-$\alpha \approx 1.5$. Each expert handles at most $C$ tokens per batch.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## 100 languages, 600B parameters, 4 days
 
-When an expert is at capacity, additional tokens are **dropped** — their MoE-layer output is the
-residual stream unchanged. The dropping is a deterministic policy based on the order tokens
-arrive at the expert dispatch; later GShard variants randomize the order to prevent positional
-bias.
+GShard's headline model (paper Section 4, Table 2) is **MoE(2048E, 36L)**: a 36-layer
+sequence-to-sequence transformer where every other FFN block is replaced by a 2048-expert MoE
+with top-2 routing and capacity factor 1.0. At model dim 2048 and FFN dim 8192, the model has
+~600B parameters and trains on a multilingual corpus of 25 billion sentence pairs covering
+100 source languages to English. Training takes 4 days on 2048 TPU-v3 cores (≈ 22.4 TPU
+core-years).
 
-A small auxiliary load-balance loss pushes the gate toward uniform expert utilization (Switch
-later formalized this loss, eq. 4 of Switch).
+The comparison baselines are:
+
+- **Bilingual baselines**: 100 separately-trained dense bilingual translation models, one per
+  language pair. Averaged BLEU across all 100 pairs is 30.8.
+- **Dense T(96L)**: a 96-layer encoder-decoder dense baseline with 2.3B parameters, trained
+  with GPipe pipeline parallelism. Averaged BLEU is 36.9; training took ~235 TPU core-years —
+  roughly $10\times$ the 600B MoE's cost.
+
+The 600B MoE achieves **44.3 BLEU averaged across the 100 language pairs** — a +13.5 BLEU
+margin over the bilingual baselines and +7.4 over the 96-layer dense T at $10\times$ less
+compute. The gains are largest on low-resource pairs: those are the cases where additional
+parameters help, and the dense baselines were capacity-limited.
+
+The paper also runs a depth × expert-count grid (Table 2 in the paper):
+
+- MoE(2048E, 12L): 41.3 BLEU, 1.4 days training
+- MoE(512E, 36L): 43.7 BLEU, 11 days training
+- MoE(128E, 36L): 42.6 BLEU
+- MoE(2048E, 36L): 44.3 BLEU, 4 days training
+
+Two takeaways. (1) **Depth helps more than expert count once $E$ exceeds a few hundred.** Going
+from $E = 128$ to $E = 2048$ at fixed depth adds +1.7 BLEU; doubling depth from 12 to 36 at
+fixed $E = 2048$ adds +3.0 BLEU. (2) **Deeper sparse models converge faster in tokens** — the
+paper reports that the 36-layer MoE reaches preset loss thresholds in 2–3× fewer tokens than
+the 12-layer variant.
 
 <GshardCapacity client:visible />
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**What did not survive into modern decoder-only MoE.** GShard's specific design choices were
+made for a translation-encoder setting and several have been replaced downstream:
 
-GShard's flagship was a 600B-parameter multilingual translation model spanning 100 language
-pairs. It trained on 2048 TPU-v3 cores and achieved better quality than dense baselines at
-matched compute (Lepikhin et al. Table 4): +0.9 BLEU averaged across 100 language pairs vs a
-matched-FLOP dense T5.
+- The **top-2 + stochastic-second-expert** scheme was the recipe; [Switch
+  Transformer](/llm-arch-kb/ffn-moe/switch-transformer/) (Fedus et al. 2021) argued at the
+  time that top-1 routing is enough; [Mixtral](/llm-arch-kb/ffn-moe/mixtral-moe/) (Jiang et al.
+  2024, [arXiv:2401.04088](https://arxiv.org/abs/2401.04088)) restored top-2 in the
+  decoder-only setting; [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) (Dai et al. 2024,
+  [arXiv:2401.06066](https://arxiv.org/abs/2401.06066)) escalated to top-6 / top-8 over
+  fine-grained experts. The optimal $K$ depends on expert granularity, which GShard did not
+  vary.
+- The **per-batch random dropping policy** for over-capacity tokens has been replaced in
+  production by sequence-balanced expert parallelism (DeepSeek V3 uses node-aware routing to
+  pin tokens to local experts when possible; see
+  [DeepSeek V3 paper](https://arxiv.org/abs/2412.19437) § 2.1.2).
+- The **600B-parameter encoder-decoder for translation** is not how MoE got deployed at
+  scale; the production line went through decoder-only Mixtral (Dec 2023), DeepSeek V2 (May
+  2024), DeepSeek V3 (Dec 2024), and Kimi K2 (Jul 2025).
 
-The architectural details did not survive directly into modern decoder-only MoEs (which started
-with Switch's top-1 then re-introduced top-2 in Mixtral). What survived:
+**What did survive.** Three concrete primitives:
 
-- **Expert capacity as a first-class hyperparameter.**
-- **The dispatch / combine tensor abstraction**, now generalized in libraries like
-  Megatron-DeepSpeed and Tutel.
-- **The per-token load-balance loss** that Switch refined.
-- **The top-K routing structure**, with K = 1 (Switch), K = 2 (GShard, Mixtral), or K = 8
-  (DeepSeekMoE) all variants of the same dispatch.
+- **Expert capacity** as a first-class hyperparameter, with static-shape dispatch buffers and
+  drop-on-overflow semantics. Every transformer-MoE framework — Tutel, Megablocks, FastMoE,
+  the MoE op in DeepSpeed-MoE — uses this abstraction.
+- **The dispatch / combine tensor formulation** as the einsum-friendly way to express
+  sparse routing in a static-shape tensor program.
+- **The expert-parallel + data-parallel + all-to-all** sharding pattern, where each device
+  hosts a slice of the expert pool and tokens travel via all-to-all to reach their target
+  experts. This is the dominant MoE training topology as of 2026.
 
-GShard is therefore the conceptual root of every entry in this knowledge base's MoE category.
+**No public top-1 vs top-2 ablation in this paper.** GShard commits to top-2 without a direct
+$K = 1$ comparison. Switch Transformer ran the controlled experiment a year later, finding
+that top-1 trains stably and is FLOPs-cheaper, but at lower expressivity per FLOP than top-2
+when expert size is held constant — see [Switch Transformer
+§ 4](/llm-arch-kb/ffn-moe/switch-transformer/) for the numbers.
 
 <Summary>
-**GShard in one breath.** Top-2 routing across hundreds of experts, expert capacity for load
-balance, automatic sharding via `dispatch_tensor` / `combine_tensor`. The infrastructure paper
-that made sparse MoE tractable at frontier scale; every subsequent MoE recipe inherits its
+**GShard in one breath.** Top-2 routing across 2048 experts in a 36-layer transformer encoder,
+with a stochastic second-expert pick and static **expert capacity** that lets the dispatch
+fit a fixed-shape tensor program. The 600B-parameter multilingual translation model trained
+on 2048 TPU-v3 cores in 4 days clears the bilingual ensemble by +13.5 BLEU at one-tenth the
+compute of a dense 2.3B baseline. The infrastructure paper that made sparse MoE tractable at
+frontier scale; every subsequent MoE recipe inherits its `dispatch_tensor` / `combine_tensor`
 abstractions.
 </Summary>

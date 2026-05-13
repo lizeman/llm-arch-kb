@@ -25,86 +25,203 @@ import PerformerKernel from "~/components/figures/PerformerKernel";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Softmax as a kernel
+## Softmax attention is a kernel — approximate the kernel, decouple the matmul
 
-Standard attention computes $\mathrm{softmax}(\mathbf{q}^\top \mathbf{k}_j / \sqrt{d})$ for
-each query-key pair. The softmax can be rewritten as $\exp(\mathbf{q}^\top \mathbf{k}_j /
-\sqrt{d})$ normalized by the sum across $j$. The exponential is a *kernel*: a similarity
-function between $\mathbf{q}$ and $\mathbf{k}_j$.
+Standard scaled-dot-product attention computes, for each query $\mathbf{q}_t$,
 
-Mercer's theorem says any positive-definite kernel $K(\mathbf{x}, \mathbf{y})$ can be written
-as $\langle \phi(\mathbf{x}), \phi(\mathbf{y}) \rangle$ for some (possibly infinite-dimensional)
-feature map $\phi$. If we can find a *finite-dimensional* feature map $\phi$ whose inner product
-approximates $\exp(\mathbf{x}^\top \mathbf{y} / \sqrt{d})$, then the QKV matrix multiplications
-can be reordered exactly as in Linear Attention — giving linear-time complexity.
+$$\mathrm{out}_t \;=\; \frac{\sum_{s} \exp(\mathbf{q}_t^\top \mathbf{k}_s / \sqrt{d_h}) \, \mathbf{v}_s}{\sum_{s} \exp(\mathbf{q}_t^\top \mathbf{k}_s / \sqrt{d_h})}.$$
 
-Performer's contribution: a specific positive random feature map (FAVOR+) that gives a
-provably unbiased and positivity-preserving estimator of the softmax kernel.
+The exponential $\exp(\mathbf{q}^\top \mathbf{k} / \sqrt{d_h})$ is a positive-definite *kernel*
+$K(\mathbf{q}, \mathbf{k})$ on $\mathbb{R}^{d_h}$. By Mercer's theorem (or its generalization
+to non-symmetric similarities), any positive-definite kernel admits a feature-map factorization
+$K(\mathbf{x}, \mathbf{y}) = \langle \phi(\mathbf{x}), \phi(\mathbf{y}) \rangle$ for some
+$\phi: \mathbb{R}^{d_h} \to \mathcal{H}$.
 
-<p class="section-eyebrow">§ 2 · The random features</p>
-## FAVOR+
+If $\phi$ is **finite-dimensional** with $\phi: \mathbb{R}^{d_h} \to \mathbb{R}^{r}$, then the
+attention numerator decomposes as
 
-For $r$ random projection vectors $\boldsymbol{\omega}_1, \ldots, \boldsymbol{\omega}_r \sim
-\mathcal{N}(0, I_d)$ and a scaling constant $h(\mathbf{x})$, define
+$$\sum_s K(\mathbf{q}_t, \mathbf{k}_s) \mathbf{v}_s \;=\; \phi(\mathbf{q}_t)^\top \sum_s \phi(\mathbf{k}_s) \mathbf{v}_s^\top,$$
 
-$$\phi(\mathbf{x}) = \frac{h(\mathbf{x})}{\sqrt{r}}\bigl[\exp(\boldsymbol{\omega}_1^\top \mathbf{x}),\ \ldots,\ \exp(\boldsymbol{\omega}_r^\top \mathbf{x})\bigr] \in \mathbb{R}^r_{>0}.$$
+and the inner sum $\sum_s \phi(\mathbf{k}_s) \mathbf{v}_s^\top \in \mathbb{R}^{r \times d_h}$
+no longer depends on $\mathbf{q}_t$. It can be computed once for all queries in $\Theta(N r d_h)$
+and reused — total FLOPs are $\Theta(N r d_h)$ instead of $\Theta(N^2 d_h)$.
 
-The "+" in FAVOR+ refers to the strict positivity of $\phi$: every component is an
-exponential, so $\langle \phi(\mathbf{q}), \phi(\mathbf{k}) \rangle$ is always positive — a
-necessary property for it to approximate the strictly-positive softmax kernel.
+The catch: the exponential kernel does not admit an exact finite-dimensional feature map.
+Earlier work (Linear Attention, Katharopoulos et al. 2020, [arXiv 2006.16236](https://arxiv.org/abs/2006.16236))
+worked around this by replacing softmax with a different kernel — typically
+$\phi(\mathbf{x}) = \mathrm{elu}(\mathbf{x}) + 1$ — which is decomposable by construction but
+no longer approximates softmax. The resulting model has linear cost but inherits whatever
+inductive bias the substitute kernel implies, generally losing 1–3 perplexity points on
+language modeling vs. softmax (Katharopoulos et al. Table 2).
 
-Choromanski et al. prove that the expected value $\mathbb{E}_{\boldsymbol{\omega}} \langle
-\phi(\mathbf{q}), \phi(\mathbf{k}) \rangle$ equals $\exp(\mathbf{q}^\top \mathbf{k})$ exactly,
-and that variance decreases as $O(1/r)$.
+Performer's bet: keep the softmax kernel and approximate $\phi$ via random Fourier features.
+The random-feature literature (Rahimi & Recht 2007, [NIPS 2007](https://papers.nips.cc/paper/2007/hash/013a006f03dbc5392effeb8f18fda755-Abstract.html))
+gives an unbiased finite-dimensional estimator for any shift-invariant kernel. Choromanski et
+al. extend this to the (non-shift-invariant) exponential softmax kernel via *positive* random
+features — the "+" in FAVOR+.
+
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## FAVOR+: a positive unbiased random-feature softmax estimator
+
+**Step 1: factor the exponential kernel.** Write the softmax kernel as
+
+$$K_{\mathrm{SM}}(\mathbf{x}, \mathbf{y}) \;=\; \exp(\mathbf{x}^\top \mathbf{y}) \;=\; \exp(\tfrac{1}{2}\lVert \mathbf{x} \rVert^2) \exp(\tfrac{1}{2}\lVert \mathbf{y} \rVert^2) \exp\!\bigl(-\tfrac{1}{2}\lVert \mathbf{x} - \mathbf{y} \rVert^2\bigr).$$
+
+(The standard identity $\mathbf{x}^\top \mathbf{y} = \tfrac{1}{2}(\lVert\mathbf{x}\rVert^2 + \lVert\mathbf{y}\rVert^2 - \lVert\mathbf{x}-\mathbf{y}\rVert^2)$.)
+The first two factors are query-only and key-only normalizers. The third factor is the Gaussian
+kernel — which is shift-invariant, so Bochner's theorem gives an unbiased random-feature
+estimator from its Fourier transform.
+
+**Step 2: trigonometric random features (FAVOR, the original).** Rahimi & Recht's classical
+construction:
+
+$$\phi^{\mathrm{trig}}(\mathbf{x}) \;=\; \frac{1}{\sqrt{r}}\bigl[\cos(\boldsymbol{\omega}_1^\top \mathbf{x}), \sin(\boldsymbol{\omega}_1^\top \mathbf{x}), \ldots, \cos(\boldsymbol{\omega}_{r/2}^\top \mathbf{x}), \sin(\boldsymbol{\omega}_{r/2}^\top \mathbf{x})\bigr],$$
+
+with $\boldsymbol{\omega}_j \sim \mathcal{N}(0, I_{d_h})$. Then
+$\mathbb{E} \langle \phi^{\mathrm{trig}}(\mathbf{x}), \phi^{\mathrm{trig}}(\mathbf{y}) \rangle = \exp(-\tfrac{1}{2}\lVert \mathbf{x}-\mathbf{y}\rVert^2)$ exactly.
+
+**Why this fails for softmax attention.** $\phi^{\mathrm{trig}}$ takes both positive and
+negative values. When you plug it into the attention sum, the numerator
+$\phi^{\mathrm{trig}}(\mathbf{q})^\top \sum_s \phi^{\mathrm{trig}}(\mathbf{k}_s) \mathbf{v}_s^\top$
+is a difference of partly-cancelling terms, and the same is true for the denominator
+$\phi^{\mathrm{trig}}(\mathbf{q})^\top \sum_s \phi^{\mathrm{trig}}(\mathbf{k}_s)$. The
+denominator can become tiny or negative, giving exploding or NaN attention weights. Choromanski
+et al. show empirically (their Figure 3) that trigonometric features cause training to diverge
+even at $r = 1{,}024$.
+
+**Step 3: positive random features (FAVOR+, the contribution).** Replace cosines/sines with
+exponentials:
+
+$$\phi^{+}(\mathbf{x}) \;=\; \frac{\exp(-\tfrac{1}{2}\lVert \mathbf{x}\rVert^2)}{\sqrt{r}} \bigl[\exp(\boldsymbol{\omega}_1^\top \mathbf{x}),\ \ldots,\ \exp(\boldsymbol{\omega}_r^\top \mathbf{x})\bigr] \;\in\; \mathbb{R}^{r}_{>0}.$$
+
+Every component is strictly positive. Choromanski et al. prove (Lemma 1) that
+
+$$\mathbb{E}_{\boldsymbol{\omega} \sim \mathcal{N}(0, I)} \langle \phi^{+}(\mathbf{x}), \phi^{+}(\mathbf{y}) \rangle \;=\; \exp(\mathbf{x}^\top \mathbf{y}) \;=\; K_{\mathrm{SM}}(\mathbf{x}, \mathbf{y}),$$
+
+so $\phi^{+}$ is an unbiased estimator of the softmax kernel. Variance is bounded by
+(Choromanski et al. Theorem 2)
+
+$$\mathrm{Var}\bigl[\langle \phi^{+}(\mathbf{x}), \phi^{+}(\mathbf{y}) \rangle\bigr] \;=\; \frac{1}{r}\exp(\lVert \mathbf{x}+\mathbf{y}\rVert^2)\bigl(\exp(\lVert\mathbf{x}+\mathbf{y}\rVert^2) - \exp(2\mathbf{x}^\top\mathbf{y})\bigr).$$
+
+Two consequences: (i) variance decays as $\Theta(1/r)$, the standard random-feature rate; and
+(ii) variance is small when $\mathbf{x}$ and $\mathbf{y}$ have *aligned* (positively correlated)
+directions and large when they are anticorrelated — meaning the estimator is *sharpest at the
+keys that matter most* for attention. This is the second design win of FAVOR+ over trig
+features, which have uniform variance across the kernel.
+
+**Step 4: orthogonal projections reduce variance further.** Sampling $\boldsymbol{\omega}_j$
+i.i.d. is suboptimal — there is a redundancy when two random vectors happen to be nearly
+collinear. Choromanski et al. (§ 2.3) replace i.i.d. Gaussians with rows of a random orthogonal
+matrix (scaled to have Gaussian-distributed norms). This gives an unbiased estimator with
+strictly lower variance (Yu et al. 2016, "Orthogonal Random Features", [arXiv 1610.09072](https://arxiv.org/abs/1610.09072)).
+In practice this halves the $r$ required for a fixed quality.
+
+**Step 5: assemble linear-time attention.** With $\Phi_Q = \phi^+(Q) \in \mathbb{R}^{N \times r}$
+and $\Phi_K = \phi^+(K) \in \mathbb{R}^{N \times r}$:
+
+$$\mathrm{out} \;=\; \mathrm{diag}(\Phi_Q (\Phi_K^\top \mathbf{1}))^{-1} \; \Phi_Q (\Phi_K^\top V).$$
+
+Read this right-to-left: $\Phi_K^\top V \in \mathbb{R}^{r \times d_h}$ is a single matmul of
+size $\Theta(N r d_h)$ FLOPs; multiplying on the left by $\Phi_Q$ is another $\Theta(N r d_h)$;
+the normalizer $\Phi_K^\top \mathbf{1} \in \mathbb{R}^{r}$ is $\Theta(N r)$. Total:
+$\Theta(N r d_h)$ — linear in $N$.
+
+For **causal** attention, the matmul becomes a prefix-sum recurrence (same as Linear
+Attention's, with $\phi^+$ in place of the identity-with-elu feature map):
+
+$$S_t \;=\; S_{t-1} + \phi^+(\mathbf{k}_t) \mathbf{v}_t^\top, \qquad z_t \;=\; z_{t-1} + \phi^+(\mathbf{k}_t),$$
+
+$$\mathrm{out}_t \;=\; \frac{\phi^+(\mathbf{q}_t)^\top S_t}{\phi^+(\mathbf{q}_t)^\top z_t}.$$
+
+This recurrence is well-defined for autoregressive decoders — the projection $\phi^+$ acts on
+a single token at a time and does not mix across the time axis, unlike Linformer's $EK$.
+
+**Parameter count and complexity.** The random-feature matrix $\boldsymbol{\omega} \in \mathbb{R}^{r \times d_h}$
+is *not learned* — it is sampled once and frozen (Choromanski et al. § 2.4 also describe a
+periodic resampling protocol that improves long-training stability). The Performer adds zero
+trainable parameters over the standard MHA baseline. FLOPs are $\Theta(N r d_h)$ per head per
+layer; the recommended default is $r = d_h \log d_h \approx 256$ for $d_h = 64$.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sketch
 
 ```python
 def performer_attention(Q, K, V, omega):
-    # omega: [r, d_h] random projections, fixed across layer/forward
-    phi_Q = (Q @ omega.T).exp() / r**0.5     # [B, T, r]
-    phi_K = (K @ omega.T).exp() / r**0.5
-    # Reorder: compute phi_K^T V (small) once, then phi_Q · (phi_K^T V)
-    KV = phi_K.transpose(-2, -1) @ V         # [B, r, d_h]
-    return phi_Q @ KV                         # [B, T, d_h]
+    # Q, K, V: [B, T, d_h]
+    # omega:   [r, d_h], drawn from orthogonal Gaussian, frozen
+    norm_Q = (Q * Q).sum(-1, keepdim=True) / 2       # [B, T, 1]
+    norm_K = (K * K).sum(-1, keepdim=True) / 2
+    phi_Q  = (Q @ omega.T - norm_Q).exp() / r**0.5   # [B, T, r]   positive features
+    phi_K  = (K @ omega.T - norm_K).exp() / r**0.5
+    # Bidirectional (encoder): reordered matmul
+    KV     = phi_K.transpose(-2, -1) @ V             # [B, r, d_h]
+    K_sum  = phi_K.sum(dim=-2, keepdim=True).transpose(-2, -1)   # [B, r, 1]
+    num    = phi_Q @ KV                              # [B, T, d_h]
+    den    = (phi_Q @ K_sum).clamp(min=1e-6)          # [B, T, 1]
+    return num / den
+    # Causal: replace the two matmuls with prefix-sum recurrences over t
 ```
 
-For causal masking the same prefix-sum trick used by Linear Attention applies:
-$S_t = S_{t-1} + \phi(\mathbf{k}_t) \mathbf{v}_t^\top$, with $\phi$ in place of the identity
-feature map.
+The load-bearing change vs. softmax MHA is the application of $\phi^+$ before any cross-token
+mixing, which makes $Q$ and $K$ enter the computation only through the projected matrices
+$\Phi_Q, \Phi_K$. Causality is supported by running the prefix-sum form over the time axis.
 
 <PerformerKernel client:visible />
 
-<p class="section-eyebrow">§ 3 · The catch</p>
-## Variance, scale, and the random seed
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## Results
 
-Three issues prevented Performer from displacing softmax in production decoders:
+**Approximation quality vs. $r$ (Choromanski et al. 2020, Figure 3).** On a frozen
+ImageNet-trained ViT-Base, FAVOR+ at $r = 256$ achieves MSE $\sim 10^{-4}$ on attention output
+relative to the exact softmax; $r = 1{,}024$ pushes MSE to $\sim 10^{-5}$. Trigonometric
+features (FAVOR without "+") have $\sim 10\times$ higher MSE at every $r$ and lead to training
+divergence at modest learning rates.
 
-1. **Variance scales with feature count.** For 128-dim head with sequence length 16K, $r = 256$
-   random features gives ~1% RMSE on the attention probabilities. To match softmax precisely
-   you need $r \gtrsim 1024$, at which point the compute advantage over FlashAttention shrinks.
-2. **Approximation quality is content-dependent.** When the attention distribution is sharp
-   (one or two dominant keys), the random feature estimator has high variance. Performer
-   underperforms softmax on tasks with high attention concentration — exactly the tasks
-   where attention's expressivity matters most.
-3. **The random projections are a hyperparameter.** Different seeds give different attention
-   patterns; results are not reproducible across training runs without seeding the random
-   features.
+**Protein language modeling (their Table 2).** Performer-ReLU matches the Transformer baseline
+on TrEMBL protein modeling at $L = 8{,}192$ within 0.02 nats/character at $r = 256$, while
+running 2× faster. At $L = 32{,}768$, where exact softmax does not fit on a TPU v3, Performer
+trains to 1.42 nats/char.
 
-Despite these costs, Performer was the cleanest existence proof of "approximate softmax with
-random features at linear cost." Its lineage influenced subsequent kernel-based attention
-work; see [Linear Attention](/llm-arch-kb/attention/linear-attention/) for the parent framing
-and [Lightning Attention](/llm-arch-kb/attention/lightning-attention/) for the descendant that
-actually shipped in production.
+**WMT'14 translation (Choromanski et al. Table 5).** Performer at $r = 256$ reaches BLEU 27.4
+on WMT'14 En→De, vs. 27.8 for the dense Transformer baseline (matched parameter count) — a
+0.4 BLEU gap. The wall-clock speedup at training length $N = 1{,}024$ is modest (1.1×) and the
+extra approximation noise costs more BLEU than it saves training time. Performer's advantage
+is in the long-sequence regime.
 
-<p class="section-eyebrow">§ 4 · Results</p>
-## Empirical evidence
+**Long Range Arena (Tay et al. 2020, [arXiv 2011.04006](https://arxiv.org/abs/2011.04006),
+Table 1).** Independent LRA reproduction scores Performer at average 51.41 across the five
+LRA tasks (ListOps 18.0, Text 65.4, Retrieval 53.8, Image 42.8, Pathfinder 77.1) vs. 54.39 for
+dense softmax — a ~3-point gap. Performer matches or beats Linformer (51.36) and Reformer
+(50.67), trails BigBird (55.0). Pathfinder-X (sequence length 16K) tests at 77.1, which only
+Performer and BigBird complete among the linear variants.
 
-Choromanski et al. (Table 1) report Performer matching softmax on protein language modeling
-benchmarks at 8K sequence length, with $4\times$ wall-clock speedup. On natural language tasks
-the gap is larger ($\sim 1$ perplexity point at matched parameter count on WikiText-103) but
-the linear scaling enables sequences past 16K that softmax cannot fit on a single GPU.
+**Variance under sharp attention (Schlag et al. 2021, "Linear Transformers Are Secretly Fast
+Weight Programmers", [arXiv 2102.11174](https://arxiv.org/abs/2102.11174), § 4).** When the
+underlying softmax distribution is highly peaked (one dominant key), the FAVOR+ estimator's
+variance grows because the normalizer is dominated by a single feature-map entry. Schlag et al.
+report 20–40% perplexity degradation for Performer at $r = 256$ on associative-recall tasks
+where attention is by design sharp. This is the load-bearing failure mode that has kept
+Performer out of frontier production decoders: the same softmax sharpening that makes attention
+expressive on retrieval-heavy tasks is exactly what makes the random-feature estimator high-variance.
 
-The technique didn't make it to frontier production decoders, but its math — random features
-approximating an inner-product kernel — survives in the broader linear-attention literature.
+**Wall-clock comparisons in the FlashAttention era.** Once FlashAttention (Dao et al. 2022,
+[arXiv 2205.14135](https://arxiv.org/abs/2205.14135)) landed, exact softmax attention became
+roughly compute-bound at moderate $N$, so the constant-factor cost of $r$ random features
+became uncompetitive at $N \le 16{,}384$. Independent benchmarks (the flash-linear-attention
+project, [github.com/fla-org/flash-linear-attention](https://github.com/fla-org/flash-linear-attention))
+report Performer crossing over FlashAttention at $N \approx 32K$ on A100 — comparable to vanilla
+Linear Attention but with a worse constant due to the exponential nonlinearity in $\phi^+$.
+
+**Hyperparameter sensitivity.** $r$ is the main knob. Below $r = 64$, training diverges on most
+benchmarks (Choromanski et al. Figure 2). Above $r = 1{,}024$, compute exceeds dense softmax
+and the technique loses its point. The recommended default is $r = d_h \log d_h$, which is the
+random-feature theory's prescription.
+
+**No public production-LLM adoption.** I do not know of any frontier decoder-only LLM that
+ships Performer. The technique appears in efficient-attention surveys (Tay et al. 2022,
+[arXiv 2009.06732](https://arxiv.org/abs/2009.06732), § 3.3) as a reference linear-attention
+variant; its mathematical framing — random-feature approximation of softmax — is the load-bearing
+contribution rather than the specific architecture.
 
 <Summary>
 **Performer in one breath.** Approximate softmax via positive random features (FAVOR+) so QKV

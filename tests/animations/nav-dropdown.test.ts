@@ -93,6 +93,9 @@ describe.skipIf(!HAS_DIST)("Animation: Browse mega-dropdown", () => {
     doc = dom.window.document;
     win = dom.window as unknown as Window & typeof globalThis;
     built.runScript(navScript);
+    // The new Nav script defers binding until astro:page-load (so it survives
+    // ClientRouter swaps). Fire it once so the initial listeners attach.
+    doc.dispatchEvent(new dom.window.Event("astro:page-load", { bubbles: true }));
   });
 
   it("starts closed: panel hidden, trigger aria-expanded=false", () => {
@@ -154,6 +157,7 @@ describe.skipIf(!HAS_DIST)("Animation: Browse dropdown with prefers-reduced-moti
     const doc = dom.window.document;
     const win = dom.window as unknown as Window & typeof globalThis;
     runScript(navScript);
+    doc.dispatchEvent(new dom.window.Event("astro:page-load", { bubbles: true }));
 
     const trigger = doc.querySelector<HTMLButtonElement>(".site-nav__browse-trigger")!;
     const panel = doc.querySelector<HTMLElement>(".site-nav__panel")!;
@@ -167,6 +171,53 @@ describe.skipIf(!HAS_DIST)("Animation: Browse dropdown with prefers-reduced-moti
     // waiting for the 200ms transition; without this branch the panel stays
     // visible to assistive tech until the timer fires.
     expect(panel.hasAttribute("hidden")).toBe(true);
+  });
+});
+
+describe.skipIf(!HAS_DIST)("Animation: Browse dropdown survives view-transition swap", () => {
+  // Astro's <ClientRouter /> replaces the <body> on navigation. The Nav script
+  // only runs once as a module, so the *new* nav has no listeners attached
+  // unless the script re-binds on astro:page-load. This test simulates that
+  // swap and asserts the dropdown still works on the swapped-in nav.
+  it("after astro:page-load on a new body, clicking the trigger opens the new panel", async () => {
+    const html = fs.readFileSync(HOME, "utf8");
+    const navScript = extractNavScript(html);
+    const { dom, runScript } = buildDom(false);
+    const doc = dom.window.document;
+    const win = dom.window as unknown as Window & typeof globalThis;
+
+    runScript(navScript);
+    // Initial page-load (fires both on first parse and after each swap).
+    doc.dispatchEvent(new dom.window.Event("astro:page-load", { bubbles: true }));
+
+    const oldTrigger = doc.querySelector<HTMLButtonElement>(".site-nav__browse-trigger")!;
+    oldTrigger.click();
+    await nextFrames(win);
+    expect(
+      doc.querySelector<HTMLElement>(".site-nav__panel")!.classList.contains("is-open"),
+      "initial bind: clicking the trigger should open the panel",
+    ).toBe(true);
+
+    // Simulate Astro view-transition: tear down old body, swap in fresh HTML.
+    const fresh = new dom.window.DOMParser()
+      .parseFromString(html, "text/html")
+      .body.innerHTML;
+    doc.dispatchEvent(new dom.window.Event("astro:after-swap", { bubbles: true }));
+    doc.body.innerHTML = fresh;
+    doc.dispatchEvent(new dom.window.Event("astro:page-load", { bubbles: true }));
+
+    const newTrigger = doc.querySelector<HTMLButtonElement>(".site-nav__browse-trigger")!;
+    const newPanel = doc.querySelector<HTMLElement>(".site-nav__panel")!;
+    expect(newTrigger, "swap installs a new trigger element").not.toBe(oldTrigger);
+    expect(newPanel.classList.contains("is-open"), "new panel starts closed").toBe(false);
+
+    newTrigger.click();
+    await nextFrames(win);
+    expect(
+      newPanel.classList.contains("is-open"),
+      "after view-transition swap + page-load, the new trigger must still open the new panel",
+    ).toBe(true);
+    expect(newTrigger.getAttribute("aria-expanded")).toBe("true");
   });
 });
 

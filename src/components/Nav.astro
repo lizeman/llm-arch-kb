@@ -126,12 +126,27 @@ const browseActive =
   //  - click (touch / accessibility) toggles
   //  - close on outside click, Esc, or pointerleave (80ms grace)
   // Mobile: hamburger toggles the whole primary list; Browse becomes accordion.
+  //
+  // This module script only executes once. Astro's <ClientRouter /> performs
+  // view-transition swaps that replace the body element, so every page after
+  // the first arrives with a fresh .site-nav whose DOM nodes have no
+  // listeners attached. We re-bind on every `astro:page-load` (which fires
+  // both on initial parse and after each view-transition swap) and use a
+  // single AbortController to tear down the previous binding so document- and
+  // window-level listeners don't accumulate across navigations.
   const HOVER_OPEN_DELAY = 90;
   const HOVER_CLOSE_GRACE = 80;
   const MOBILE_BREAKPOINT = 720;
 
-  const nav = document.querySelector<HTMLElement>(".site-nav");
-  if (nav) {
+  let abortController: AbortController | null = null;
+
+  function bindNav() {
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
+    const signal = abortController.signal;
+
+    const nav = document.querySelector<HTMLElement>(".site-nav");
+    if (!nav) return;
     const hamburger = nav.querySelector<HTMLButtonElement>(".site-nav__hamburger");
     const primary = nav.querySelector<HTMLElement>(".site-nav__primary");
     const browseItem = nav.querySelector<HTMLElement>(".site-nav__item--browse");
@@ -178,7 +193,7 @@ const browseActive =
         const open = primary.classList.toggle("is-open");
         hamburger.setAttribute("aria-expanded", open ? "true" : "false");
         if (!open) closePanel();
-      });
+      }, { signal });
     }
 
     // Browse trigger — click works in all modes (touch + keyboard + mouse fallback)
@@ -186,7 +201,7 @@ const browseActive =
       trigger.addEventListener("click", (e) => {
         e.preventDefault();
         togglePanel();
-      });
+      }, { signal });
     }
 
     // Hover with intent delay (desktop only)
@@ -196,13 +211,13 @@ const browseActive =
         if (isMobile()) return;
         if (closeTimer) { window.clearTimeout(closeTimer); closeTimer = undefined; }
         openTimer = window.setTimeout(openPanel, HOVER_OPEN_DELAY);
-      });
+      }, { signal });
       browseItem.addEventListener("pointerleave", (e) => {
         if (e.pointerType !== "mouse") return;
         if (isMobile()) return;
         if (openTimer) { window.clearTimeout(openTimer); openTimer = undefined; }
         closeTimer = window.setTimeout(closePanel, HOVER_CLOSE_GRACE);
-      });
+      }, { signal });
     }
 
     // Close on Esc
@@ -211,14 +226,14 @@ const browseActive =
         closePanel();
         trigger?.focus();
       }
-    });
+    }, { signal });
 
     // Close on outside click
     document.addEventListener("click", (e) => {
       if (!panel?.classList.contains("is-open")) return;
       const target = e.target as Node;
       if (browseItem && !browseItem.contains(target)) closePanel();
-    });
+    }, { signal });
 
     // Close panel on viewport resize across the breakpoint
     let lastMobile = isMobile();
@@ -232,15 +247,32 @@ const browseActive =
           hamburger?.setAttribute("aria-expanded", "false");
         }
       }
-    });
+    }, { signal });
 
     // Reset state on Astro view-transition navigation so the panel
-    // never persists across pages.
+    // never persists across pages. This fires before page-load on the
+    // *current* nav (which is about to be detached), so we close it
+    // synchronously; the new nav will be bound by the next page-load.
     document.addEventListener("astro:after-swap", () => {
       closePanel();
       if (primary) primary.classList.remove("is-open");
       hamburger?.setAttribute("aria-expanded", "false");
-    });
+    }, { signal });
+  }
+
+  // Initial bind. `astro:page-load` fires both on first parse and after every
+  // ClientRouter view-transition swap; binding here is sufficient and also
+  // idempotent thanks to the AbortController teardown above.
+  document.addEventListener("astro:page-load", bindNav);
+
+  // Fallback for environments where the ClientRouter event hasn't fired yet
+  // (e.g. the first paint before view-transition listeners are wired): if the
+  // DOM is already interactive, bind synchronously so the nav works on initial
+  // load even without ClientRouter.
+  if (document.readyState !== "loading") {
+    bindNav();
+  } else {
+    document.addEventListener("DOMContentLoaded", bindNav, { once: true });
   }
 </script>
 

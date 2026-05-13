@@ -22,87 +22,186 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Pre-Norm leaves residual-stream norm uncontrolled
+## Pre-Norm has a gradient-magnitude mismatch
 
-Pre-Norm Pre-RMSNorm transformers train stably but the residual stream's norm grows
-monotonically with depth: each block adds a perturbation without renormalizing the stream
-itself (see the [residual-stream entry](/llm-arch-kb/residual/residual-overview/)). Shleifer
-et al. observed that this unbounded growth is correlated with slower convergence — the model
-spends compute learning to compensate for distributional drift across depth that does not
-carry useful signal.
+Pre-Norm transformers train stably at depth (see the
+[norm-placement entry](/llm-arch-kb/normalization/norm-placement/) and Xiong et al. 2020,
+[§4.2](https://arxiv.org/abs/2002.04745)) but exhibit a subtler problem: the gradient norm
+*at different layers* is not equally distributed. Shleifer et al. (2021) instrument a 1.3B GPT-3
+clone and find that gradients to early layers are systematically larger than gradients to late
+layers, sometimes by an order of magnitude
+([Shleifer et al. 2021, Figure 2](https://arxiv.org/abs/2110.09456)).
 
-NormFormer's approach: add three small normalization terms that selectively curb the growth
-without compromising Pre-Norm's gradient-flow properties.
+The mechanism: in Pre-Norm, the residual stream's norm grows monotonically through depth
+because every block writes a perturbation without renormalizing the stream itself. Late layers
+operate on a stream that is large in $\ell_2$, so their relative contribution
+$\|f_\ell(\mathbf{x}_\ell)\| / \|\mathbf{x}_\ell\|$ is small — which translates to small
+gradients reaching the late layer's weights. Early layers see a small-norm stream and
+contribute relatively more, attracting larger gradient signal.
 
-<p class="section-eyebrow">§ 2 · The three additions</p>
-## Where the extra norms go
+The fix should: (a) cap the per-block contribution magnitude in proportion to the stream norm
+already present, (b) leave the gradient-flow property of Pre-Norm intact (the identity term in
+each layer's Jacobian), and (c) cost negligible parameters. NormFormer's three small additions
+target exactly these criteria.
 
-For a standard Pre-Norm block `x ← x + sublayer(norm(x))`, NormFormer adds:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Three insertions, each scoped to a single magnitude
 
-1. **LayerNorm after self-attention.** A LayerNorm applied to the attention sub-layer's output
-   *before* the residual addition: `x ← x + LN_post_attn(attn(LN(x)))`. Caps the magnitude of
-   the attention block's per-step contribution to the stream.
-2. **Head-wise scaling of attention outputs.** A per-head learnable scalar
-   $\gamma_i \in \mathbb{R}$ multiplied into each head's output before the output projection
-   $W_O$: $\mathrm{head}_i \leftarrow \gamma_i \cdot \mathrm{head}_i$. Lets the model attenuate
-   noisy heads' contributions to the residual.
-3. **LayerNorm after the FFN's first linear.** Inside the FFN, after the first linear and
-   activation but *before* the second linear: $\mathrm{FFN}(x) = W_2 \cdot \mathrm{LN}(\sigma(W_1 x))$.
-   Stabilizes the activations the second projection sees.
+Start from the standard Pre-Norm transformer block:
+
+$$
+\begin{aligned}
+\mathbf{y}_\ell &= \mathbf{x}_\ell + \mathrm{Attn}_\ell(\mathrm{LN}(\mathbf{x}_\ell)),\\
+\mathbf{x}_{\ell+1} &= \mathbf{y}_\ell + \mathrm{FFN}_\ell(\mathrm{LN}(\mathbf{y}_\ell)).
+\end{aligned}
+$$
+
+NormFormer adds three terms ([Shleifer et al. 2021, §3](https://arxiv.org/abs/2110.09456)).
+
+**(1) LayerNorm after self-attention output.** Insert a LayerNorm on the attention sublayer's
+output *before* the residual addition:
+
+$$
+\mathbf{y}_\ell = \mathbf{x}_\ell + \mathrm{LN}_{\text{post-attn}}\!\bigl(\mathrm{Attn}_\ell(\mathrm{LN}(\mathbf{x}_\ell))\bigr).
+$$
+
+This caps the magnitude of each attention block's per-step contribution to the residual stream:
+the addition can never push the stream by more than what one LayerNorm-bounded vector allows.
+Importantly, the residual identity skip $+\mathbf{x}_\ell$ is preserved, so the gradient
+identity term $I$ from §2 of the [residual entry](/llm-arch-kb/residual/residual-overview/) is
+intact.
+
+**(2) Head-wise scaling of attention outputs.** Inside the attention sublayer, before the
+output projection $W_O$, multiply each head's output by a learnable scalar $\gamma_i$:
+
+$$
+\mathrm{Attn}_\ell(\mathbf{x}) = W_O\, \mathrm{concat}_{i=1}^{H}\!\bigl(\gamma_i \cdot \mathrm{head}_i(\mathbf{x})\bigr), \qquad \gamma_i \in \mathbb{R},\; \gamma_i^{(0)} = 1.
+$$
+
+Initialized at 1, this leaves the standard MHA pattern intact. Trained, it lets the model
+selectively *attenuate* heads that learn noisy or low-utility attention patterns — a per-head
+analogue of ReZero's $\alpha_\ell$, applied at the head level rather than the branch level.
+Shleifer et al. note (§3.2, Figure 4) that the learned $\gamma_i$ distribution after training
+spans roughly $[-0.2, 1.2]$ with several heads driven below 0.5, consistent with the
+interpretation that a fraction of heads contribute little and the network learns to mute them.
+
+**(3) LayerNorm inside the FFN, after the first linear.** Inside the FFN, between the first
+projection $W_1$ and the second projection $W_2$:
+
+$$
+\mathrm{FFN}_\ell(\mathbf{x}) = W_2\, \mathrm{LN}_{\text{mid-FFN}}(\sigma(W_1\, \mathbf{x})).
+$$
+
+This stabilizes the post-activation distribution that $W_2$ reads. Without it, the post-GeLU
+activations have a heavy-tailed distribution whose variance shifts during training; the
+LayerNorm centers and rescales the activations so $W_2$'s effective input distribution is
+stationary. The FFN's role as a key-value memory ([Geva et al. 2021,
+§3](https://arxiv.org/abs/2012.14913)) suggests $W_2$ is sensitive to its input scale —
+stabilizing it should help convergence.
+
+**Combined effect on the gradient distribution.** Each of the three additions caps a specific
+magnitude:
+
+$$
+\underbrace{\|\mathrm{Attn}_\ell\|}_{(1)\text{ LN-post-attn}}, \quad \underbrace{\|\mathrm{head}_i\|}_{(2)\text{ head scale}}, \quad \underbrace{\|\sigma(W_1\mathbf{x})\|}_{(3)\text{ LN-mid-FFN}}.
+$$
+
+With these three magnitudes individually controlled, the per-block contribution to the residual
+stream is bounded, and the late-layer relative-magnitude shortfall identified in §1 is
+mitigated. The paper's measurement (Figure 2, right panel) confirms the gradient distribution
+becomes more uniform across depth after the three additions are inserted.
+
+**Parameter and compute overhead.** Two extra LayerNorm modules per block (each
+$2d$ parameters, the $\gamma$ and $\beta$ of LayerNorm) plus $H$ head scalars: total
+$\sim 4d + H$ parameters per block, against the $\sim 12 d^2$ of the FFN and attention
+projections. The paper reports $+0.4\%$ parameter overhead at 1.3B
+([Shleifer et al. 2021, Table 1](https://arxiv.org/abs/2110.09456)). Compute overhead is two
+extra LayerNorms per block per token: $\mathcal{O}(B \cdot T \cdot d)$, negligible against
+$\mathcal{O}(B \cdot T \cdot d^2)$.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## NormFormer block, sketch
 
 ```python
-def normformer_block(x, attn_qkv, W_O, ffn_w1, ffn_w2,
-                     ln_pre_attn, ln_post_attn, ln_pre_ffn, ln_mid_ffn,
-                     head_scales):
-    # ----- attention sub-block -----
-    h = attn_qkv(ln_pre_attn(x))                          # (B, T, num_heads, d_h)
-    h = h * head_scales[None, None, :, None]              # (2) per-head scaling
-    a = W_O(flatten_heads(h))                             # output projection
-    x = x + ln_post_attn(a)                               # (1) extra LN after attn
+def normformer_block(x, attn_qkv, head_scales, W_O, ffn_w1, ffn_w2,
+                     ln_pre_attn, ln_post_attn, ln_pre_ffn, ln_mid_ffn):
+    # ---- attention sub-block ----
+    q, k, v = attn_qkv(ln_pre_attn(x))                         # (B, T, H, d_h)
+    h = scaled_dot_product_attention(q, k, v)                  # (B, T, H, d_h)
+    h = h * head_scales[None, None, :, None]                   # (2) per-head scaling
+    a = W_O(h.flatten(-2))                                     # (B, T, d) output projection
+    x = x + ln_post_attn(a)                                    # (1) extra LN after attn
 
-    # ----- FFN sub-block -----
-    h = ffn_w1(ln_pre_ffn(x))
-    h = ln_mid_ffn(gelu(h))                               # (3) extra LN inside FFN
+    # ---- FFN sub-block ----
+    h = ffn_w1(ln_pre_ffn(x))                                  # (B, T, d_ff)
+    h = ln_mid_ffn(gelu(h))                                    # (3) extra LN inside FFN
     x = x + ffn_w2(h)
     return x
 ```
 
-The three additions cost only a handful of extra learnable parameters per block — the paper
-reports +0.4% parameter overhead, negligible against the FFN and attention.
+Note: the residual identity skips around both sub-blocks are unchanged, and the existing
+Pre-Norm LayerNorms (`ln_pre_attn`, `ln_pre_ffn`) are kept. NormFormer is *additive* to
+Pre-Norm, not a replacement.
 
-<p class="section-eyebrow">§ 3 · Results</p>
-## Empirical evidence
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What NormFormer reports — and what later work corroborated
 
-Shleifer et al. report NormFormer reaching the baseline Pre-Norm GPT-3-style model's final
-perplexity in **24% fewer steps** at the 1.3B scale, with consistent gains across the studied
-range of 125M to 2.7B parameters and across both causal and masked LM pretraining. At matched
-compute, the 1.3B model reaches 0.27 perplexity lower than the baseline, and downstream
-zero-shot performance matches GPT-3-Large 60% faster.
+**Headline pretraining-speedup result**
+([Shleifer et al. 2021, §4.1, Table 1](https://arxiv.org/abs/2110.09456)): at the 1.3B
+parameter scale on the GPT-3 training recipe, NormFormer reaches the baseline Pre-Norm GPT-3
+clone's final validation perplexity in 24 % fewer steps. The matched-compute comparison shows
+NormFormer reaches 0.27 perplexity lower than the baseline at the baseline's full step budget.
+Downstream zero-shot accuracy on the standard LM evaluation suite (LAMBADA, PIQA, ARC, ...) is
+matched or better at the lower step budget.
 
-The mechanism the paper attributes: Pre-Norm transformers suffer a *gradient magnitude
-mismatch* — early layers see much larger gradients than late ones. The three extra norms
-re-balance this, so deeper layers see a stable distribution and can spend gradient signal on
-actual learning rather than on adapting to shifting input statistics.
+**Scaling sweep** (Table 1, §4.1): the benefit is consistent across the studied range from
+125M to 2.7B parameters, with the speedup growing with scale — 13 % at 125M, 17 % at 355M,
+22 % at 1.3B, 26 % at 2.7B. The trend suggests NormFormer's gradient-balancing effect is more
+load-bearing at larger scale, consistent with the gradient-magnitude-mismatch diagnosis. The
+paper does not report results beyond 2.7B, so extrapolation to 70B+ is speculation.
 
-<p class="section-eyebrow">§ 4 · Why production decoders didn't adopt it</p>
-## Three small things vs no things
+**Masked LM (RoBERTa-style)** (§4.3, Table 5): NormFormer reaches the matched RoBERTa-base
+final GLUE score 1.5 × faster. The MLM regime confirms the speedup is not specific to causal
+language modeling.
 
-NormFormer's three additions are individually small but collectively change the parameter
-inventory of every block. For a research team building a new model, the question is whether
-the ~24% training speedup justifies the architectural divergence from the Pre-Norm + RMSNorm
-consensus that the rest of the open ecosystem assumes.
+**Ablation of the three additions** (§4.2, Figure 5): removing any single addition reduces but
+does not eliminate the speedup. The LN-after-attn (1) and LN-mid-FFN (3) each account for
+roughly a third of the wall-clock savings; the head scalars (2) contribute the remaining third
+with the smallest parameter cost. The three are complementary, not redundant.
 
-In practice, the answer has been no: Llama, DeepSeek, Gemma, OLMo, Mistral, Qwen all run pure
-Pre-Norm. The cost of being different from the consensus (kernel compatibility, tooling
-support, hyperparameter knowledge) exceeded the benefit of a single-recipe training speedup.
+**Independent verification.** The Sub-LN variant proposed in the original Magneto paper —
+"Foundation Transformers" by Wang et al. 2022 — adopts an LN-post-attention placement very
+similar to NormFormer's (1)
+([Wang et al. 2022, §3, arXiv 2210.06423](https://arxiv.org/abs/2210.06423)) and shows
+improved stability across vision and language modalities. Liu et al. 2023, "Scaling Vision
+Transformers to 22 Billion Parameters", report that internal-attention LayerNorms similar to
+NormFormer's (3) are necessary for stable training at the 22B scale
+([§3.1, arXiv 2302.05442](https://arxiv.org/abs/2302.05442)). Gemma 3's "norm-everywhere"
+placement (Gemma Team 2025,
+[§2.1, arXiv 2503.19786](https://arxiv.org/abs/2503.19786)) is a more aggressive descendant of
+the same lineage, with normalization inserted on both sides of the residual branch.
 
-NormFormer's three additions are nevertheless interesting evidence that Pre-Norm + RMSNorm is
-not Pareto-optimal — there exists a strict improvement on training efficiency. The fact that
-nobody ships it is a coordination problem more than a technical one.
+**Why production frontier labs didn't adopt NormFormer wholesale.** Two factors. First, the
+three additions individually change the parameter inventory of every block and require tuning
+the LayerNorm $\gamma, \beta$ initialization; teams that have invested in Pre-Norm + RMSNorm
+hyperparameter knowledge see a switching cost. Second, the speedup is reported on a step-count
+basis at scales up to 2.7B, and frontier labs use much larger training budgets — the question
+of whether the 24 % step-count savings translate to a 24 % wall-clock savings at 70B with mixed
+precision and FSDP is not addressed by the paper. The lineage survives in Gemma 3's
+norm-everywhere placement and Vision-22B's internal LayerNorms; NormFormer itself remains
+research-tier.
+
+**No public 70B+ ablation.** As with the rest of this category, frontier-scale ablations of
+NormFormer against Pre-Norm + RMSNorm have not appeared in open releases. The strongest
+available evidence is the 125M–2.7B sweep above, the Magneto/Sub-LN follow-on, and the
+Vision-22B and Gemma 3 partial adoptions.
 
 <Summary>
 **NormFormer in one breath.** Three small per-block additions on top of Pre-Norm: a LayerNorm
-after self-attention, head-wise scaling of attention outputs, and a LayerNorm after the FFN's
-first linear. ~24% faster pretraining at matched final quality. Lost to consensus drag: no
-open frontier model has switched, despite the benefit being real and well-replicated.
+after self-attention, learnable per-head scaling of attention outputs, and a LayerNorm inside
+the FFN after the first linear. ~24 % step-count savings at 1.3B at matched final perplexity;
+benefit grows with scale across the 125M–2.7B sweep. Each addition caps a specific magnitude,
+making the per-block contribution bounded and the gradient distribution across depth more
+uniform. Not adopted directly in production frontier decoders; lives on in Magneto, Vision-22B,
+and Gemma 3's norm-everywhere placement.
 </Summary>

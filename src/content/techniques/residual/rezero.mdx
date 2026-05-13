@@ -23,82 +23,178 @@ import ReZeroAlpha from "~/components/figures/ReZeroAlpha";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Why deep transformers need help
+## Deep transformers cannot start anywhere
 
-A standard Pre-Norm residual transformer block is
+The [residual entry](/llm-arch-kb/residual/residual-overview/) shows that the
+identity term inside each block's Jacobian
+$I + \partial f_\ell/\partial \mathbf{x}_\ell$ is what makes deep stacks trainable. But the
+identity is only one term — the *magnitude* of the sublayer Jacobian at initialization still
+governs how the product of layer Jacobians behaves at finite depth.
 
-$$\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + f_\ell(\mathrm{Norm}(\mathbf{x}_\ell)).$$
+Bachlechner et al. (2020) frame the problem through the input–output Jacobian of an
+$L$-block stack at initialization. For Post-Norm transformers without warmup, the singular
+values of $\partial \mathbf{x}_L / \partial \mathbf{x}_0$ blow up exponentially in $L$ on the
+upper end and collapse toward zero on the lower end — past depth $\sim$12 layers the optimizer
+diverges in the first few steps
+([Bachlechner et al. 2020, §2 + Figure 3](https://arxiv.org/abs/2003.04887)). Pre-Norm
+trains but its gradient distribution shifts unevenly across depth: early layers see much
+larger gradients than late ones (Xiong et al. 2020,
+[§4.2](https://arxiv.org/abs/2002.04745)). Standard remedies are LayerNorm
+(magnitude control), Xavier/He initialization (per-layer variance), and a learning-rate
+warmup schedule that keeps optimizer step sizes small until the gradient distribution
+settles — three knobs whose joint tuning is brittle past 64 layers.
 
-At initialization, $f_\ell$ outputs noise of nontrivial magnitude. Stacking $L$ such blocks
-multiplies the perturbation by $L$; the residual stream norm grows like $\sqrt{L}$ even before
-training begins. Past depth 50–100, this manifests as gradient pathologies that require
-LayerNorm, careful initialization, and warmup to suppress.
+The premise: if every block started as *exactly* the identity, none of these knobs would be
+load-bearing. Gradient norm through the block would be exactly one. The optimizer could safely
+take full step sizes from step zero, and the network would learn its way away from the identity
+function only as the loss demanded.
 
-Bachlechner et al.'s observation: if you could make every block start as the *identity* — its
-contribution exactly zero at step 0 — none of this would matter.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## One scalar per branch, initialized to zero
 
-<p class="section-eyebrow">§ 2 · The fix</p>
-## One scalar, initialized to zero
+Start from the standard residual block with sublayer $f_\ell : \mathbb{R}^d \to \mathbb{R}^d$
+(self-attention or FFN):
 
-Add a learnable scalar $\alpha_\ell \in \mathbb{R}$ per residual branch, initialized to 0:
+$$
+\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + f_\ell\bigl(\mathrm{Norm}(\mathbf{x}_\ell)\bigr).
+$$
 
-$$\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \alpha_\ell \cdot f_\ell(\mathbf{x}_\ell).$$
+ReZero replaces this with a learnable scalar $\alpha_\ell \in \mathbb{R}$ gating the sublayer's
+contribution, and drops the normalization:
 
-At $\alpha_\ell = 0$ the block is literally the identity function. Gradient through the block
-is exactly 1. Training opens by leaving the residual stream alone; as $\alpha_\ell$ becomes
-nonzero, each block gradually pulls its sublayer's contribution into the stream.
+$$
+\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + \alpha_\ell\, f_\ell(\mathbf{x}_\ell), \qquad \alpha_\ell^{(0)} = 0.
+$$
 
-Note the second change: **no normalization**. ReZero argues that with $\alpha_\ell$ controlling
-the contribution magnitude, the LayerNorm becomes redundant.
+Initialized at $\alpha_\ell^{(0)} = 0$, the block is *literally* the identity map at step zero;
+its sublayer parameters can be set arbitrarily without disturbing the forward pass. The
+Jacobian factor becomes
+
+$$
+\frac{\partial \mathbf{x}_{\ell+1}}{\partial \mathbf{x}_\ell} = I + \alpha_\ell\, \frac{\partial f_\ell}{\partial \mathbf{x}_\ell},
+$$
+
+so at step zero the per-block Jacobian is exactly $I$ and the full input–output Jacobian
+$\partial \mathbf{x}_L / \partial \mathbf{x}_0 = I$ regardless of $L$. Singular values are all
+one. Backpropagated gradient norms are independent of depth, and the optimizer is free to take
+its full nominal step.
+
+**Why "init to zero" rather than "init to small."** A small but nonzero $\alpha$ still leaves
+the multiplicative product $\prod_\ell (1 + \alpha\, \sigma_k(\partial f_\ell))$ depth-sensitive
+on the order of $e^{L\alpha\sigma}$. Zero is the unique value that makes the product *exactly*
+one for every $L$. Bachlechner et al. (§3) prove that gradient signal at initialization is
+preserved with no dependence on layer count.
+
+**Why drop the norm.** Once $\alpha_\ell$ controls the magnitude of the sublayer's contribution
+end-to-end, normalization becomes redundant in the regime that matters: the addition can never
+push the stream into a numerical range that bottoms out gradients, because $\alpha_\ell$ starts
+small. The paper also argues (§3.1) that LayerNorm's centering step actively interferes with
+the proof of dynamical isometry — it makes the per-block Jacobian's expected singular value
+depend on properties of the input distribution. Removing it restores a clean analysis.
+
+**Dynamical-isometry reading.** ReZero is a particular instance of *dynamical isometry*
+(Pennington et al. 2017, [§2](https://proceedings.neurips.cc/paper/2017/hash/d9fc0cdb67638d50f411432d0d41d0ba-Abstract.html)):
+the condition that the input–output Jacobian of a deep network has all singular values close to
+one at initialization. Standard initialization schemes (Xavier, He, orthogonal) achieve this in
+expectation for one layer but not after $L$-fold composition through nonlinearities. ReZero
+achieves exact dynamical isometry by construction, for arbitrary $L$, with no constraints on
+the sublayer's internal weights.
+
+**Gradient and training-time scaling.** As training proceeds, $\alpha_\ell$ moves away from
+zero — but the paper shows (Figure 4) that the $\alpha_\ell$ values *spread*: early layers grow
+$\alpha$ toward $\sim 0.1$–$1.0$ while deep layers stay near zero. The network self-allocates
+"effective depth" rather than using all $L$ blocks equally. This is impossible to achieve with
+fixed Pre-Norm because every block always contributes a nontrivial perturbation.
+
+**Parameter and compute cost.** One additional scalar per sublayer — $2L$ total scalars for an
+$L$-layer transformer. Compute overhead is $L$ scalar multiplies, $\mathcal{O}(B \cdot T \cdot d)$
+each, negligible against the $\mathcal{O}(B \cdot T \cdot d^2)$ sublayer compute. The
+normalization layers (and their parameters and FLOPs) are gone, which is a small net savings.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## ReZero block, sketch
 
 ```python
 class ReZeroBlock(nn.Module):
     def __init__(self, sublayer):
         super().__init__()
-        self.sublayer = sublayer
-        self.alpha = nn.Parameter(torch.zeros(1))  # crucial: init to 0
+        self.sublayer = sublayer                          # attn or FFN
+        self.alpha = nn.Parameter(torch.zeros(1))         # init to 0 — load-bearing
     def forward(self, x):
-        return x + self.alpha * self.sublayer(x)
+        # x: (B, T, d) — residual stream
+        return x + self.alpha * self.sublayer(x)          # no LayerNorm
 ```
+
+Two such blocks per transformer layer (attention + FFN), each with its own $\alpha_\ell$. The
+sublayer is unchanged from the standard transformer; the load-bearing edit is the `* alpha` and
+the absence of any norm.
 
 <ReZeroAlpha client:visible />
 
-<p class="section-eyebrow">§ 3 · Results</p>
-## Empirical evidence
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What ReZero reports — and what others reproduced
 
-The headline experiments (Table 2, Bachlechner et al.):
+The paper's headline experiments
+([Bachlechner et al. 2020, §4](https://arxiv.org/abs/2003.04887)):
 
-- **128-layer transformer trains stably from scratch with no warmup, no LayerNorm.** Standard
-  Pre-Norm at 128 layers requires careful warmup; Post-Norm at this depth diverges.
-- **WikiText-103 perplexity matches LayerNorm-based baselines** at 12 to 64 layers, with 56%
-  faster wall-clock convergence (Table 4).
-- **ResNets, RNNs, and other residual architectures** all benefit from the same recipe.
+- **128-layer transformer trains from scratch** without warmup, without LayerNorm, on the
+  enwiki8 character LM benchmark (§4.2, Figure 5). The matched 128-layer Post-Norm baseline
+  diverges within the first few hundred steps; the Pre-Norm 128-layer baseline trains but
+  reaches a higher loss at the same step budget.
+- **WikiText-103 perplexity** at 12 to 64 layers matches Pre-Norm + LayerNorm baselines, with
+  56 % fewer iterations to reach the baseline's final perplexity at 12 layers (Table 4, §4.3).
+- **Image classification (ResNet-110 on CIFAR-10)** trains stably with ReZero applied to each
+  residual block, matching the original ResNet recipe within statistical noise (§4.4).
+- **Recurrent networks** with ReZero on the recurrence also benefit, suggesting the mechanism
+  generalizes beyond transformers (§4.5).
 
-The mechanism — start at identity, grow contributions slowly — is mathematically clean enough
-to give a precise account of why warmup is sometimes necessary for standard initializations: it
-is doing the same work as letting $\alpha_\ell$ grow from 0, just less directly.
+**Independent ablations.** Liu et al. (2020), "Understanding the Difficulty of Training
+Transformers", arrive at a closely related diagnosis: they propose Admin
+([§5, arXiv 2004.08249](https://arxiv.org/abs/2004.08249)), a per-branch *constant* scaling
+factor $\omega_\ell$ derived from a forward-variance calculation, which plays the same role as
+ReZero's $\alpha_\ell$ but is fixed rather than learned. Admin trains 12-layer Post-Norm
+transformers stably without warmup and converges to lower loss than the Pre-Norm baseline on
+WMT'14 EN-DE (their Table 2). The agreement on mechanism — *some* per-branch scaling
+controlling early-step Jacobian magnitude — strengthens the ReZero analysis.
 
-<p class="section-eyebrow">§ 4 · Why it isn't standard</p>
-## The Pre-Norm + RMSNorm consensus won
+**SkipInit (De & Smith 2020).** A concurrent ICLR submission shows that initializing the final
+BatchNorm $\gamma$ of each residual block to zero yields the same depth-stability effect for
+ResNets and removes the need for BatchNorm itself
+([§3, arXiv 2002.10444](https://arxiv.org/abs/2002.10444)). The "skip init" name describes
+ReZero's mechanism almost word-for-word, with the difference being which scalar is targeted —
+the final-layer normalization $\gamma$ vs an explicit branch multiplier. Both pieces of work
+identify the same fact: zero-initialized residual scale is the minimal condition for
+depth-independent gradient flow.
 
-ReZero is correct. It is also rarely used at production scale. The reasons:
+**T-Fixup (Huang et al. 2020)** provides the same deep-transformer recipe with a different
+implementation: rescaled initialization of attention and FFN weights, no LayerNorm, no warmup,
+producing stable training of 100+ layer transformers
+([§3, arXiv 2002.04745](https://arxiv.org/abs/2002.04745)). T-Fixup and ReZero are different
+recipes for the same dynamical-isometry target; the comparison is in the T-Fixup paper's §5.
 
-1. **Pre-Norm + RMSNorm is a known quantity.** The training dynamics, hyperparameter sweet
-   spots, and failure modes are charted across hundreds of models. Switching is risk for unclear
-   reward at the scales people actually care about.
-2. **At "merely deep" sizes** (32–80 layers), warmup + Pre-Norm just works. ReZero's headline
-   benefit (no warmup at 128+ layers) is academic.
-3. **A single learnable scalar per branch is hard to initialize correctly** when combined with
-   modern techniques like FSDP and mixed-precision training. Standard norms are battle-tested
-   here; new per-layer scalars are not.
+**Scaling-curve evidence at frontier scale.** None. Bachlechner et al.'s largest experiment is
+a 128-layer character LM on enwiki8 — small by 2026 standards. No public open-frontier release
+has run a Llama-scale ablation of ReZero against Pre-Norm + RMSNorm, so "ReZero at 70B+
+parameters" remains an open empirical question. The closed-frontier policy applies: speculating
+on which production labs may have tested it is out of scope.
 
-DeepNet (Wang et al. 2022) revisits the same problem with a different solution — scaling each
-residual addition by an initialization-derived constant rather than a learnable scalar — and
-reportedly does scale to 1000+ layer transformers. The lineage is alive in research.
+**Why production decoders didn't adopt it.** The consensus stack (Pre-Norm + RMSNorm at every
+depth tier from 7B to 671B) is a known quantity with charted failure modes and hyperparameter
+sweet spots across thousands of training runs. ReZero's headline benefit applies at depths
+($L \gtrsim 100$) past the production envelope: Llama 3.1 405B is 126 layers
+([Grattafiori et al. 2024, Table 3](https://arxiv.org/abs/2407.21783)) and trains under
+Pre-Norm + RMSNorm; DeepSeek-V3 is 61 layers
+([DeepSeek-AI 2024, §2.1](https://arxiv.org/abs/2412.19437)). Switching to ReZero is risk
+without a documented reward at those depths. [DeepNet](/llm-arch-kb/residual/deepnet/) revisits
+the same problem with a different scaling and reportedly scales to 1000 layers; that lineage is
+the live one in research.
 
 <Summary>
-**ReZero in one breath.** Multiply each residual branch by a learnable scalar α initialized to
-zero; drop the LayerNorm. The network starts at the identity function, gradients flow
-perfectly, and depth becomes nearly free. Works; not standard at production scale because
-Pre-Norm + RMSNorm has decisive incumbent advantages.
+**ReZero in one breath.** Replace $\mathbf{x} + f(\mathbf{x})$ with $\mathbf{x} + \alpha\, f(\mathbf{x})$
+where $\alpha$ is a per-branch learnable scalar initialized at zero, and drop the
+LayerNorm. Achieves exact dynamical isometry at init: $\partial \mathbf{x}_L / \partial \mathbf{x}_0 = I$
+for any depth. Trains 128-layer transformers without warmup; converges faster at shallow
+depths. Independently corroborated by Admin, SkipInit, and T-Fixup. No frontier production
+adoption: incumbent advantages of Pre-Norm + RMSNorm dominate at the depth tier where models
+currently ship.
 </Summary>

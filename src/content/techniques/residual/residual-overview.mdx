@@ -34,93 +34,173 @@ difficulty: "intro"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The pre-residual era
+## The pre-residual depth wall
 
-Before ResNet, networks deeper than ~20 layers were intractable to train. Gradients either
-vanished (multiplicative attenuation through nonlinearities) or exploded (amplification through
-unbounded weight matrices). VGG topped out at 19 layers.
+By 2014, the open question for image recognition was whether stacking more layers would
+continue to buy accuracy. VGG-19 had pushed plain-feedforward depth to nineteen weight layers
+([Simonyan & Zisserman 2015, §3](https://arxiv.org/abs/1409.1556)); GoogLeNet had reached
+twenty-two via inception modules with auxiliary classifiers
+([Szegedy et al. 2015, §5](https://arxiv.org/abs/1409.4842)). Past those depths, naive plain
+networks regressed on the training set itself. He et al. (2015) document this with the canonical
+plot of CIFAR-10 training error rising as a 56-layer plain net is compared to a 20-layer one —
+not a generalization gap, an *optimization* gap
+([He et al. 2015, Figure 1](https://arxiv.org/abs/1512.03385)).
 
-The diagnosis from He et al. (2015) was sharp: depth itself was not the problem. The problem
-was that deep stacks were being asked to *transform* activations through a long chain of
-nonlinear functions, when most of those layers should be doing very little — close to the
-identity.
+The diagnosis is sharp: deep stacks were being asked to *transform* activations through a long
+chain of nonlinearities, when most of those layers should be doing very little — close to the
+identity. A 50-layer plain net should be able to match its 20-layer prefix simply by setting
+the last 30 layers to identity, but plain optimization cannot find that solution at random
+initialization.
 
-<p class="section-eyebrow">§ 2 · The fix</p>
-## Add, don't replace
+A 175-billion-parameter dense decoder running at fp16 weighs 350 GB; its 96-layer stack passes
+each token's residual vector through 192 attention/FFN sublayers without losing the addressing
+structure the unembedding will eventually read. That this works at all is downstream of the one
+architectural choice this entry is about. The contribution: add the input back, after the
+sublayer.
 
-Reformulate each block to learn a *residual function* on top of an identity skip:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## From transform to perturbation
 
-$$\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + f_\ell(\mathbf{x}_\ell).$$
+Write a plain block as a learned function $H_\ell : \mathbb{R}^d \to \mathbb{R}^d$ acting on the
+activation $\mathbf{x}_\ell \in \mathbb{R}^d$:
 
-Now $f_\ell$ only needs to learn what is different about $\mathbf{x}_{\ell+1}$ vs
-$\mathbf{x}_\ell$. The "do nothing" baseline is $f_\ell \equiv 0$, which is reachable with a
-simple bias initialization. Depth becomes nearly free.
+$$
+\mathbf{x}_{\ell+1} = H_\ell(\mathbf{x}_\ell).
+$$
 
-The gradient with respect to a deep input is
+The identity is a valid target for $H_\ell$ but not a default; to recover it the weights have to
+land in a specific nontrivial subspace. Reparameterize: let
+$f_\ell(\mathbf{x}_\ell) = H_\ell(\mathbf{x}_\ell) - \mathbf{x}_\ell$ and require the block to
+learn $f_\ell$ directly:
 
-$$\frac{\partial L}{\partial \mathbf{x}_\ell} = \frac{\partial L}{\partial \mathbf{x}_{L}}\;\prod_{k=\ell}^{L-1}\Bigl(I + \frac{\partial f_k}{\partial \mathbf{x}_k}\Bigr).$$
+$$
+\mathbf{x}_{\ell+1} = \mathbf{x}_\ell + f_\ell(\mathbf{x}_\ell).
+$$
 
-The identity term inside each product keeps the gradient from collapsing to zero or blowing up,
-even at depths of hundreds of layers.
+The "do nothing" baseline is now $f_\ell \equiv 0$, reachable by sending the last linear in the
+sublayer to zero — a single bias initialization rather than a coordinated weight pattern. He
+et al. argue (§3.1) that if the desired transformation is close to identity, learning the
+*difference* is easier than learning the full mapping.
 
-<p class="section-eyebrow">§ 3 · The residual stream</p>
-## A useful mental model
+The gradient through $L - \ell$ residual blocks unfolds as a product over $\ell, \ldots, L-1$:
 
-A modern transformer block has two sub-layers (attention, FFN), each with its own residual:
+$$
+\frac{\partial \mathbf{x}_L}{\partial \mathbf{x}_\ell} = \prod_{k=\ell}^{L-1}\!\left(I + \frac{\partial f_k}{\partial \mathbf{x}_k}\right).
+$$
+
+Each factor is the identity plus the Jacobian of the local residual function. Expanded, the
+product becomes a sum over subsets of layers — the contribution that skips every block is the
+identity, and small-Jacobian blocks contribute additively rather than multiplicatively. As long
+as $\|\partial f_k / \partial \mathbf{x}_k\|$ stays bounded, the gradient norm cannot collapse
+to zero across depth, which is the failure mode Glorot & Bengio (2010) diagnosed for plain
+sigmoidal stacks ([§4](https://proceedings.mlr.press/v9/glorot10a.html)).
+
+For a transformer block the same construction is applied *twice* — once for attention, once for
+the FFN:
+
+$$
+\begin{aligned}
+\mathbf{y}_\ell &= \mathbf{x}_\ell + \mathrm{Attn}_\ell\bigl(\mathrm{Norm}(\mathbf{x}_\ell)\bigr),\\
+\mathbf{x}_{\ell+1} &= \mathbf{y}_\ell + \mathrm{FFN}_\ell\bigl(\mathrm{Norm}(\mathbf{y}_\ell)\bigr).
+\end{aligned}
+$$
+
+The placement of the normalization inside or outside the addition is the Pre-Norm vs Post-Norm
+distinction; see the [norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for the
+zoo. The residual addition itself — the $+\mathbf{x}_\ell$ — is invariant across those
+choices.
+
+**Why elementwise addition and not concatenation.** Concatenation would grow the activation
+dimension across depth and force every downstream weight matrix to widen, which is incompatible
+with the weight-sharing pattern of a transformer block. Addition keeps $d$ fixed and turns the
+sequence of sublayers into a sequence of reads and writes against a single $\mathbb{R}^d$
+working memory. Highway Networks (Srivastava et al. 2015) tried a gated convex combination
+$\mathbf{x}_{\ell+1} = T \odot f(\mathbf{x}_\ell) + (1-T) \odot \mathbf{x}_\ell$
+([§2.2](https://arxiv.org/abs/1505.00387)); ResNet's untruncated identity term turned out to be
+strictly better at depth.
+
+**Parameter and compute cost.** The residual addition itself adds zero parameters and one
+elementwise sum per block — $\mathcal{O}(B \cdot T \cdot d)$ FLOPs alongside the
+$\mathcal{O}(B \cdot T \cdot d^2)$ sublayer compute. The cost is dominated by the sublayer it
+wraps, by orders of magnitude.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## The two-residual transformer block
 
 ```python
-def block(x, attn, ffn, norm1, norm2):
-    x = x + attn(norm1(x))   # attention adds a delta
-    x = x + ffn(norm2(x))    # FFN adds another delta
+def transformer_block(x, attn, ffn, norm1, norm2):
+    # x: (B, T, d) — the residual stream
+    # Pre-Norm placement: norm is inside the residual branch
+    x = x + attn(norm1(x))    # attention writes a delta into the stream
+    x = x + ffn(norm2(x))     # FFN writes another delta
     return x
 ```
 
-Think of $\mathbf{x}$ as a flowing *stream* whose dimensionality $d_{\text{model}}$ is fixed
-across depth. Every block reads from the stream (via the norm + sublayer), computes a
-correction, and writes that correction back additively. Nothing is replaced; nothing is lost
-unless explicitly written over.
+Two residual additions per block, no gating, no learned skip scale, no per-branch scaling. This
+is the consensus across every dense open-frontier decoder cataloged in the adoption list above:
+Llama 3.1 (Grattafiori et al. 2024, §3.1), DeepSeek-V3 (DeepSeek-AI 2024, §2.1), Gemma 3
+(Gemma Team 2025, §2), OLMo 2 (OLMo Team 2025, §3). Variants in the
+[ReZero](/llm-arch-kb/residual/rezero/), [DeepNet](/llm-arch-kb/residual/deepnet/),
+[NormFormer](/llm-arch-kb/residual/normformer/), and
+[Hyper-Connections](/llm-arch-kb/residual/hyper-connections/) entries decorate this skeleton
+without removing the bare $+\mathbf{x}$.
 
-This framing has become the standard mechanistic-interpretability lens (Elhage et al. 2021,
-"A Mathematical Framework for Transformer Circuits"). Each attention head and FFN neuron is a
-read/write operation against the residual stream. The stream is the shared memory.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What the identity skip bought
 
-<p class="section-eyebrow">§ 4 · Geometry across depth</p>
-## The norm grows
+He et al. report the headline result on ImageNet (Table 4, §4.1): plain-34 lands at 28.54 %
+top-1 error, ResNet-34 at 25.03 %, and the same training recipe drives ResNet-152 to
+21.43 %. The plain-34 training curve also sits *above* plain-18's, confirming the optimization
+gap; the residual variants reverse the ordering as expected. CIFAR-10 results push the same
+recipe to 110 layers with stable training (Table 6, §4.2). The 1202-layer variant trains
+without divergence but overfits the small dataset — depth is no longer a stability ceiling, it
+is a regularization concern.
 
-A consequence of pure Pre-Norm residual layout: the residual stream's norm tends to grow
-monotonically with depth, because each block adds a perturbation but nothing trims it. A 100-layer
-model can have a stream norm 10× larger at the output than at the embedding.
+The transformer port is Vaswani et al. (2017): the original transformer block already includes
+residual additions around both sub-layers (§3.1, "We employ a residual connection ... around
+each of the two sub-layers"). No subsequent decoder family removed them. GPT-2's 48-layer stack
+(Radford et al. 2019, §2), GPT-3's 96-layer stack
+([Brown et al. 2020, §2.1](https://arxiv.org/abs/2005.14165)), Chinchilla's 80-layer 70B
+([Hoffmann et al. 2022, §3](https://arxiv.org/abs/2203.15556)), and the 61-layer DeepSeek-V3
+all rely on the unchanged additive skip.
 
-This is mostly fine — the final RMSNorm before the unembedding normalizes it back — but it has
-two effects worth knowing:
+**Mechanistic-interpretability framing.** Elhage et al. (2021) named the
+"$\mathbf{x}_\ell \in \mathbb{R}^d$ across depth" object the *residual stream* and showed it
+behaves as the model's working memory:
+attention heads and FFN neurons are read/write operations against it, decomposable into
+linearly separable contributions ([Anthropic transformer-circuits framework, §"Residual
+Stream as Communication Channel"](https://transformer-circuits.pub/2021/framework/index.html)).
+That framing is now the standard lens for circuit-level analyses of trained transformers.
 
-1. **Layers deep in the network see a different distribution than shallow ones.** Some recent
-   designs (DeepNorm, OLMo 2) deliberately rein in the growth via initialization or by reverting
-   to Post-Norm with care.
-2. **Sandwich placements** (Gemma 3's norm-everywhere) wrap each residual branch in normalization,
-   capping the magnitude of the additive correction per block. See the
-   [norm-placement entry](/llm-arch-kb/normalization/norm-placement/) for the placement zoo.
+**Norm growth across depth.** Pre-Norm residual stacks exhibit monotonic norm growth: each
+block adds a perturbation, nothing trims the stream. Xiong et al. (2020, §4.2) document the
+growth profile and show Pre-Norm transformers train stably without warmup precisely because of
+the controlled gradient term identified above
+([arXiv 2002.04745](https://arxiv.org/abs/2002.04745)). Liu et al. (2020) — "Understanding the
+Difficulty of Training Transformers" — extend the analysis and attribute Post-Norm's training
+instability past ~12 layers to the absence of the same identity term in the gradient product
+([arXiv 2004.08249, §3](https://arxiv.org/abs/2004.08249)).
 
-<p class="section-eyebrow">§ 5 · Variations on the basic recipe</p>
-## What changes the residual itself
+**When the simple recipe is modified.** Three directions appear in subsequent entries.
+[ReZero](/llm-arch-kb/residual/rezero/) (Bachlechner et al. 2020) inserts a learnable scalar at
+zero init so the network starts at exact identity.
+[DeepNet](/llm-arch-kb/residual/deepnet/) (Wang et al. 2022) rescales the Post-Norm residual by
+a depth-derived constant to stabilize 1000-layer training.
+[Hyper-Connections](/llm-arch-kb/residual/hyper-connections/) (Zhu et al. 2024) replaces the
+single stream with a bank of $n$ parallel streams plus learned mixing. None has displaced the
+unadorned $\mathbf{x} + f(\mathbf{x})$ in production decoders as of the May 2026 release
+window.
 
-The standard $\mathbf{x} + f(\mathbf{x})$ is the consensus choice for every open frontier
-decoder. A few research directions worth flagging for later entries:
-
-- **ReZero** (Bachlechner et al. 2020): scale each residual branch by a learnable scalar
-  initialized to zero. Trains stably without warmup or norm.
-- **DeepNet** (Wang et al. 2022): rescale the residual additively to stabilize 1000+ layer
-  transformers.
-- **Hyper-Connections** (Zhu et al. 2024): replace the single residual stream with multiple
-  parallel streams that exchange information via learned read/write matrices.
-
-These are roadmap entries for the v2 and v3 ships. For v1, "the residual" means the original
-ResNet formulation, applied twice per transformer block, on either side of the norm depending
-on placement.
+**No public depth-vs-skip ablation in the modern frontier scale.** Open frontier labs have not
+published a Llama-scale ablation that re-runs the no-residual baseline, presumably because
+plain-stack divergence at $L = 80$ is uncontroversial. The strongest available evidence remains
+He et al.'s ImageNet/CIFAR experiments and the transformer-era stability analyses above.
 
 <Summary>
-**Residual in one breath.** Each block adds a learned perturbation to a clean linear stream
-instead of transforming activations in place. Gradients flow through the identity term, depth
-becomes nearly free, and the residual stream itself becomes the shared substrate that
-interpretability research now treats as the model's working memory.
+**Residual in one breath.** Each block adds a learned perturbation $f_\ell(\mathbf{x}_\ell)$ to
+the running activation rather than transforming it in place. The gradient through $L-\ell$
+blocks unfolds as $\prod_k (I + \partial f_k/\partial \mathbf{x}_k)$, whose identity term
+prevents collapse to zero. The "residual stream" — the $\mathbb{R}^d$ vector flowing through
+depth — has become the standard working-memory abstraction for both training stability and
+mechanistic interpretability.
 </Summary>

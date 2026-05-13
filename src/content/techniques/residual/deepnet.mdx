@@ -22,81 +22,186 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## The Post-Norm penalty
+## Post-Norm has the geometry; Pre-Norm has the stability
 
-Standard Post-Norm transformers have a clean theoretical property: every block's output is
-renormalized to unit variance before being passed on. Each layer sees a controlled distribution.
-This is desirable for expressivity reasons — it prevents the residual stream from drifting.
+Post-Norm transformers — Vaswani et al.'s original placement, normalization *after* the
+residual addition — have a clean theoretical property: every block's output is renormalized to
+controlled variance before the next block reads it
+([Vaswani et al. 2017, §3.1](https://arxiv.org/abs/1706.03762)). The residual stream never
+drifts because the normalization step caps its magnitude after every write. Empirically, when
+Post-Norm transformers *do* train, they often reach lower final loss than equivalently sized
+Pre-Norm baselines ([Liu et al. 2020, Table 2](https://arxiv.org/abs/2004.08249)).
 
-The problem (per Xiong et al. 2020, see the [norm-placement entry](/llm-arch-kb/normalization/norm-placement/))
-is that Post-Norm gradients shrink multiplicatively with depth and the architecture diverges
-past ~12 layers without careful warmup. Pre-Norm fixed the gradient issue but at the price of
-unbounded residual-stream growth.
+The catch: Post-Norm trains badly past $\sim 12$ layers without a careful warmup schedule. The
+diagnosis (Xiong et al. 2020, [§4.1](https://arxiv.org/abs/2002.04745)) is that the gradient
+norm at the first block shrinks like $\mathcal{O}(1/\sqrt{L})$ under standard initialization,
+so deep stacks see gradients orders of magnitude smaller at the input than at the output. Early
+training steps then bias the optimizer toward updating only late layers, often catastrophically.
 
-DeepNet's question: can you keep Post-Norm's stable distribution and *fix* the gradient
-problem by rescaling the residual?
+Pre-Norm placement — normalization *inside* the residual branch — was the response. It trains
+deep stacks reliably (the [norm-placement entry](/llm-arch-kb/normalization/norm-placement/)
+covers the zoo) but loses the stable-distribution-across-depth property: the residual stream's
+norm grows monotonically with depth, and layers deep in the network see a different
+distribution than shallow ones.
 
-<p class="section-eyebrow">§ 2 · The scaling</p>
-## α-scaled residuals, β-shrunk init
+Wang et al. (2022) ask: can the Post-Norm geometry be kept, while the depth-induced gradient
+shrinkage is *initialized away* rather than fought through warmup? Their answer — DeepNet, the
+paper's name; *DeepNorm*, the construction's name in the body — scales to a 1000-layer
+encoder-decoder.
 
-DeepNet (the paper calls the modification *DeepNorm*) uses Post-Norm placement but rescales
-the residual addition by a constant $\alpha$:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## α-rescaled residual, β-shrunk init
 
-$$\mathbf{x}_{\ell+1} = \mathrm{Norm}\bigl(\alpha \cdot \mathbf{x}_\ell + f_\ell(\mathbf{x}_\ell)\bigr).$$
+The construction modifies a Post-Norm transformer in exactly two places. First, the residual
+addition is rescaled before normalization:
 
-The trick: $\alpha$ is not learned. It is a constant derived from the network's depth $N$,
-paired with a companion constant $\beta$ that shrinks the initialization of the FFN, value, and
-output-projection weights so that forward-pass variance and gradient magnitudes are both
-bounded at step 0.
+$$
+\mathbf{x}_{\ell+1} = \mathrm{LayerNorm}\bigl(\alpha\, \mathbf{x}_\ell + f_\ell(\mathbf{x}_\ell)\bigr).
+$$
 
-For an $N$-layer encoder, Wang et al. derive
+The constant $\alpha > 1$ enlarges the contribution of the residual relative to the sublayer
+output before the normalization renormalizes both. Second, the sublayer's internal weights —
+specifically the FFN's $W_1, W_2$, the attention's value projection $W_V$, and the output
+projection $W_O$ — are initialized by scaling Xavier's variance by $\beta$:
 
-$$\alpha_{\text{enc}} = (2N)^{1/4},\quad \beta_{\text{enc}} = (8N)^{-1/4}.$$
+$$
+W \sim \mathcal{N}\!\left(0,\; \beta^2 \cdot \mathrm{Var}_{\text{Xavier}}(W)\right).
+$$
 
-The decoder formulas are analogous, with constants that account for both encoder and decoder
-depth. The result is an *initialization recipe* rather than a training-time modification: you
-compute $\alpha, \beta$ once based on the architecture's depth and freeze. No learnable scalar
-to track during training.
+With $\beta < 1$, the sublayer's output at initialization has reduced variance, so the
+$f_\ell(\mathbf{x}_\ell)$ term contributes less than the $\alpha\, \mathbf{x}_\ell$ term at
+step zero. The post-block normalization then makes the output close to a renormalization of
+$\mathbf{x}_\ell$ itself — i.e., close to identity, which is the regime the
+[ReZero](/llm-arch-kb/residual/rezero/) and [residual](/llm-arch-kb/residual/residual-overview/)
+entries identified as the gradient-friendly one.
+
+**The depth-derived constants.** For an $N$-layer encoder-only stack, Wang et al. derive
+
+$$
+\alpha_{\text{enc}} = (2N)^{1/4}, \qquad \beta_{\text{enc}} = (8N)^{-1/4}.
+$$
+
+For an encoder-decoder with $N$ encoder layers and $M$ decoder layers, the decoder uses
+$\alpha_{\text{dec}} = (3M)^{1/4}$ and $\beta_{\text{dec}} = (12M)^{-1/4}$
+([Wang et al. 2022, §3.2, Theorem 1](https://arxiv.org/abs/2203.00555)). These are
+*constants*, derived once from architecture choices, frozen for training — no learnable
+parameter, no schedule.
+
+**Where the constants come from.** The derivation (§3, Theorem 1) bounds the per-step model
+update $\|\mathbf{x}^{(t+1)}_L - \mathbf{x}^{(t)}_L\|$ in terms of depth and weight-update
+magnitude. Without DeepNorm, the bound grows like $\mathcal{O}(L)$ in depth, which is what
+causes Post-Norm divergence. With $\alpha = (2N)^{1/4}$ and $\beta = (8N)^{-1/4}$, the bound
+becomes a *constant* in $L$: the same SGD step size produces the same expected model-output
+change regardless of depth. Wang et al. argue (§4) that this depth-invariant update budget is
+what unlocks 1000-layer training.
+
+**Forward-pass variance preservation.** A complementary calculation (§3.3) tracks the variance
+of $\mathbf{x}_\ell$ across depth. The combined choice of $\alpha$ and $\beta$ keeps the
+expected pre-norm variance roughly constant: the $\alpha$ scaling boosts the residual term, the
+$\beta$ scaling shrinks the sublayer term, and after LayerNorm both effects are absorbed into a
+unit-variance output. The first block sees the same activation statistics as the thousandth.
+
+**Why the quarter-root.** The Theorem 1 bound on the model update at depth $L$ involves a sum
+of $L$ terms each bounded by $\beta^2 / \alpha^2$. Setting the bound to be $\mathcal{O}(1)$
+requires $\beta^2 / \alpha^2 \sim 1/L$, i.e. $\beta / \alpha \sim L^{-1/2}$. The factor-of-two
+distribution between $\alpha$ and $\beta$ — $\alpha \propto L^{1/4}$, $\beta \propto L^{-1/4}$
+— is the symmetric choice that minimizes the constant in front of the bound. The encoder's $8$
+in the denominator and the decoder's $3$ in the numerator come out of carefully bounding the
+self-attention and cross-attention contributions separately.
+
+**Relationship to ReZero.** Both ReZero and DeepNet damp the sublayer contribution at init —
+ReZero with a learnable scalar at zero, DeepNet with a constant $\beta < 1$ multiplied into the
+initialization variance. The difference: ReZero's $\alpha_\ell$ multiplies the sublayer
+*output* and is learned, allowing per-layer adaptation; DeepNet's $\beta$ shrinks the sublayer
+weights and stays fixed, but adds the $\alpha > 1$ boost on the residual side to keep Post-Norm
+geometry. DeepNet trades adaptivity for the Post-Norm distribution-control property.
+
+**Parameter and compute cost.** Zero extra parameters; two extra scalar multiplies per block
+($\mathcal{O}(B \cdot T \cdot d)$ FLOPs), negligible against the sublayer.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## DeepNorm block, sketch
 
 ```python
-def deepnet_residual(x, sublayer, alpha):
-    # alpha is depth-derived constant, e.g., (2N)^(1/4) for an N-layer encoder
-    # (sublayer weights have already been shrunk by beta = (8N)^(-1/4) at init)
-    return layer_norm(alpha * x + sublayer(x))
+def deepnorm_block(x, sublayer, alpha, layer_norm):
+    # x: (B, T, d) — residual stream
+    # alpha: depth-derived constant, e.g., (2N)^(1/4) for an N-layer encoder
+    # sublayer weights have been initialized with variance shrunk by beta = (8N)^(-1/4)
+    return layer_norm(alpha * x + sublayer(x))            # Post-Norm placement
+
+def deepnorm_init(model, alpha_beta_pairs):
+    # Re-initialize FFN W_1/W_2, attention V_proj, and output_proj weights with std *= beta
+    for layer, (_, beta) in zip(model.layers, alpha_beta_pairs):
+        for w in [layer.ffn.w1, layer.ffn.w2, layer.attn.v_proj, layer.attn.out_proj]:
+            nn.init.xavier_normal_(w.weight, gain=beta)
 ```
 
-<p class="section-eyebrow">§ 3 · Results</p>
-## Empirical evidence
+The $\alpha$ scalar appears in the forward pass; the $\beta$ shrinkage appears only at
+initialization. Other architectural details (number of heads, $d$, FFN ratio) are unchanged
+from a standard Post-Norm transformer.
 
-Wang et al.'s headline (Figure 1): **1000-layer DeepNet trains stably from scratch on machine
-translation**, where comparable Pre-Norm or vanilla Post-Norm transformers diverge well below
-that depth. At more pedestrian scales (Transformer-Big, T5-XXL), DeepNet matches or slightly
-outperforms Pre-Norm baselines on BLEU, with the same training-step count.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What DeepNet trains and what others reproduced
 
-The mechanism the paper formalizes: at initialization, the per-layer gradient magnitude is
-*independent* of depth. Stacking another 100 layers does not change the early-step gradient
-seen by layer 1 — there is no signal attenuation to compensate for.
+**Headline experiment** ([Wang et al. 2022, §4.1, Figure 1](https://arxiv.org/abs/2203.00555)):
+a 1000-layer (500 encoder + 500 decoder) DeepNet trains stably from scratch on machine
+translation. The matched 1000-layer vanilla Post-Norm baseline diverges within the first
+hundred steps; the Pre-Norm baseline trains but the 1000-layer configuration does not
+outperform a 200-layer model, suggesting wasted capacity. DeepNet improves monotonically with
+depth up to $L = 1000$.
 
-<p class="section-eyebrow">§ 4 · Why production decoders didn't adopt it</p>
-## The "merely deep" regime
+**Multilingual translation at depth-200** (§4.2, Table 2): a 200-layer DeepNet trained on a
+102-language multilingual translation benchmark beats the 48-layer M2M-100-12B
+([Fan et al. 2020](https://arxiv.org/abs/2010.11125)) by +5 BLEU on average. The benchmarks
+include high-resource language pairs (En–De, En–Fr) and low-resource directions (En–Zu,
+En–Mr); DeepNet's gain is largest on low-resource pairs, consistent with the hypothesis that
+deeper stacks help when data is scarce. The depth comparison is direct evidence that DeepNet's
+stability translates to a usable quality lift at scales no Post-Norm transformer could reach
+before.
 
-Like ReZero ([entry](/llm-arch-kb/residual/rezero/)), DeepNet is theoretically clean but
-practically lives in academia. Two reasons:
+**Standard-depth comparisons** (§4.3, Tables 3–4): at Transformer-Big (6+6 layers) and T5-large
+(24+24 layers), DeepNet matches or marginally beats Pre-Norm baselines on WMT'14 EN-DE BLEU and
+T5-style downstream tasks, with the same training-step budget. No regression in the regime
+where Pre-Norm already works.
 
-1. **Depth 32–80 is the production regime.** At those depths, Pre-Norm + RMSNorm + warmup is
-   well-understood and known to work. DeepNet's edge appears past 100 layers, where production
-   models don't go.
-2. **The $\alpha, \beta$ constants are architecture-specific.** Changing the model's depth
-   requires re-deriving both from scratch. Pre-Norm is depth-agnostic, which is operationally
-   simpler.
+**Independent corroboration via OLMo 2's Post-Norm revival.** Olmo et al. (2025) describe a
+"reordered-norm" variant where normalization is applied after the residual branch's compute
+but before the addition; their stability analysis credits DeepNorm-style depth-derived weight
+init for the recipe's behavior on the 13B model
+([OLMo Team 2025, §3.1](https://arxiv.org/abs/2501.00656)). The lineage is alive in current
+open-frontier work, even when not under the "DeepNet" name.
 
-DeepNet's framework — depth-derived initialization constants that bound forward/backward
-variance — is also the conceptual ancestor of the careful-init story in OLMo 2's Post-Norm
-revival. The lineage is alive in current open-frontier research, just not under the same name.
+**B2T-Connections (Takase et al. 2023).** A follow-up evaluates DeepNorm against an
+"Bypass-to-Transformer" residual variant and finds DeepNorm provides the strongest stability
+benefits at 18+ encoder layers on machine translation, but B2T narrows the gap at moderate
+depths
+([§4, arXiv 2206.00330](https://arxiv.org/abs/2206.00330)). The agreement on the basic
+mechanism — depth-aware residual rescaling — strengthens the DeepNorm analysis.
+
+**No frontier-scale ablation of DeepNet against Pre-Norm + RMSNorm at the production depth
+tier.** Open frontier labs ship 60–130-layer dense decoders, well below DeepNet's claimed
+sweet spot. Llama 3.1 405B is 126 layers
+([Grattafiori et al. 2024, §3.1](https://arxiv.org/abs/2407.21783)), DeepSeek-V3 is 61 layers
+([DeepSeek-AI 2024, §2.1](https://arxiv.org/abs/2412.19437)), all on Pre-Norm + RMSNorm. The
+public depth where DeepNet's gradient-bound argument matters — past 100 layers — is roughly
+where production caps out, and no released frontier training run has reported a DeepNet head-
+to-head at that depth. The strongest available evidence remains the Wang et al. translation
+benchmarks.
+
+**Why DeepNet isn't standard.** Two factors. First, $\alpha, \beta$ depend on depth, so the
+recipe re-derives constants whenever architecture width or depth changes — Pre-Norm + RMSNorm is
+depth-agnostic, which is operationally simpler. Second, at $L \leq 80$ the gradient bound
+DeepNet improves is already tame under warmup + Pre-Norm, so the lift over the consensus is
+small to nonexistent in the depth tier production actually ships. The recipe is theoretically
+clean and empirically validated at 200–1000 layers; its impact remains downstream of whether
+labs ever ship that deep.
 
 <Summary>
-**DeepNet in one breath.** Post-Norm residual rescaled by a depth-derived constant
-α = (2N)^(1/4), with sublayer-weight init shrunk by β = (8N)^(-1/4). Trains 1000-layer
-transformers from scratch. Lives in research because production caps out at ~80 layers where
-Pre-Norm + RMSNorm has incumbent advantages.
+**DeepNet in one breath.** Post-Norm residual with two depth-derived constants: scale the
+residual addition by $\alpha = (2N)^{1/4}$, shrink sublayer-weight init by $\beta = (8N)^{-1/4}$.
+Bounds the per-step model update independently of depth, unlocking stable training of
+1000-layer encoder-decoders where vanilla Post-Norm and Pre-Norm both fail. Reportedly improves
+low-resource translation at 200 layers and gives matched quality at standard depths. Not in
+production decoders because frontier dense models cap below the depth tier where the
+mechanism's benefit becomes load-bearing.
 </Summary>

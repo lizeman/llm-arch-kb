@@ -25,90 +25,220 @@ import SwitchTopK from "~/components/figures/SwitchTopK";
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Before Switch
+## Why top-2 was thought necessary
 
-GShard (Lepikhin et al. 2020) was the canonical sparse MoE at the time, using top-2 routing
-across hundreds of experts. The design rationale: top-2 routing is differentiable through both
-selected experts, giving the gating network gradient signal for the unselected-but-runner-up
-expert too. Top-1 was assumed to be unstable — if the gate consistently routes a token to
-expert A, the gradient through expert B never adjusts, and the gate can never learn that B
-might have been better.
+By late 2020 the sparse-MoE state of the art was GShard (Lepikhin et al. 2020,
+[arXiv 2006.16668](https://arxiv.org/abs/2006.16668)): top-2 routing across hundreds of
+experts at 600B encoder-only parameters. The top-2 choice was inherited from Sparse-MoE 2017
+(Shazeer et al., [arXiv 1701.06538](https://arxiv.org/abs/1701.06538), §2.1) for what
+appeared to be a load-bearing reason. Consider a gating network $g: \mathbb{R}^{d_{model}}
+\to \mathbb{R}^E$ that picks $K = 1$ expert per token. The forward pass uses only the
+selected expert $i^*$; the backward pass only updates $g$ along the direction that produced
+$i^*$'s score. The runner-up expert receives no gradient signal — so the gate cannot learn
+that it should have been chosen instead. The 2017 paper argued this was a stability hazard
+and made $K \geq 2$ a recipe-level requirement.
 
-Fedus, Zoph, and Shazeer's bet: this reasoning is wrong empirically. Top-1 routing works fine
-if you size the experts appropriately and use a calibrated auxiliary loss.
+Switch Transformer (Fedus et al. 2021, [arXiv 2101.03961](https://arxiv.org/abs/2101.03961))
+makes the contrarian bet: $K = 1$ trains fine if you (a) multiply the selected expert's
+output by its gate value $g_{i^*}(\mathbf{x})$ so the gate gets a multiplicative gradient
+even at the chosen expert, (b) introduce an *expert capacity* dispatch cap that absorbs
+imbalance via token dropping rather than via routing softness, and (c) use a calibrated
+auxiliary load-balancing loss that scales correctly with the expert count. The bet pays off:
+Switch-C at 1.6T parameters with 64B active per token matches dense T5-XXL quality on
+multilingual translation and C4 span corruption at ~7× lower per-token FLOPs (Fedus et al.
+2021, Table 9).
 
-<p class="section-eyebrow">§ 2 · The simplification</p>
-## Top-1 routing
+For the foundational top-K-gating machinery and the noisy-top-K trick on which Switch builds,
+see [Sparse MoE](/llm-arch-kb/ffn-moe/sparse-moe/). This entry walks the three things Switch
+changes: the top-1 routing form with multiplicative gating, the capacity-factor dispatch
+contract, and the simplified single-term load-balance loss that every subsequent top-K MoE
+(Mixtral, ST-MoE, DeepSeekMoE V2) copies.
 
-A Switch layer routes each token to the single highest-scoring expert:
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Top-1 routing, capacity factor, simplified balance loss
 
-$$\mathrm{Switch}(\mathbf{x}) = g_{i^*}(\mathbf{x}) \cdot f_{i^*}(\mathbf{x}),\quad i^* = \arg\max_i g(\mathbf{x})_i.$$
+**Top-1 routing.** Let $\ell(\mathbf{x}) = W_g \mathbf{x} \in \mathbb{R}^E$ be the gate
+logits and $g(\mathbf{x}) = \mathrm{softmax}(\ell(\mathbf{x}))$ the gate distribution. The
+Switch layer routes to the single expert with the largest logit:
 
-The selected gate value $g_{i^*}$ multiplies the expert output — this multiplicative factor is
-what gives the gating network a gradient signal even though only one expert was selected. The
-gradient with respect to $g_{i^*}$ is $f_{i^*}(\mathbf{x})$, which encodes whether routing to
-$i^*$ was a "good" decision.
+$$i^*(\mathbf{x}) = \arg\max_{i \in [E]} \ell_i(\mathbf{x}),\qquad \mathrm{Switch}(\mathbf{x}) = g_{i^*(\mathbf{x})}(\mathbf{x}) \cdot f_{i^*(\mathbf{x})}(\mathbf{x}).$$
+
+The crucial detail (Fedus et al. 2021, eq. 1) is the *multiplicative gate value*
+$g_{i^*}(\mathbf{x})$ in front of the expert output. The argmax is non-differentiable, but
+the value $g_{i^*}$ is differentiable in $W_g$, and the chain rule gives
+$\partial \mathrm{Switch} / \partial g_{i^*} = f_{i^*}(\mathbf{x})$ — a gradient signal
+proportional to the expert's output. This is the equivalent of saying "if $i^*$ produced a
+useful output, increase its gate score; if it produced noise, decrease it." The runner-up
+expert still gets no signal — but Switch's experiments show this does not matter in practice
+once the gate is properly regularized.
+
+**Why the gate must enter multiplicatively.** Without the $g_{i^*}$ prefactor — i.e., if the
+layer were simply $f_{i^*}(\mathbf{x})$ — the only gradient path back to the gate is via
+$\arg\max$, which is identically zero almost everywhere. Multiplicative gating turns the
+gate's output magnitude into a tunable scalar that the loss can adjust, and this single
+scalar is what closes the gradient loop.
+
+**Expert capacity.** Top-1 routing has a hardware problem that top-K with $K \geq 2$
+partially hides: a popular expert can be selected by many more tokens in a batch than it has
+allocated compute slots for. Under top-2, overflow tokens fall back to their second-choice
+expert with the appropriate gate-weight renormalization. Under top-1 there is no second
+choice. Switch formalizes the dispatch contract with an **expert capacity** parameter $C$
+(Fedus et al. 2021, eq. 3):
+
+$$\mathrm{capacity} = \frac{\mathrm{tokens\ per\ batch}}{\mathrm{num\ experts}} \cdot C = \frac{T}{E} \cdot C.$$
+
+Each expert handles at most $\lceil (T/E) \cdot C \rceil$ tokens per batch step. If
+$f_i \cdot T > (T/E) \cdot C$ — i.e., expert $i$ is over-subscribed — the excess tokens are
+**dropped**: their output for that layer is the identity (the residual stream passes through
+unchanged). $C = 1$ is the theoretical minimum (no slack); $C = 2$ is GShard's default
+(100% slack); $C = 1.25$ is the Switch default, a 25% slack budget.
+
+Why drop rather than soften? Dropping makes the dispatch step a fixed-size scatter-gather: a
+$[E, \lfloor (T/E) C \rfloor, d_{model}]$ buffer that every expert sees, regardless of how
+spiky the routing was. The kernel becomes a single batched matmul instead of $E$ variable-
+size matmuls. The cost is that some tokens at some layers have a forward pass equivalent to
+$\mathrm{layer}(\mathbf{x}) = \mathbf{x}$, which is a quality regression — but only on the
+fraction of tokens that overflow, which the auxiliary loss is meant to keep small.
+
+**The auxiliary load-balance loss.** Sparse-MoE 2017 (Shazeer et al., §4) used two coupled
+loss terms — an *importance* loss on the per-expert sum of gate weights, and a *load* loss on
+the per-expert dispatched-token count. Switch replaces these with a single product (Fedus et
+al. 2021, eq. 4):
+
+$$\mathcal{L}_{\mathrm{aux}} = \alpha \cdot E \cdot \sum_{i = 1}^{E} f_i \cdot P_i,$$
+
+where for a batch of $T$ tokens
+- $f_i = \frac{1}{T} \sum_{t} \mathbb{1}[i^*(\mathbf{x}_t) = i]$ is the *fraction of tokens
+  routed to expert $i$* (a post-argmax count, so non-differentiable);
+- $P_i = \frac{1}{T} \sum_{t} g_i(\mathbf{x}_t)$ is the *mean softmax probability* assigned to
+  expert $i$ by the gate (differentiable in $W_g$);
+- $\alpha$ is a scalar (default $0.01$);
+- the leading factor $E$ rescales so $\alpha$'s effect is approximately constant across $E$.
+
+The loss is minimized when both $f_i$ and $P_i$ are uniform at $1/E$. At that minimum
+$\mathcal{L}_{\mathrm{aux}} = \alpha \cdot E \cdot \sum_i (1/E)(1/E) = \alpha / E$. At maximum
+imbalance (all tokens to one expert) the loss approaches $\alpha$. The factor-$E$
+normalization keeps the loss range $[\alpha / E,\ \alpha]$ rather than $[\alpha / E^2,\
+\alpha / E]$, which would shrink to zero as $E$ grows.
+
+**Why the product form, not the sum of squares.** A natural alternative is
+$\sum_i f_i^2$ or $\sum_i P_i^2$ — penalize squared deviations from uniform. Both fail. The
+$f_i^2$ form has no gradient on the gate weights since $f_i$ is non-differentiable. The
+$P_i^2$ form has a gradient but it does not depend on actual routing decisions — the gate
+can satisfy "uniform $P_i$" while still routing all tokens to one expert (by making the
+top-1 spike-out happen via $\arg\max$ rather than via softmax magnitudes). The product
+$f_i \cdot P_i$ is differentiable in $W_g$ via the $P_i$ factor and *measures
+actual dispatch* via the $f_i$ factor, so its gradient correctly pulls the gate toward
+choices that distribute the empirical traffic uniformly.
+
+**Why $\alpha$ must be small.** The auxiliary loss's gradient pulls $W_g$ away from the
+gate's purely accuracy-driven choice. If $\alpha$ is too large the gate is forced to
+near-uniform routing and the experts cannot specialize. Fedus et al. 2021 §3.2 sweep
+$\alpha \in [10^{-4}, 10^{-1}]$ and find a wide plateau around $10^{-2}$ where load balance
+stays acceptable and accuracy is not measurably hurt.
+
+**Parameter and FLOP accounting.** A Switch layer stores $E$ expert FFNs plus the gate:
+$E \cdot 2 d_{model} d_{ff} + E \cdot d_{model}$ parameters. Per token only $K = 1$ expert
+fires, so per-token FFN FLOPs equal a single dense FFN's. Switch-C uses $E = 2048$ at the
+trillion-parameter total (Fedus et al. 2021, Table 9), giving an active/total ratio of
+$1 / 2048 \approx 0.05\%$ for the MoE blocks — the most aggressive sparsity ratio in the
+pre-DeepSeek MoE literature.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Top-1 with capacity-bounded dispatch
 
 ```python
-def switch_layer(x, experts, gate):
-    logits = gate(x)                          # [B, T, E]
-    top_idx = logits.argmax(dim=-1)           # [B, T]
-    top_w = logits.softmax(-1).gather(-1, top_idx.unsqueeze(-1)).squeeze(-1)
-    # Dispatch each token to its single expert; multiply output by top_w.
-    return dispatch_and_combine(x, experts, top_idx.unsqueeze(-1), top_w.unsqueeze(-1))
+def switch_layer(x, experts, gate, capacity_factor=1.25):
+    # x: [B, T, d_model]   gate.weight: [E, d_model]   experts: list of E FFNs
+    B, T, d = x.shape
+    E = len(experts)
+    logits = gate(x.view(B * T, d))                  # [B*T, E]
+    probs = logits.softmax(-1)                       # [B*T, E]
+    top_p, top_idx = probs.max(-1)                   # both [B*T]
+    capacity = int((B * T / E) * capacity_factor)    # tokens per expert per step
+
+    out = torch.zeros_like(x.view(B * T, d))
+    for i in range(E):
+        token_mask = (top_idx == i)
+        token_pos = token_mask.nonzero(as_tuple=True)[0][:capacity]   # drop overflow
+        if token_pos.numel() == 0:
+            continue
+        # Multiplicative gating: expert output scaled by its gate probability
+        out[token_pos] = top_p[token_pos, None] * experts[i](x.view(B * T, d)[token_pos])
+    return out.view(B, T, d)
+
+def switch_aux_loss(probs, top_idx, alpha=0.01):
+    # probs: [B*T, E]    top_idx: [B*T]
+    E = probs.shape[-1]
+    P = probs.mean(0)                                # [E] mean gate softmax
+    f = torch.bincount(top_idx, minlength=E).float() / top_idx.numel()  # [E] dispatch fraction
+    return alpha * E * (f * P).sum()
 ```
 
 <SwitchTopK client:visible />
 
-<p class="section-eyebrow">§ 3 · The balance loss everyone copies</p>
-## Switch's auxiliary objective
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What Switch demonstrated and what followed
 
-The auxiliary load-balancing loss the paper introduces (eq. 4):
+**Quality vs FLOP-matched dense.** Fedus et al. 2021 Table 5 reports Switch-Base (220M active /
+7.4B total, $E = 128$) matching T5-Base on the C4 span-corruption objective in ~6× fewer
+training steps (negative log perplexity, batched over multilingual data). Switch-Large
+(800M active / 26B total) similarly beats T5-Large. The headline result is Switch-C (1.6T
+total, 64B active, $E = 2048$, distributed across 64 TPU pods) matching dense T5-XXL on the
+same objective at ~7× lower per-token FLOPs — the trillion-parameter sparse-MoE existence
+proof.
 
-$$\mathcal{L}_{\text{aux}} = \alpha \cdot E \cdot \sum_{i=1}^{E} f_i \cdot P_i,$$
+**Capacity-factor sensitivity.** Table 4 sweeps $C \in \{1.0, 1.25, 2.0\}$ for Switch-Base at
+$E = 32$. $C = 1.0$ drops ~16% of tokens and loses 0.3 perplexity points vs $C = 1.25$;
+$C = 2.0$ recovers the perplexity but doubles the dispatch buffer and only marginally
+improves over $C = 1.25$. The Switch default $C = 1.25$ is the chosen plateau point.
 
-where:
+**Top-1 vs top-2 head-to-head.** Fedus et al. 2021 §4.2 includes a controlled top-1 vs top-2
+comparison at matched activated-parameter count. Top-1 is 1.6× faster per step but loses
+0.5–1.2 perplexity points depending on $E$. The team's argument: at very large $E$ the quality
+gap closes, and the throughput advantage outweighs the residual quality cost. ST-MoE (Zoph
+et al. 2022, [arXiv 2202.08906](https://arxiv.org/abs/2202.08906), Table 5) later revisits this
+ablation at production scale and finds top-2 retains a 0.3–0.6 perplexity advantage; the
+field largely returned to top-2 (Mixtral) or top-K with $K \geq 6$ (DeepSeek V3) on these
+grounds.
 
-- $f_i$ is the fraction of tokens in the batch routed to expert $i$ (a count, post-argmax).
-- $P_i$ is the mean softmax probability assigned to expert $i$ by the gate.
+**Routing jitter — a Switch-specific stability trick.** §2.2 introduces *router z-loss*-style
+multiplicative noise on the gate's input embeddings during training. The noise is small
+($\sigma \approx 10^{-2}$) and serves the same purpose as Sparse-MoE 2017's noisy-top-K: it
+randomizes a small fraction of routing decisions to keep all experts receiving some gradient
+signal. ST-MoE (Zoph et al. 2022, §3.4) refines this into the **router z-loss**
+$\mathcal{L}_z = \beta \cdot \mathbb{E}[\log \sum_i \exp \ell_i]^2$, which penalizes large
+gate logits and stabilizes training in low-precision regimes — a fix for fp16 underflow in
+the gate softmax that Switch's plain jitter does not address.
 
-The product $f_i \cdot P_i$ is minimized when both quantities are uniform ($1/E$), so summing
-penalizes deviations from uniform utilization. The $\alpha$ scaling is small (typically 0.01)
-because the gating signal is itself noisy.
+**Auxiliary loss in subsequent literature.** The single-term $\alpha \cdot E \cdot \sum_i
+f_i P_i$ form is reused unchanged in GShard variants, ST-MoE, Mixtral, OLMoE, and
+DeepSeekMoE V2 (Dai et al. 2024 §3.2 cites Switch's eq. 4 directly). DeepSeek V3 (Wang et
+al. 2024, [arXiv 2408.15664](https://arxiv.org/abs/2408.15664)) introduces the aux-loss-free
+bias variant that replaces this loss but acknowledges Switch's formulation as the baseline
+it competes against — see [aux-loss-free routing](/llm-arch-kb/ffn-moe/aux-loss-free/).
 
-This is the same formula used by every subsequent top-K MoE — Mixtral, GShard variants,
-DeepSeekMoE (until V3 ditched it for the aux-loss-free scheme). Switch's lasting contribution
-is at least as much this loss as the top-1 routing itself.
+**Direct adoption in modern decoders.** None. Production decoder LLMs have moved to top-K
+with $K \geq 2$ (Mixtral, OLMoE) or to fine-grained-plus-shared (DeepSeekMoE, Kimi K2). The
+top-1 form persists in encoder-only or vision MoE work (V-MoE, Riquelme et al. 2021,
+[arXiv 2106.05974](https://arxiv.org/abs/2106.05974)) where the quality cost is more
+tolerable, but the decoder-LLM lineage has moved past it. Switch's lasting contributions are
+the load-balance loss formula, the capacity-factor framing of dispatch contracts, and the
+trillion-parameter existence proof — not the top-1 routing itself.
 
-<p class="section-eyebrow">§ 4 · Capacity factor and dropping</p>
-## What "expert capacity" means
-
-Top-1 routing has a problem GShard didn't: a popular expert can be selected by more tokens than
-it has compute capacity to handle in one step. The Switch paper formalizes this with an
-**expert capacity** parameter $C$: each expert handles at most $C \cdot T / E$ tokens per batch.
-Excess tokens are *dropped* — their output is the identity (residual passes through unchanged).
-
-In practice $C \approx 1.25$ trades a small amount of dropping for a much more parallelizable
-dispatch step. The dropping policy is what makes Switch tractable on hardware that requires
-fixed-size compute per expert; otherwise the slowest expert gates the wall-clock.
-
-<p class="section-eyebrow">§ 5 · Results and legacy</p>
-## What Switch proved
-
-The headline (Table 9 in the paper): **Switch-C with 1.6T parameters and 64B active** matches
-or exceeds dense T5-XXL on multilingual translation and span corruption. The trillion-parameter
-threshold was crossed by a model with 7× fewer FLOPs per token than the dense equivalent —
-this was the moment "sparse MoE at frontier scale" went from research curiosity to credible.
-
-Production MoE has since moved toward top-2 (Mixtral) and top-K with fine-grained experts
-(DeepSeekMoE), partly because the dropping policy makes Switch's top-1 hard to tune and partly
-because subsequent work showed top-2 quality justifies the doubled compute. But Switch's
-auxiliary loss formula, capacity-factor framing, and "trillion parameters is tractable" demo
-are all load-bearing in the modern MoE recipe.
+**Reproductions at scale.** Switch's open-source code (Fedus et al.'s
+[mesh-tensorflow](https://github.com/tensorflow/mesh) implementation) has been independently
+re-run at smaller sizes by the OLMoE team (Muennighoff et al. 2024 §6.1), who confirm the
+$E = 128$, top-1 Switch baseline trains to within 0.1 perplexity points of the originally
+reported numbers. The trillion-parameter Switch-C result has not been independently
+reproduced — the compute requirements rule out academic verification.
 
 <Summary>
-**Switch in one breath.** Top-1 expert routing with a load-balancing aux loss and a capacity
-factor. The first trillion-parameter MoE that worked at production-relevant quality. Successor
-designs (Mixtral, DeepSeekMoE) restored top-K routing for quality but kept Switch's load-balancing
-math.
+**Switch in one breath.** Top-1 expert routing with multiplicative gating $g_{i^*}(\mathbf{x})
+\cdot f_{i^*}(\mathbf{x})$, an expert-capacity parameter $C$ that bounds per-expert dispatch
+size (overflow tokens are dropped), and a single-term load-balance loss $\alpha E \sum_i f_i
+P_i$. The trillion-parameter Switch-C existence proof established sparse MoE as a viable
+scaling regime. The top-1 routing did not survive into modern decoder LLMs (top-K with $K
+\geq 2$ won on quality grounds), but Switch's load-balance math and capacity-factor framing
+are load-bearing in every MoE descendant.
 </Summary>

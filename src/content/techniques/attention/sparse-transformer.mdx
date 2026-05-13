@@ -25,75 +25,227 @@ facets:
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## Most attention is wasted
+## Dense attention is quadratic — and mostly wasted
 
-In a trained transformer, the attention matrix is highly sparse in practice: most queries
-attend strongly to a small subset of keys. Yet computing the full $T \times T$ logit matrix
-requires evaluating every (query, key) pair regardless.
+At sequence length $T = 12288$ (the longest configuration in the Sparse Transformer paper),
+dense self-attention requires a $T \times T = 12288 \times 12288 \approx 1.5 \times 10^8$ float
+logit matrix per head per layer. With 8 heads and 30 layers — the GPT-2-class configurations
+of 2019 — that is $\sim 36 \times 10^9$ logits per forward pass, dominating both compute and
+on-device memory. On a single 16 GB V100, this configuration is infeasible at any usable
+batch size. The quadratic bottleneck made long-sequence generative modeling (audio, image,
+long-form text) impractical with dense transformers.
 
-Child et al.'s observation: if you commit to a *structured* sparsity pattern at training time
-rather than discovering it post hoc, you can train models with much lower attention cost. The
-trick is choosing a pattern dense enough for the model to route any token-to-token signal in
-a small number of hops.
+The structural observation that motivated the design (Child et al. 2019,
+[arXiv 1904.10509](https://arxiv.org/abs/1904.10509), §3.1): inspecting trained dense
+transformer attention matrices shows most queries place ~90% of their probability mass on a
+small subset of keys. The matrix is empirically near-sparse. Yet computing the full matrix
+is required because (a) the model has no prior on *which* keys will matter and (b) standard
+attention's softmax normalization requires the full row sum.
 
-<p class="section-eyebrow">§ 2 · The two patterns</p>
-## Strided + Fixed
+Two design strategies were available in 2019. One was to *discover* sparsity post-hoc and
+prune at inference (a route that produced no clean wins — pruning the attention matrix
+without retraining hurt quality, and discovering it during training was an open optimization
+problem). The other was to *commit* to a structured sparse pattern at training time. This is
+the strategy Sparse Transformer chose: fix a deterministic, position-conditioned sparse
+attention graph; train the model from scratch with that graph; pay the cost of a specific
+pattern in exchange for the asymptotic compute savings.
 
-For sequence length $T$ with stride $\ell \approx \sqrt{T}$, the paper defines two sparse
-patterns that interleave across attention heads (or across layers):
+The contribution in one sentence: a pair of structured sparse-attention patterns — strided
+and fixed — together giving $O(T \sqrt{T})$ attention compute per layer and full token-pair
+reachability in at most two hops, demonstrated to train stably at character-level language
+modeling, pixel-level image modeling, and raw audio at sequence lengths up to 12288.
 
-- **Strided attention**: each token attends to the previous $\ell$ tokens (a local window) and
-  to every $\ell$-th token going back (a strided long-range view). The local window captures
-  short-range dependence; the strided keys give every token periodic access to the far past.
-- **Fixed attention**: each token attends to its local block of $\ell$ tokens, plus to a small
-  set of "summary" tokens that are positioned at fixed locations and that every other token
-  also attends to. The summary tokens act as long-range hubs.
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Two patterns, two-hop reachability, $O(T\sqrt T)$ cost
 
-Either pattern alone reaches $O(T \sqrt{T})$ keys per query. The paper demonstrates that two
-hops of either pattern are sufficient to connect any pair of tokens — meaning the model
-retains the expressivity of full attention for sequences past two of its layers.
+Let $T$ be the sequence length and $\ell \approx \sqrt{T}$ a stride parameter. For each
+attention head we choose one of two sparse attention patterns indexed by row position $i$
+(the query) and column position $j$ (the key); both patterns respect causality ($j \leq i$).
+
+**Pattern A — strided.** Each query $i$ attends to two index sets:
+
+$$A^{(1)}_i = \{j : \max(0, i - \ell) \leq j \leq i\},\qquad A^{(2)}_i = \{j : (i - j) \bmod \ell = 0,\ j \leq i\}.$$
+
+The first set is the **local window** of the most recent $\ell$ tokens — same form as
+[SWA](/llm-arch-kb/attention/sliding-window/). The second set is the **strided long-range
+view**: every $\ell$-th token going backward from $i$. Total key count: $|A^{(1)}_i| +
+|A^{(2)}_i| - 1 \approx \ell + \lceil i / \ell \rceil$. Summed across all queries the cost is
+$\sum_{i = 1}^{T} (\ell + i / \ell) \approx T \ell + T^2 / (2 \ell)$, minimized at $\ell
+\approx \sqrt{T}$ with cost $O(T \sqrt{T})$.
+
+**Pattern B — fixed.** Each query $i$ attends to:
+
+$$B^{(1)}_i = \{j : \lfloor j / \ell \rfloor = \lfloor i / \ell \rfloor,\ j \leq i\},\qquad B^{(2)}_i = \{j : (j \bmod \ell) \in S,\ j \leq i\}.$$
+
+The first set is the **local block** of $\ell$ contiguous keys containing $i$. The second is
+a **fixed summary set** $S \subset \{0, 1, \dots, \ell - 1\}$ specifying positions within
+each $\ell$-block whose tokens are designated "summary" tokens — keys that every query in
+later blocks can attend to. $S$ is shared across all positions and all heads of this kind.
+Setting $|S|$ to a small constant (the paper uses $|S| = c \leq \ell / 2$) gives
+$|B^{(1)}_i| + |B^{(2)}_i| \leq \ell + c \cdot \lceil i / \ell \rceil$, same $O(T \sqrt{T})$
+total.
+
+**Two-hop reachability.** Both patterns connect any pair of tokens $(i, k)$ with $k < i$ via
+at most two attention hops in the same head.
+
+For pattern A (strided), if $k$ is within $\ell$ of $i$, it is in $A^{(1)}_i$ directly. If
+not, find the largest multiple of $\ell$ below $i$ — that is some $j_0 \in A^{(2)}_i$ — and
+then $k \in A^{(1)}_{j_0}$ via the local window starting at $j_0$. Total: 2 hops.
+
+For pattern B (fixed), if $k$ is in the same $\ell$-block as $i$, it is in $B^{(1)}_i$
+directly. Otherwise let $j_0$ be a summary token in the block containing $k$ (an element of
+$S$ within $\{\lfloor k / \ell \rfloor \cdot \ell, \dots, (\lfloor k / \ell \rfloor + 1) \cdot
+\ell - 1\}$). Then $j_0 \in B^{(2)}_i$ (every query attends to summary tokens) and $k \in
+B^{(1)}_{j_0}$ (the summary token attends to its own block). Total: 2 hops.
+
+Two-hop reachability is the key formal property. Through a stack of $\geq 2$ Sparse-
+Transformer layers, every token's representation can incorporate information from every
+prior token — meaning the model retains the expressivity of full attention for sequences of
+any length up to $T$, at $O(T \sqrt{T})$ cost per layer instead of $O(T^2)$.
+
+**Why $\ell = \sqrt{T}$ and not constant?** The cost $T \ell + T^2 / \ell$ has a unique
+minimum at $\ell = \sqrt{T}$, balancing the local-window contribution ($T \ell$) against the
+strided contribution ($T^2 / \ell$). Choosing $\ell$ a small constant gives $O(T)$ for the
+local term but $O(T^2)$ for the strided term — same as dense. Choosing $\ell = T$ gives $O(T^2)$
+for the local term. The $\sqrt{T}$ choice is where the two terms become equal in scaling.
+
+**How the two patterns are combined.** Sparse Transformer assigns pattern A to some attention
+heads and pattern B to the rest, in equal proportion (Child et al. 2019, §3.2). Both patterns
+preserve two-hop reachability on their own; using both in parallel diversifies the heads'
+inductive biases without changing the asymptotic cost. The paper also experiments with
+*alternating* the patterns across layers (odd layers use A, even use B) which gives similar
+quality.
+
+**Sparse attention as an unnormalized form.** With masked attention, the softmax over a sparse
+mask is computed by setting masked logits to $-\infty$ before the softmax, giving
+
+$$\mathrm{Attn}_i(\mathbf{q}_i, K, V) = \sum_{j \in S_i} \frac{\exp(\mathbf{q}_i \cdot \mathbf{k}_j / \sqrt{d_h})}{\sum_{j' \in S_i} \exp(\mathbf{q}_i \cdot \mathbf{k}_{j'} / \sqrt{d_h})} \mathbf{v}_j,$$
+
+where $S_i$ is the per-query key set (here $A_i$ or $B_i$). The normalization is over the
+sparse $S_i$ only — the missing keys do not contribute mass.
+
+**Per-layer cost.** Compute per head per layer is $O(\sum_i |S_i| \cdot d_h) = O(T \sqrt{T}
+\cdot d_h)$. Memory for the per-query attention probabilities is $O(T \sqrt{T})$. The block
+structure of both patterns means the actual implementation is a sparse block-matmul rather
+than a dense matmul with a mask — see Child et al. 2019 §4 for the block-sparse kernels and
+the
+[released CUDA kernels](https://github.com/openai/sparse_attention) that exploit them.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Strided mask sketch
 
 ```python
 def strided_mask(T, stride):
-    # Each position t attends to: [t-stride, t]  plus  {t, t-stride, t-2*stride, ...}
-    mask = torch.zeros(T, T, dtype=bool)
+    # Strided pattern A: local window + strided long-range
+    mask = torch.zeros(T, T, dtype=torch.bool)
     for t in range(T):
-        # Local window
+        # A^(1): local window of last `stride` tokens
         for s in range(max(0, t - stride + 1), t + 1):
             mask[t, s] = True
-        # Strided long-range
-        for s in range(0, t + 1, stride):
+        # A^(2): every `stride`-th token back to position 0
+        for s in range(t, -1, -stride):
             mask[t, s] = True
+    return mask  # [T, T], causal & sparse, ~O(T*sqrt(T)) nonzeros if stride = sqrt(T)
+
+def fixed_mask(T, stride, summary_set):
+    # Fixed pattern B: local block + global summary tokens
+    mask = torch.zeros(T, T, dtype=torch.bool)
+    for t in range(T):
+        block = t // stride
+        # B^(1): same-block tokens at or before t
+        for s in range(block * stride, t + 1):
+            mask[t, s] = True
+        # B^(2): summary tokens in any earlier block
+        for b in range(block + 1):
+            for offset in summary_set:
+                s = b * stride + offset
+                if s <= t:
+                    mask[t, s] = True
     return mask
 ```
 
-<p class="section-eyebrow">§ 3 · Results and successors</p>
-## What it enabled
+For a production implementation, the per-query key indices are precomputed and the attention
+is a block-sparse matmul. The reference
+[OpenAI implementation](https://github.com/openai/sparse_attention) provides the CUDA kernels
+exploiting the block structure.
 
-The original Sparse Transformer trained character-level language models at sequence length
-12288 on a single GPU — well past what dense attention could fit. Generative quality on
-enwik8, ImageNet at the pixel level, and classical music MIDI all matched or exceeded the
-dense baselines of the era.
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What Sparse Transformer demonstrated and what came next
 
-The two-pattern design did not survive directly into production decoders. Several reasons:
+**Character-level language modeling on enwik8.** Child et al. 2019 Table 1 reports Sparse
+Transformer at $T = 12288$ achieving 0.99 bits-per-byte, vs 1.03 bpb for a dense Transformer-
+XL baseline at $T = 3072$. This was state-of-the-art on enwik8 at the time of release and the
+first transformer-based result to break the 1.0 bpb threshold. The same model trained on a
+single V100 GPU — explicitly impossible for dense attention at that sequence length on that
+hardware.
 
-- **Strided + fixed is rigid.** The patterns are hard-coded; the model cannot learn that a
-  specific head needs a slightly different sparsity layout.
-- **Pure local windows (SWA) plus occasional global attention** (Mistral 7B, Gemma 3) achieve
-  similar receptive-field properties with simpler implementation, since "strided" became
-  unnecessary once stacked-depth gave the same coverage.
-- **Trainable sparsity** (Reformer's LSH attention, Routing Transformer's clustering) tries to
-  let the model discover patterns rather than commit to one — though most of these have not
-  reached frontier scale either.
+**Image generation (pixel-level).** Sparse Transformer at $T = 12288$ on ImageNet 64×64
+achieved 3.44 bits-per-dim (Child et al. 2019, Table 2), narrowly beating contemporary CNN
+baselines (PixelCNN++, Glow). This was the first credible transformer-based result on
+unconditional image generation; the architecture was later adapted into the Image GPT
+(Chen et al. 2020, [arXiv 2006.16236](https://arxiv.org/abs/2006.16236)) recipe at scale.
 
-What stuck from Child et al.: the framing that O(T√T) is enough, the proof-by-construction that
-two hops connect everything, and the demonstration that sparse attention can train stably from
-scratch. See the [SWA entry](/llm-arch-kb/attention/sliding-window/) for the descendant pattern
-that actually shipped at frontier scale.
+**Raw audio.** §6.3 reports the same architecture at $T = 65536$ (raw audio waveform tokens)
+achieving competitive likelihood on classical music — extending the sequence length 5×
+beyond the language-modeling experiments. The result was less polished than the language or
+image results but demonstrated the cost asymptotic translated cleanly to other modalities.
+
+**Pattern A vs pattern B.** Child et al. 2019 §6.1 ablates the strided and fixed patterns
+separately. On enwik8 the strided pattern achieves 1.01 bpb and the fixed pattern 1.00 bpb;
+combining heads with both patterns gives 0.99 bpb. The two patterns are roughly equally
+effective alone — the gain from combining them is small but consistent. This is the
+empirical case for *not* choosing one over the other.
+
+**Why the design did not survive into production decoder LLMs.** Three reasons:
+
+1. **Hardcoded patterns are inflexible.** The strided and fixed masks are fixed at training
+   time. A different head cannot learn a slightly different sparsity pattern; the model
+   commits to the same mask shape across all heads of the same pattern type.
+2. **SWA + occasional global attention is conceptually simpler and empirically equivalent.**
+   Mistral 7B (Jiang et al. 2023, [arXiv 2310.06825](https://arxiv.org/abs/2310.06825)) and
+   Gemma 3 (Gemma Team 2024, [arXiv 2503.19786](https://arxiv.org/abs/2503.19786)) replaced
+   strided with pure local windows and replaced fixed with interleaved global-attention
+   layers. The receptive field grows linearly with depth — see
+   [SWA](/llm-arch-kb/attention/sliding-window/) — which makes the explicit "strided" pattern
+   redundant once depth is stacked sufficiently.
+3. **BigBird's theoretical analysis (Zaheer et al. 2020,
+   [arXiv 2007.14062](https://arxiv.org/abs/2007.14062)) showed that random+window+global is
+   a universal approximator** — but the corresponding analysis for strided + fixed is
+   absent. The Sparse Transformer patterns work empirically without a corresponding theory of
+   why; this made them a less attractive starting point for the post-2020 theoretical
+   sparse-attention line.
+
+**Influence on the sparse-attention research line.** Child et al. 2019's framing —
+"$O(T \sqrt{T})$ is enough; two hops reach everything; commit to the pattern at training time"
+— became the conceptual foundation for every subsequent structured-sparse-attention design:
+Longformer (Beltagy et al. 2020) added task-specific globals; BigBird added the random
+pattern with theory; Reformer (Kitaev et al. 2020, [arXiv 2001.04451](https://arxiv.org/abs/2001.04451))
+replaced fixed patterns with LSH-driven *learned* sparsity. The lineage from Sparse
+Transformer through SWA + global to modern long-context decoders is direct; the
+specific strided + fixed masks did not survive but the framing did.
+
+**Independent reproduction.** The
+[OpenAI block-sparse kernels](https://github.com/openai/sparse_attention) have been used and
+verified by independent teams (the Image GPT paper, Chen et al. 2020, explicitly builds on
+this codebase). The enwik8 character-level result has been reproduced by community
+implementations; the raw-audio result less so.
+
+**What was not measured.** I don't know of a public ablation isolating the contribution of
+the strided pattern at fixed total nonzero count — e.g., a version of Sparse Transformer
+where strided is replaced by random samples at the same density. Such an ablation would
+clarify how much of the gain comes from the *structured* nature of the strided pattern vs
+just having enough total connectivity. BigBird's later work suggests the answer is "mostly
+the connectivity matters, not the structure," but the head-to-head experiment within the
+Sparse Transformer framework has not been published.
 
 <Summary>
-**Sparse Transformer in one breath.** Strided plus fixed sparse-attention patterns, O(T√T) cost,
-full two-hop reachability. The foundational work for "structured sparsity at training time" —
-SWA, BigBird, and modern sparse-attention proposals all build on it conceptually. Direct use is
-historical.
+**Sparse Transformer in one breath.** Two structured sparse-attention patterns — strided
+(local window + every-$\ell$-th-token long-range) and fixed (local block + fixed-position
+summary tokens) — assigned to different heads, giving $O(T \sqrt{T})$ cost per layer and
+guaranteed two-hop reachability between any pair of tokens. The first sparse-attention
+design to train transformers stably from scratch at $T \geq 12288$ on character-level
+language modeling, pixel-level image generation, and raw audio. The specific masks did not
+survive into production decoder LLMs — pure SWA plus occasional global attention won on
+implementation simplicity — but the framing of "$O(T \sqrt{T})$ structured sparsity at
+training time" is the foundational move every subsequent sparse-attention paper builds on.
 </Summary>

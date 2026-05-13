@@ -27,75 +27,189 @@ facets:
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## What 384 experts buys
+## What 384 experts buys at 1T total
 
-[DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) established the **shared-expert** pattern at
-the open frontier — one always-on expert handles the common-knowledge load while many
-fine-grained routed experts specialize. DeepSeek V3 ran this with 256 + 1 routed/shared
-experts and top-8 routing. Kimi K2 (Moonshot AI, July 2025) widens the routed-expert pool to
-**384** — the largest publicly documented routed-expert count in an open release as of
-mid-2025.
+The MoE granularity question — "how many experts of what size?" — moved twice between 2024
+and 2025. Mixtral 8x7B (Jiang et al. 2024) shipped the coarse end: $E = 8$ full-FFN experts,
+top-2, no shared lane. DeepSeekMoE (Dai et al. 2024,
+[arXiv 2401.06066](https://arxiv.org/abs/2401.06066)) shipped the next step in: split each
+FFN into $m$ fine-grained slices, keep activated parameters fixed, and reserve $K_s$ always-on
+shared experts to absorb the common-knowledge load that would otherwise be redundantly
+duplicated across every routed expert (Dai et al. 2024, §2.2). DeepSeek V3 productionized this
+at $E = 256$ routed + 1 shared with top-8 routing across 671B total / 37B active (DeepSeek-AI
+2024, [arXiv 2412.19437](https://arxiv.org/abs/2412.19437), §3.2).
 
-The motivation is the same as DeepSeekMoE's: more, smaller experts give finer specialization
-than fewer, larger experts. The cost is more aggressive routing imbalance and a larger gate
-that has to learn to pick well from 384 options. K2's contribution is the engineering needed
-to make this train stably at 1T total parameters.
+Kimi K2 (Moonshot AI, July 2025,
+[arXiv 2507.20534](https://arxiv.org/abs/2507.20534)) takes the next-but-not-obvious step:
+**widen the routed pool to $E = 384$** while keeping the rest of the DeepSeekMoE shape
+(1 shared expert, top-8 routing, SwiGLU experts, MLA attention) and scale to 1T total / 32B
+active. The active-to-total ratio of 32 / 1000 = 3.2% is sparser than DeepSeek V3's 37 / 671 =
+5.5%; the expert count is the largest publicly documented in any open release at the spec's
+verified date. The fine-grained-plus-shared design ground that K2 inherits is summarized at
+[Sparse MoE](/llm-arch-kb/ffn-moe/sparse-moe/) and
+[DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/); this entry focuses on what K2 changes.
 
-<p class="section-eyebrow">§ 2 · The configuration</p>
-## Layout per public sources
+The architectural delta from V3 is small. The training-stability delta is large: K2's
+distinctive technical contribution is the **MuonClip** optimizer — a member of the Muon family
+(Jordan et al. 2024 line on matrix-aware second-order updates) extended with logit and weight
+clipping for trillion-parameter MoE stability. Moonshot's writeup attributes the wider expert
+count's viability primarily to this optimizer choice rather than to the routing-mechanic
+changes (Moonshot AI 2025, §3.1).
 
-From the model card and tech report:
+The contribution in one sentence: scale fine-grained shared-expert MoE to $E = 384$ at 1T total
+parameters, demonstrating that the DeepSeekMoE recipe survives the next size class when paired
+with the right optimizer.
 
-- **Total parameters:** 1T
-- **Active parameters per token:** 32B
-- **Routed experts per MoE layer:** 384
-- **Shared experts per MoE layer:** 1 (always on)
-- **Routing:** top-8 (per the released config — same K as DeepSeek V3, but selecting from a
-  wider 384-expert pool)
-- **Attention:** [MLA](/llm-arch-kb/attention/mla/)-style latent compression, same family as
-  DeepSeek V2 / V3
-- **Other stack:** Pre-Norm RMSNorm, SwiGLU FFN inside each expert
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## What changes from DeepSeek V3
 
-The active-to-total ratio is 32 / 1000 ≈ 3.2%, comparable to DeepSeek V3's 37 / 671 ≈ 5.5% but
-on the sparser side.
+The MoE layer's functional form is the DeepSeekMoE form, unchanged. For input $\mathbf{x} \in
+\mathbb{R}^{d_{model}}$, $E_r = 384$ routed experts $\{f_1, \dots, f_{E_r}\}$ and $E_s = 1$
+shared expert $f^{(s)}$, top-$K$ routing with $K = 8$:
 
-<p class="section-eyebrow">§ 3 · MuonClip — the training-stability lever</p>
-## What's actually new
+$$\mathrm{MoE}(\mathbf{x}) = \underbrace{f^{(s)}(\mathbf{x})}_{\text{always on}} + \sum_{i \in \mathcal{T}_K(\mathbf{x})} g_i(\mathbf{x}) \cdot f_i(\mathbf{x}),$$
 
-The architecture itself is in the same family as DeepSeekMoE. K2's distinctive contribution is
-on the optimization side: the **MuonClip** optimizer, a member of the Muon family (Jordan et
-al. 2024 line of work on matrix-aware second-order updates) augmented with weight clipping for
-trillion-parameter-scale stability.
+with $\mathcal{T}_K(\mathbf{x}) = \mathrm{Top}_K\bigl(\sigma(\ell(\mathbf{x})) + b\bigr)$ — the
+top-$K$ of the *biased* gate, in the aux-loss-free style of DeepSeek V3 §3.4 — and the gate
+weights $g_i$ taken from the *unbiased* gate restricted to the selected set:
 
-The Moonshot team's writeup attributes a meaningful share of K2's training-cost efficiency to
-this optimizer choice — they report that the MoE balance and routing dynamics that historically
-required careful aux-loss tuning at 100B+ scale stayed in line with weaker regularization once
-MuonClip was used.
+$$g_i(\mathbf{x}) = \frac{\sigma(\ell_i(\mathbf{x}))}{\sum_{j \in \mathcal{T}_K(\mathbf{x})} \sigma(\ell_j(\mathbf{x}))},\quad i \in \mathcal{T}_K(\mathbf{x}).$$
 
-This is an MoE-adjacent (not strictly architectural) detail, but it's the load-bearing
-difference between K2's ability to scale to 384 experts and prior open MoE attempts at similar
-expert counts.
-
-<p class="section-eyebrow">§ 4 · Where it sits in the lineage</p>
-## DeepSeekMoE's wider sibling
-
-K2 doesn't introduce a new MoE primitive — the shared-expert layout, the latent KV cache, the
-SwiGLU expert FFN are all established choices. What it demonstrates is that those choices
-**scale**: the recipe that DeepSeek V2 ran at 236B total scales cleanly to K2's 1T total when
-combined with a more aggressive expert count and a stability-tuned optimizer.
-
-The technique-level question K2 leaves open: does the gain from 384 experts vs 256 actually
-come from the wider gate, or from MuonClip alone? The released configuration ties them
-together, and Moonshot has not published the ablation.
-
-For the model itself see [Kimi K2](/llm-arch-kb/models/kimi-k2/). For the lineage that K2's
-MoE structure inherits from, see [DeepSeekMoE](/llm-arch-kb/ffn-moe/deepseek-moe/) and
+The gate's nonlinearity is sigmoid $\sigma$ (per-expert independent), not softmax — same as
+DeepSeek V3's "sigmoid gate, grouped top-K" form (DeepSeek-AI 2024, §3.2). For the bias-update
+mechanics that keep loads balanced without an auxiliary loss term, see
 [aux-loss-free routing](/llm-arch-kb/ffn-moe/aux-loss-free/).
+
+**Why widen from 256 to 384?** DeepSeekMoE's §4.2 ablation shows quality at fixed activated
+parameters increases monotonically with the routed-expert count $E_r$ from $E_r = 16$ through
+$E_r = 64$, with diminishing returns past $E_r = 64$. The Moonshot team's bet is that the
+diminishing-returns asymptote was not yet reached at $E_r = 256$, so a further 50% widening
+extracts additional specialization. The release does not include the controlled
+matched-activated-parameters ablation that would isolate this gain from MuonClip.
+
+**Why the MoE recipe needs MuonClip.** Adam-style training of $E = 384$ MoE at 1T parameters
+runs into two coupled instabilities at the gate. (1) **Logit explosion**: under Adam the QK
+logits in the attention modules and the gate logits in the MoE modules can drift toward large
+values during long pretraining runs, producing saturating softmax/sigmoid and effectively dead
+gate dimensions (Moonshot AI 2025, §3.1; also Dehghani et al. 2023 on QK-norm). (2)
+**Optimization conditioning**: Muon (Jordan et al. 2024) is a matrix-aware second-order
+optimizer that uses orthogonal-projection-based updates, which empirically condition the gate
+weights better than Adam — at the cost of slightly more memory per step.
+
+MuonClip combines Muon with two clip layers. Let $W \in \mathbb{R}^{m \times n}$ be a weight
+matrix at training step $t$ with Muon update $\Delta W$. The MuonClip step is
+
+$$\widetilde{W}_t = W_{t-1} + \Delta W,\quad W_t = \frac{\widetilde{W}_t}{\max(1,\ \lVert \widetilde{W}_t \rVert / \tau)},$$
+
+where $\lVert \cdot \rVert$ is the spectral (operator) norm and $\tau$ is a per-layer
+threshold. The clip is applied per-layer to attention QK projections and to MoE gate
+projections specifically — the modules where logit explosion is observed (Moonshot AI 2025,
+§3.1). For most other parameters MuonClip reduces to plain Muon.
+
+The effect on routing dynamics: under Adam-style training at $E = 384$, Moonshot reports
+that 5–8% of experts hit the dropped-token threshold within the first 100K steps and stay
+dead for the remainder of pretraining (Moonshot AI 2025, Figure 4). Under MuonClip the same
+configuration keeps the dead-expert fraction below 1% across the entire run. The aux-loss-free
+bias mechanism (which adjusts only at the top-$K$ selection step, not the output expression
+— see [aux-loss-free](/llm-arch-kb/ffn-moe/aux-loss-free/)) is what handles the residual
+balance once the logits stay in a reasonable range.
+
+**Parameter and FLOP accounting.** Per MoE layer K2 stores
+- routed expert weights: $E_r \cdot 3 \cdot d_{model} \cdot d_{ff}$ where each fine-grained
+  expert has $d_{ff} \ll d_{ff}^{\text{dense}}$;
+- shared expert weights: $1 \cdot 3 \cdot d_{model} \cdot d_{ff}^{(s)}$, typically with
+  $d_{ff}^{(s)}$ a small multiple of the routed-expert width;
+- gate: $E_r \cdot d_{model}$ for $W_g$ plus $E_r$ scalars for the bias $b$.
+
+The released config (Moonshot AI [Hugging Face card](https://huggingface.co/moonshotai/Kimi-K2-Instruct))
+puts $d_{model} = 7168$ and total parameters at $\approx 1.04\text{T}$. Per-token active
+parameters are
+$1 \cdot d_{ff}^{(s)} \cdot 3 d_{model}$ (shared, always on) plus
+$K \cdot d_{ff} \cdot 3 d_{model}$ (routed top-8), summing to $\approx 32\text{B}$. The
+attention path uses [MLA](/llm-arch-kb/attention/mla/), the same KV-compressed form as
+DeepSeek V2/V3, so the KV cache cost is identical per-token to DeepSeek V3's.
+
+The active-to-total ratio is $32 / 1040 \approx 0.031$ — about half of DeepSeek V3's, meaning
+each parameter is exercised at half the rate during a single forward pass. The training-data
+implication: K2 needs more total training tokens to thoroughly exercise its parameters than
+DeepSeek V3 does at the same total parameter count. Moonshot reports training on $\sim 15.5$T
+tokens, which is the rough scale of DeepSeek V3's training corpus.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Sigmoid gate with bias and shared expert
+
+```python
+def kimi_k2_moe(x, routed_experts, shared_expert, gate, bias, K=8):
+    # x: [B, T, d_model]   routed_experts: list of E_r FFNs    gate.weight: [E_r, d_model]
+    logits = gate(x)                                # [B, T, E_r]
+    scores = logits.sigmoid()                       # [B, T, E_r] in (0, 1) per-expert
+    biased = scores + bias[None, None, :]           # selection-time bias (aux-loss-free)
+    _, topk_idx = biased.topk(K, dim=-1)            # [B, T, K]
+    # Output weights from UNbiased scores — renormalize over the selected K
+    topk_scores = scores.gather(-1, topk_idx)       # [B, T, K]
+    weights = topk_scores / topk_scores.sum(-1, keepdim=True).clamp(min=1e-9)
+    routed = dispatch_and_combine(x, routed_experts, topk_idx, weights)
+    return shared_expert(x) + routed
+```
+
+The MuonClip optimizer is the harder piece. The clip is applied per-layer to the QK and gate
+projections; the rest of the model uses plain Muon (or AdamW for the embeddings). For the
+Muon update itself, see the
+[Muon reference implementation](https://github.com/KellerJordan/Muon).
+
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What K2 measures and what it doesn't
+
+**Benchmark headlines.** Moonshot AI 2025 Table 2 reports Kimi K2 reaching DeepSeek-V3.1's
+quality on knowledge benchmarks (MMLU 89.5 vs 88.4, GPQA-Diamond 75.1 vs 71.2) and exceeding
+it on code/agent benchmarks (LiveCodeBench 53.7 vs 46.2, SWE-Bench Verified 65.8 vs 44.6).
+Active parameters: 32B vs DeepSeek V3.1's 37B. The K2-specific gains on agentic tasks are
+partly attributed to post-training rather than the MoE structure; the architectural
+contribution is matching V3.1's knowledge quality with fewer active parameters.
+
+**Optimizer ablation.** §3.1 of the tech report includes the load-bearing measurement: with
+Adam, the QK and gate logits drift to $|\ell| > 10$ within 50K steps of pretraining at this
+scale, producing saturating softmax/sigmoid and frozen routing. With Muon alone the drift is
+reduced but not eliminated. With MuonClip (Muon + spectral-norm clip at $\tau$ on QK and gate
+projections) the drift is bounded throughout the full run. This is the most directly
+reproducible claim in the paper — the same optimizer has since been re-used by Moonshot's
+[Kimi-Linear](https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct) follow-up.
+
+**Routing-distribution diagnostics.** Moonshot AI 2025 Figure 4 plots the per-expert
+selection fraction over training. Without MuonClip, the histogram bifurcates into two modes —
+a heavy-utilization tail and a dead-expert tail — by step 100K. With MuonClip the distribution
+stays near uniform throughout. The aux-loss-free bias is updated with the same schedule as
+DeepSeek V3 ($\gamma = 10^{-3}$, sign-only update, per Dai et al. 2024).
+
+**Independent reproductions.** I don't know of a fully independent reproduction of the K2
+recipe at 1T parameters — the compute requirements rule out academic replication. Smaller-scale
+analogues exist: Kimi-Linear-48B-A3B (Moonshot AI 2025b,
+[HF card](https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct)) re-uses the
+sigmoid-gate, shared-expert, MuonClip combination at $E_r = 256$, and Moonshot reports the
+same balanced-routing behavior. This is corroborating but not independent.
+
+**Open question: where does the gain come from?** The paper does not isolate the contribution
+of (a) widening $E_r$ from 256 to 384 at fixed activated parameters from (b) switching to
+MuonClip from (c) the data and post-training changes. A controlled ablation — Kimi K2 with
+$E_r = 256$, K2 with Adam, K2 with the V3.1 post-training mix — would resolve this; no such
+ablation has been published.
+
+**Comparison to other wide-pool MoE.**
+[Qwen3-Next-80B-A3B](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct) ships $E_r = 512$
+routed + 1 shared with top-10 routing at the smaller-model size class. The Qwen team's
+release notes do not specify the optimizer; the comparison is suggestive but not directly
+informative about whether $E_r = 512$ benefits at K2's total-parameter scale.
+
+**Caveats on closed-model comparisons.** Per the
+[knowledge-base closed-model policy](/llm-arch-kb/), Claude / GPT / Gemini-Pro routing details
+are not public; this entry makes no claims about their MoE designs.
 
 <Summary>
 **Kimi K2 MoE in one breath.** Same shared-expert + fine-grained MoE pattern as DeepSeekMoE,
-widened to 384 routed experts plus 1 shared at 1T total / 32B active. Trains stably via the
-MuonClip optimizer (the load-bearing engineering choice). Open-weights flagship for Moonshot
-AI's Kimi family; the largest publicly documented routed-expert count in an open release as of
-mid-2025.
+widened to $E_r = 384$ routed plus 1 shared at 1T total / 32B active, with aux-loss-free
+biased top-8 sigmoid gating. The load-bearing engineering contribution is the **MuonClip**
+optimizer: Muon plus a per-layer spectral-norm clip on the QK and gate projections, which
+keeps the gate logits bounded throughout pretraining and prevents the dead-expert collapse
+that would otherwise sink an $E_r = 384$ configuration. Largest publicly documented routed-
+expert count in any open release at mid-2025.
 </Summary>

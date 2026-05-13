@@ -22,92 +22,191 @@ difficulty: "intermediate"
 import Summary from "~/components/Summary.astro";
 
 <p class="section-eyebrow">§ 1 · Premise</p>
-## What static HC leaves on the table
+## Static routing leaves expressivity on the table
 
-[Hyper-Connections](/llm-arch-kb/residual/hyper-connections/) generalizes the residual to $n$
-parallel streams with learned per-layer read coefficients $\mathbf{A}_\ell$ and write
-coefficients $\mathbf{B}_\ell$. In the static version (SHC), those coefficients are constants:
-every token at layer $\ell$ uses the same routing.
+[Static Hyper-Connections](/llm-arch-kb/residual/hyper-connections/) (SHC) generalize the
+single residual stream to $n$ parallel streams plus learned per-layer read/write coefficient
+vectors $\mathbf{a}_\ell^{(r)}, \mathbf{a}_\ell^{(w)} \in \mathbb{R}^n$ and a depth-rate matrix
+$\mathbf{B}_\ell \in \mathbb{R}^{n \times n}$. The construction is strictly more expressive
+than the standard residual ([Zhu et al. 2024, §3.1](https://arxiv.org/abs/2409.19606)), but it
+applies the same routing pattern to every token at layer $\ell$.
 
-That's a strict generalization of the standard residual ($n = 1$, $A = B = 1$), but it leaves
-expressivity on the table. A sentence about cooking and a sentence about quantum mechanics may
-benefit from being routed through different streams — different layers may want to read and
-write different "channels" depending on what's in the residual stream right now.
+The implicit assumption is that all tokens benefit from the same layer-$\ell$ stream mix.
+That is unlikely to hold uniformly. A noun-phrase token might benefit from carrying its
+semantic features through one stream while a function-word token routes positional information
+through another. Mixture-of-Experts routing — token-level expert selection at every layer —
+already concedes the same point about token-conditional structure
+([Shazeer et al. 2017, §2.1](https://arxiv.org/abs/1701.06538)); applying the same principle
+to residual-stream routing is the Dynamic Hyper-Connections (DHC) contribution.
 
-Dynamic Hyper-Connections (DHC) makes the routing input-dependent.
+DHC is presented in the same paper as SHC and is the variant that produces the strongest
+empirical results in the paper's tables; it can be read as the "real" Hyper-Connections
+proposal, with SHC as the conservative starting point that makes the gains attributable to the
+multi-stream construction rather than to per-token gating in general.
 
-<p class="section-eyebrow">§ 2 · The per-token routing</p>
-## A_l and B_l from a small projection
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Predict $\mathbf{a}^{(r)}, \mathbf{a}^{(w)}, \mathbf{B}$ from the per-token state
 
-For each token $t$ at layer $\ell$, DHC computes the read and write coefficients from a small
-linear projection of a token-level summary of the stream stack
-$\bar{\mathbf{x}}_\ell^{(t)} \in \mathbb{R}^d$ (the paper uses a learned mix of the $n$ streams
-to form this summary):
+Start from the SHC update at layer $\ell$ for a single token at sequence position $t$:
 
 $$
 \begin{aligned}
-\mathbf{A}_\ell^{(t)} &= W_A\, \bar{\mathbf{x}}_\ell^{(t)} + \mathbf{a}_\ell \in \mathbb{R}^n\\
-\mathbf{B}_\ell^{(t)} &= W_B\, \bar{\mathbf{x}}_\ell^{(t)} + \mathbf{b}_\ell \in \mathbb{R}^n
+\mathbf{r}_\ell^{(t)} &= (\mathbf{a}_\ell^{(r)})^{\!\top}\, \mathbf{H}_\ell^{(t)},\\
+\mathbf{u}_\ell^{(t)} &= f_\ell(\mathbf{r}_\ell^{(t)}),\\
+\mathbf{H}_{\ell+1}^{(t)} &= \mathbf{B}_\ell\, \mathbf{H}_\ell^{(t)} + \mathbf{a}_\ell^{(w)}\, (\mathbf{u}_\ell^{(t)})^{\!\top}.
 \end{aligned}
 $$
 
-where $W_A, W_B \in \mathbb{R}^{n \times d}$ and $\mathbf{a}_\ell, \mathbf{b}_\ell$ are
-per-layer biases. The block then proceeds as in static HC:
+In SHC, the three routing parameters $\mathbf{a}_\ell^{(r)}, \mathbf{a}_\ell^{(w)}, \mathbf{B}_\ell$
+are layer-constants. DHC promotes them to *functions of the per-token state*
+$\mathbf{H}_\ell^{(t)} \in \mathbb{R}^{n \times d}$ via small linear projections.
+
+**Token summary.** First, build a $d$-dimensional summary of the token's $n$-stream state using
+a learned mix $\mathbf{m} \in \mathbb{R}^n$ that is shared across layers:
+
+$$
+\bar{\mathbf{x}}_\ell^{(t)} = \mathbf{m}^{\!\top}\, \mathbf{H}_\ell^{(t)} \;\in\; \mathbb{R}^d.
+$$
+
+In the paper's implementation, $\mathbf{m}$ is initialized to uniform so the summary starts as
+a stream average; the network learns to skew the summary toward whichever streams carry the
+most decision-relevant features.
+
+**Per-token read and write coefficients.** Project the summary onto two $\mathbb{R}^n$ vectors:
+
+$$
+\mathbf{a}_\ell^{(r),(t)} = W_\ell^{(r)}\, \bar{\mathbf{x}}_\ell^{(t)} + \mathbf{a}_\ell^{(r,0)}, \qquad \mathbf{a}_\ell^{(w),(t)} = W_\ell^{(w)}\, \bar{\mathbf{x}}_\ell^{(t)} + \mathbf{a}_\ell^{(w,0)},
+$$
+
+where $W_\ell^{(r)}, W_\ell^{(w)} \in \mathbb{R}^{n \times d}$ are per-layer projection
+weights and $\mathbf{a}_\ell^{(r,0)}, \mathbf{a}_\ell^{(w,0)} \in \mathbb{R}^n$ are per-layer
+biases that recover SHC behavior when the projection-weight contribution is small. Each token
+thus picks its own read/write mix.
+
+**Per-token rate matrix.** The depth-rate matrix is also predicted per token, via a low-rank
+projection that keeps the parameter count tractable:
+
+$$
+\mathbf{B}_\ell^{(t)} = \mathbf{B}_\ell^{(0)} + (W_\ell^{(B,u)} \bar{\mathbf{x}}_\ell^{(t)})\, (W_\ell^{(B,v)} \bar{\mathbf{x}}_\ell^{(t)})^{\!\top}, \qquad W_\ell^{(B,u)}, W_\ell^{(B,v)} \in \mathbb{R}^{n \times d}.
+$$
+
+The outer product of two predicted $\mathbb{R}^n$ vectors gives a rank-1 perturbation on top of
+the per-layer constant $\mathbf{B}_\ell^{(0)}$. (The paper allows the rank to be lifted by
+predicting multiple such outer products; the rank-1 form is the lightweight default.)
+
+**The DHC update.** Substitute the per-token coefficients into the SHC update:
+
+$$
+\mathbf{H}_{\ell+1}^{(t)} = \mathbf{B}_\ell^{(t)}\, \mathbf{H}_\ell^{(t)} + \mathbf{a}_\ell^{(w),(t)}\, (\mathbf{u}_\ell^{(t)})^{\!\top}, \quad \mathbf{u}_\ell^{(t)} = f_\ell\!\bigl((\mathbf{a}_\ell^{(r),(t)})^{\!\top} \mathbf{H}_\ell^{(t)}\bigr).
+$$
+
+The sublayer $f_\ell$ is unchanged — DHC adds routing machinery *around* attention and FFN
+without touching their internals.
+
+**Reduction to SHC.** Set $W_\ell^{(r)} = W_\ell^{(w)} = W_\ell^{(B,u)} = W_\ell^{(B,v)} = 0$.
+The per-token coefficients collapse to their per-layer biases and DHC becomes SHC. DHC is a
+strict generalization, just as SHC is a strict generalization of the standard residual.
+
+**Why this and not "predict the full $\mathbf{B}$ unconstrained."** A full per-token
+$\mathbb{R}^{n \times n}$ matrix would require $n^2 d$ parameters per layer
+($\sim 2.6 \times 10^5$ weights at $n = 4$, $d = 4096$) just for the rate matrix — comparable
+to the rest of the block. The rank-1 (or low-rank) parameterization keeps the routing prediction
+much smaller than the sublayer compute while preserving the expressivity gain. The same
+low-rank-routing argument appears in MoE literature ([Shazeer et al. 2017,
+§2.1](https://arxiv.org/abs/1701.06538)).
+
+**Initialization for stability.** The projection weights $W_\ell^{(\cdot)}$ are initialized to
+zero or near-zero; the biases recover SHC's initialization
+([Zhu et al. 2024, §3.3](https://arxiv.org/abs/2409.19606)). Network behavior at step zero is
+exactly SHC; per-token routing emerges as the projection weights grow during training. This
+guarantees that DHC inherits SHC's depth-stability properties at initialization.
+
+**Parameter and compute overhead over SHC.** Per layer, four additional $\mathbb{R}^{n \times d}$
+projections ($W_\ell^{(r)}, W_\ell^{(w)}, W_\ell^{(B,u)}, W_\ell^{(B,v)}$) — total $4nd$
+parameters. At $n = 4, d = 4096$: $\sim 65$K parameters per layer, against $\sim 200$M for the
+attention and FFN. Compute overhead is four small matmuls
+$\mathbb{R}^d \to \mathbb{R}^n$ per token per layer: $\mathcal{O}(B \cdot T \cdot n \cdot d)$
+FLOPs, $\sim n / d$ times smaller than the sublayer compute and therefore negligible. Activation
+memory is the same as SHC: $n \times d$ per token per layer.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Dynamic Hyper-Connection block, sketch
 
 ```python
-def dhc_block(X, sublayer, W_A, W_B, a, b):
-    # X: (n, d) — n parallel residual streams for a single token
-    x_bar = X.mean(axis=0)          # (d,) token-level summary of the stream stack
-    A = W_A @ x_bar + a             # (n,) per-token read mix
-    r = A @ X                       # (d,) read
-    u = sublayer(r)                 # (d,) sublayer compute
-    B = W_B @ x_bar + b             # (n,) per-token write mix
-    X = X + np.outer(B, u)          # (n, d) write
-    return X
+def dhc_block(H, sublayer, mix_m, W_r, W_w, W_Bu, W_Bv, a_r0, a_w0, B0):
+    # H: (B, T, n, d) — stack of n parallel residual streams per token
+    x_bar = (mix_m[None, None, :, None] * H).sum(dim=-2)        # (B, T, d) token summary
+    a_r = W_r @ x_bar + a_r0                                    # (B, T, n) per-token read mix
+    a_w = W_w @ x_bar + a_w0                                    # (B, T, n) per-token write mix
+    B_u = W_Bu @ x_bar                                          # (B, T, n) low-rank rate factor
+    B_v = W_Bv @ x_bar                                          # (B, T, n)
+    B_t = B0 + torch.einsum("bti,btj->btij", B_u, B_v)          # (B, T, n, n) per-token rate matrix
+
+    r = (a_r[..., None] * H).sum(dim=-2)                        # (B, T, d) read
+    u = sublayer(r)                                             # (B, T, d) sublayer
+    H = torch.einsum("btij,btjd->btid", B_t, H)                 # (B, T, n, d) rate-mix update
+    H = H + a_w[..., None] * u[..., None, :]                    # write per-token
+    return H
 ```
 
-The compute cost over static HC is two extra small projections per layer ($W_A, W_B$ are
-$n \times d$, with $n$ typically 4 to 8 — much smaller than $d$). Memory cost per layer is the
-same: $n \times d$ for the stream stack.
+The routing parameters become per-token tensors rather than per-layer constants; the rest of
+the SHC machinery is preserved.
 
-<p class="section-eyebrow">§ 3 · What "dynamic" buys</p>
-## Token-level routing patterns
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What DHC adds over SHC
 
-The empirical result the paper highlights (Table 2): DHC outperforms SHC at the same parameter
-count on a 1.3B language modeling benchmark, with the gap growing slightly at larger scales
-within the studied range. The mechanism the authors offer:
+**Headline language-modeling result**
+([Zhu et al. 2024, §4.2, Table 1](https://arxiv.org/abs/2409.19606)): on a 1.3B dense LM at
+matched parameter count and training budget, DHC outperforms SHC ($n = 4$) by 0.2 perplexity
+and the Pre-Norm baseline by 0.8 perplexity. The DHC advantage over SHC grows modestly at the
+7B-active MoE scale to 0.3 perplexity (Table 3), suggesting per-token routing is more
+load-bearing as the model has more representational capacity to specialize.
 
-- **Per-token specialization.** Different tokens benefit from different routing — DHC lets each
-  one pick its own pattern.
-- **Late-binding routing.** A_l and B_l depend on the *current* state of the residual streams,
-  so a layer's routing reflects what's there now rather than a fixed plan from initialization.
-- **Better gradient flow at depth.** With per-token mixing, no single A or B vector dominates
-  the routing at any layer — gradients distribute more evenly across streams during backprop.
+**Depth stability** (§4.3, Figure 4): DHC at 96 layers matches SHC's improved seed-to-seed
+stability over the Pre-Norm baseline. The per-token routing does not destabilize training; the
+initialization (projection weights at zero) recovers SHC behavior at step zero.
 
-<p class="section-eyebrow">§ 4 · The "mHC" framing</p>
-## Multiple Hyper-Connections
+**Routing analysis** (§4.6, Figure 6): the paper visualizes the learned per-token routing
+patterns and finds that DHC clusters tokens by syntactic / semantic role (high-frequency
+function words route differently from content words) at the routing-coefficient level. The
+mechanism is interpretable in a way SHC cannot be, since SHC's routing is token-independent by
+construction.
 
-The paper sometimes refers to the technique as "mHC" — multiple-stream Hyper-Connections —
-emphasizing that the variant generalization is about adding the per-token mechanism on top of
-the basic multi-stream architecture. Static and Dynamic are two points in the same design
-space; the static version is the more conservative starting point and the dynamic version
-trades a little compute for a little expressivity.
+**Vision** (§4.5): the consistent ranking DHC > SHC > Pre-Norm holds on ViT ImageNet
+classification and DiT image generation. Cross-modality consistency strengthens the per-token-
+routing benefit claim.
 
-<p class="section-eyebrow">§ 5 · Production status</p>
-## Same as HC: research, not yet documented in production
+**Comparison to MoE-style token routing.** DHC's routing mechanism is mechanistically similar
+to Mixture-of-Experts routing
+([Shazeer et al. 2017, §2.1](https://arxiv.org/abs/1701.06538)) but applied at the
+*residual-stream level* rather than the FFN-expert level. The two are complementary: a MoE
+transformer with DHC residuals would have token-level routing both for which FFN expert to
+consult and for which residual stream to write back into. The Zhu et al. MoE experiment (§4.4)
+combines DHC and DeepSeekMoE-style expert routing; they do not interfere and the gains compose.
 
-As of May 2026, no publicly documented production release uses DHC (or static HC). The
-ByteDance Doubao team that introduced the technique does not publish architecture details for
-its production models in enough depth to confirm or rule out its use; other open frontier
-labs continue with the standard residual.
+**Independent reproduction.** As with [SHC](/llm-arch-kb/residual/hyper-connections/), no
+independent frontier-scale reproduction has appeared in the open literature as of May 2026. The
+DenseFormer family ([Liu et al. 2024, §3](https://arxiv.org/abs/2402.02622)) is the closest
+related design — depth-wise dense connections between residual states — but DenseFormer's
+mixing is static across tokens, more comparable to SHC than to DHC.
 
-For the broader Hyper-Connections framework that DHC sits inside, see
-[Hyper-Connections](/llm-arch-kb/residual/hyper-connections/).
+**Production status.** No publicly documented production deployment of DHC. The ByteDance
+Doubao team that introduced the technique does not publish enough architecture detail on its
+production models to confirm or rule out use; per the closed-model policy, no claim is made
+either way. Other open frontier labs continue with the standard residual or with placements
+(Gemma 3's norm-everywhere, OLMo 2's reordered norms) that operate on a single stream.
+
+For the static rate-matrix construction that DHC sits on top of, see
+[Hyper-Connections](/llm-arch-kb/residual/hyper-connections/). The two entries cover the same
+paper (arXiv 2409.19606) but separate the multi-stream contribution from the per-token routing
+contribution so each can be evaluated on its own.
 
 <Summary>
-**Dynamic HC in one breath.** Compute the read/write mix coefficients per-token rather than
-per-layer — a small projection from the current read vector produces $A_\ell^{(t)}$ and
-$B_\ell^{(t)}$. Costs two extra small projections per layer; reportedly outperforms the static
-variant at matched parameter count. Same paper as static HC (arXiv 2409.19606), more
-expressive variant. No publicly documented production adoption.
+**Dynamic HC in one breath.** Promote SHC's per-layer routing constants
+$\mathbf{a}_\ell^{(r)}, \mathbf{a}_\ell^{(w)}, \mathbf{B}_\ell$ to per-token functions via four
+small projections from a learned token-state summary $\bar{\mathbf{x}}_\ell^{(t)}$. Each token
+picks its own read/write mix and a low-rank perturbation to the depth-rate matrix; the rest of
+the SHC machinery is unchanged. Reduces to SHC when the projection weights are zero. Reportedly
++0.2 perplexity over SHC and +0.8 over Pre-Norm on the 1.3B LM benchmark; per-token routing
+clusters by token role. No publicly documented production adoption.
 </Summary>

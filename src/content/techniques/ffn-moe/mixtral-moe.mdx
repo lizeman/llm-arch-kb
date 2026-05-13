@@ -32,79 +32,199 @@ import Summary from "~/components/Summary.astro";
 <p class="section-eyebrow">§ 1 · Premise</p>
 ## Production MoE before DeepSeekMoE
 
-The 2017–2023 MoE literature (Sparse MoE, Switch Transformer, GShard, ST-MoE) had largely
-converged on a recipe: 8–32 full-sized FFN experts per layer, top-1 or top-2 routing, an
-auxiliary balance loss. Mixtral 8x7B (Jiang et al. 2024) shipped this recipe at production
-quality, open-weights, with a clean MIT license — and it became the default mental model for
-"how MoE works" for an entire wave of practitioners.
+A dense Llama-2-style 7B decoder uses ~13 GFLOPs per token at the FFN stage and stores all 7B
+parameters in HBM. A GShard / Switch-style MoE replaces the dense FFN with $E$ parallel expert
+FFNs and a small gating network that picks the top-$K$ for each token, so activated parameters
+scale with $K$ while total parameters scale with $E$ (Shazeer et al. 2017, eq. 2). The
+question Mixtral 8x7B (Jiang et al. 2024, [arXiv 2401.04088](https://arxiv.org/abs/2401.04088))
+takes on is not whether sparse MoE works — Switch (Fedus et al. 2021) had already crossed the
+trillion-parameter line and GShard (Lepikhin et al. 2020) had shown encoder-side scaling — but
+whether the small-$E$, top-2, full-sized-expert recipe is operationally clean enough to ship
+as an open-weights flagship.
 
-The architecture is intentionally not novel. Its contribution was operational: showing the
-8-expert, top-2 design *worked* at the 7B-active scale and could be deployed with off-the-shelf
-tooling.
+The 2017–2023 sparse-MoE literature had converged on a recipe sitting roughly at $E = 8$ to
+$E = 32$ FFN-sized experts per layer with top-1 or top-2 routing and an auxiliary balance loss
+on the gate (Fedus et al. 2021, §2.2). The variants disagreed on which expert size and which
+$K$. Sparse-MoE 2017 used many small LSTM experts; Switch used top-1 over hundreds; GShard
+used top-2 over hundreds; ST-MoE (Zoph et al. 2022) used top-2 over 64. Mixtral picks the
+coarsest viable point: $E = 8$, $K = 2$, expert size equal to a full Llama 2 FFN. The choice
+matters because it determines what hardware layout works and what auxiliary loss schedule
+needs tuning.
 
-<p class="section-eyebrow">§ 2 · The layer</p>
-## Eight experts, top-2, one balance loss
+The Mixtral contribution is not a new primitive. It is an open-weights demonstration that the
+$E = 8$, top-2, SwiGLU-expert recipe trains stably at the 13B-active scale, serves on
+single-node 8-way expert-parallel hardware without bespoke kernels, and reaches Llama-2-70B
+quality at ~5× lower inference compute (Jiang et al. 2024, Table 4). For the basic top-K
+gating math and the noisy-top-K trick on which this whole recipe rests, see
+[Sparse MoE](/llm-arch-kb/ffn-moe/sparse-moe/); this entry focuses on what is specific to the
+Mixtral configuration.
 
-Each MoE layer replaces the dense FFN with $E = 8$ SwiGLU-style experts of the same size as a
-normal FFN. A small gating network produces logits over the 8; the top 2 are activated:
+The contribution in one sentence: take the smallest-$E$ top-2 MoE that still gives meaningful
+specialization, retrain at production scale, and ship it open-weights under MIT.
 
-$$\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathrm{top2}(g(\mathbf{x}))} g_i(\mathbf{x})\,f_i(\mathbf{x}),\quad g_i = \frac{e^{l_i}}{\sum_{j \in \mathrm{top2}} e^{l_j}}.$$
+<p class="section-eyebrow">§ 2 · Derivation</p>
+## Eight experts, top-2, normalized over selection
 
-Note the renormalization: the gate softmax is taken *over only the top-K selected experts*, not
-over all $E$. This avoids the gradient instability of softmaxing over near-zero entries for the
-$E - K$ unused experts.
+Start from the dense Llama-2 FFN at the position-wise layer:
+
+$$\mathrm{FFN}(\mathbf{x}) = W_2\bigl(\mathrm{SiLU}(W_1 \mathbf{x}) \odot W_3 \mathbf{x}\bigr),$$
+
+with $W_1, W_3 \in \mathbb{R}^{d_{ff} \times d_{model}}$ and $W_2 \in \mathbb{R}^{d_{model}
+\times d_{ff}}$. Mixtral 8x7B uses $d_{model} = 4096$, $d_{ff} = 14336$ (Jiang et al. 2024,
+Table 1). The dense FFN parameter cost per layer is $3 \cdot d_{model} \cdot d_{ff} \approx
+176\text{M}$, and the per-token FLOP cost is $\approx 2 \cdot 3 \cdot d_{model} \cdot d_{ff}$.
+
+Mixtral replaces this single FFN with $E = 8$ independent SwiGLU experts $\{f_1, \dots, f_8\}$,
+each parameterized exactly like the dense $\mathrm{FFN}$. A linear gate $W_g \in \mathbb{R}^{E
+\times d_{model}}$ produces logits $\ell(\mathbf{x}) = W_g \mathbf{x} \in \mathbb{R}^E$. The
+layer output is
+
+$$\mathrm{MoE}(\mathbf{x}) = \sum_{i \in \mathcal{T}(\mathbf{x})} g_i(\mathbf{x}) \cdot f_i(\mathbf{x}),$$
+
+where $\mathcal{T}(\mathbf{x}) = \mathrm{Top}_2\bigl(\ell(\mathbf{x})\bigr)$ is the index set
+of the two largest logits and the gate weights $g_i$ are the *renormalized softmax restricted
+to the selected pair*:
+
+$$g_i(\mathbf{x}) = \frac{\exp \ell_i(\mathbf{x})}{\sum_{j \in \mathcal{T}(\mathbf{x})} \exp \ell_j(\mathbf{x})},\quad i \in \mathcal{T}(\mathbf{x}).$$
+
+This is the load-bearing difference from Sparse-MoE 2017's gate, which softmaxes over all $E$
+logits and then masks the non-top-$K$ entries to zero (Shazeer et al. 2017, eq. 3). The
+Mixtral form (Jiang et al. 2024, eq. 4) softmaxes *only over the selected $K$*. The two
+choices differ when the gate is poorly calibrated: with $E$-wide softmax, the $K = 2$
+post-mask weights can collectively be far below 1, attenuating the expert outputs and forcing
+the residual to do the work; with $K$-only softmax, the weights always sum to 1, so the expert
+block always contributes its full magnitude to the residual stream. The Mixtral team chose
+the second form to keep the residual budget consistent regardless of how spiky the gate is.
+
+Why $E = 8$ and not 64? With $E = 8$ each expert covers a wider slice of input semantics, so
+specialization is *coarse*: a single expert ends up handling both code syntax and English
+grammar rather than one fine-grained concept each. DeepSeekMoE (Dai et al. 2024,
+[arXiv 2401.06066](https://arxiv.org/abs/2401.06066), §2.2) measures this directly and shows
+the coarse design redundantly stores common-knowledge weights across every expert, since
+every token has to hit *some* expert for basic linguistic competence. The Mixtral counter is
+operational: $E = 8$ fits cleanly into 8-way expert-parallel hardware, the gate's 8-way
+classification is well-conditioned, and the balance loss only needs to push toward a uniform
+distribution over 8 buckets — all of which fail more often at $E = 256$.
+
+Why top-2 and not top-1? Top-1 (Switch) gives one bit of routing signal per token and forces
+the dispatch to handle a discrete categorical choice with no soft fallback; if expert $i^*$
+overflows its capacity, the token is *dropped* (residual passes through unchanged). Top-2
+gives a soft second choice that absorbs capacity overflow gracefully — the gate weights $g_1
++ g_2 = 1$ adapt to which of the two experts actually accepts the token. The empirical case
+for top-2 over top-1 was made by GShard (Lepikhin et al. 2020, §3) and confirmed at scale by
+ST-MoE (Zoph et al. 2022, Table 5), which reports a 0.3–0.6 perplexity point quality gap.
+
+Mixtral inherits the **load-balancing auxiliary loss** from Switch (Fedus et al. 2021, eq. 4),
+unchanged in form:
+
+$$\mathcal{L}_{\mathrm{aux}} = \alpha \cdot E \cdot \sum_{i = 1}^{E} f_i \cdot P_i,$$
+
+where $f_i$ is the fraction of tokens in the batch whose top-2 set contains expert $i$ and
+$P_i$ is the gate's mean *softmax probability* (over all $E$, not over the selected pair) for
+expert $i$. The product $f_i \cdot P_i$ is jointly minimized when both quantities are uniform
+at $1/E$, so the sum is bounded below by $\alpha / E$ and is bounded above by $\alpha$ when
+all tokens collapse to one expert. The factor $E$ in front rescales so $\alpha$ has a
+consistent meaning across $E$. Mixtral's released code uses $\alpha = 0.02$ (Hugging Face
+transformers reference implementation,
+[`MixtralSparseMoeBlock`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/mixtral/modeling_mixtral.py)).
+
+The $P_i \cdot f_i$ product, not $P_i^2$ or $f_i^2$ alone, is what makes the loss
+gradient-tractable: $f_i$ is a non-differentiable count, but $P_i$ is differentiable in $W_g$,
+so the gradient on the gate is $\alpha \cdot E \cdot \sum_i f_i \cdot \nabla_{W_g} P_i$ — a
+weighted softmax-cross-entropy-style update that pulls $P_i$ toward $1/E$ proportionally to
+how *over*-used expert $i$ currently is. The discrete count $f_i$ acts as a stop-gradient
+target. See Fedus et al. 2021, §2.3 for the same derivation.
+
+**Parameter and FLOP accounting.** Per MoE layer Mixtral stores $E \cdot 3 \cdot d_{model}
+\cdot d_{ff} + E \cdot d_{model}$ FFN-plus-gate parameters, i.e., $8 \cdot 176\text{M} +
+8 \cdot 4096 \approx 1.4\text{B}$. Per token only $K = 2$ experts fire, so the per-token FFN
+FLOP cost is $K / E = 1/4$ of the equivalent $E \cdot \mathrm{FFN}$-dense cost, matching the
+dense FLOP cost of a 13B-parameter dense FFN. Total parameter footprint: 46.7B across 32
+layers (Jiang et al. 2024, Table 1); active per token: 12.9B. The ratio active/total $\approx
+0.28$ is the *coarse* end of the MoE spectrum; DeepSeek V3 sits near 0.06 and Kimi K2 near
+0.032.
+
+<p class="section-eyebrow">§ 3 · Reference implementation</p>
+## Top-2 with renormalization over the pair
 
 ```python
 def mixtral_moe(x, experts, gate, K=2):
-    logits = gate(x)                           # [B, T, E]
-    topk_logits, topk_idx = logits.topk(K, dim=-1)
-    weights = topk_logits.softmax(-1)          # renormalize over K only
+    # x: [B, T, d_model]   gate.weight: [E, d_model]   experts: list of E SwiGLU FFNs
+    logits = gate(x)                                # [B, T, E]
+    topk_logits, topk_idx = logits.topk(K, dim=-1)  # [B, T, K]
+    # Renormalize softmax over the K selected logits only — not over E
+    weights = topk_logits.softmax(-1)               # [B, T, K], sums to 1 along K
+    # Dispatch each token to its K experts; combine outputs by weights
     return dispatch_and_combine(x, experts, topk_idx, weights)
+
+def load_balance_loss(logits, topk_idx, alpha=0.02):
+    # logits: [B, T, E]    topk_idx: [B, T, K]
+    E = logits.shape[-1]
+    P = logits.softmax(-1).mean(dim=(0, 1))         # [E] mean gate prob
+    one_hot = scatter_to_onehot(topk_idx, E)        # [B, T, E] in {0, 1}
+    f = one_hot.float().mean(dim=(0, 1))            # [E] selection fraction
+    return alpha * E * (f * P).sum()
 ```
 
-Auxiliary load-balancing loss (Fedus et al. 2021's Switch Transformer formulation, eq. 4):
+The dispatch step is the implementation pain point. A naive `for i in range(E): x[mask_i] =
+f_i(x[mask_i])` is correct but serializes the experts. Production implementations gather
+tokens into a `[E, capacity, d_model]` tensor, run all experts in parallel as a batched
+matmul, then scatter back — see the
+[Megablocks](https://github.com/databricks/megablocks) kernel for the standard form.
 
-$$\mathcal{L}_{\text{aux}} = \alpha \cdot E \cdot \sum_i f_i \cdot P_i,$$
+<p class="section-eyebrow">§ 4 · Empirical evidence</p>
+## What Mixtral 8x7B and follow-ups measure
 
-where $f_i$ is the fraction of tokens routed to expert $i$ and $P_i$ is the gate's mean
-probability for expert $i$. The loss is minimized when both quantities are uniform across
-experts.
+**Quality vs dense Llama 2 70B.** Jiang et al. 2024 Table 2 reports Mixtral 8x7B matching or
+exceeding Llama 2 70B on MMLU (70.6 vs 69.9), HellaSwag (86.7 vs 85.4), Arc-C (66.0 vs 64.9),
+and TriviaQA (77.6 vs 73.7), with the largest gap on code (HumanEval 40.2 vs 32.3) and math
+(MATH 28.4 vs 13.8). The active parameter count is 12.9B vs Llama 2 70B's 70B, so the
+quality-per-active-FLOP gap is roughly 5×. Total parameter count is 46.7B vs 70B, so the
+quality-per-stored-byte gap is roughly 1.5× — a meaningful but smaller win.
 
-<p class="section-eyebrow">§ 3 · The granularity tradeoff</p>
-## Coarse, simple, somewhat redundant
+**Expert specialization.** Jiang et al. 2024 §5 measures expert-routing distributions across
+domains (ArXiv math, biology, PhilPapers, etc.) and finds *no clean per-domain specialization*
+— the routing distribution looks roughly uniform within each domain. The paper's interpretation:
+with $E = 8$ each expert is too coarse for domain-level specialization to be visible; the
+specialization is happening at a sub-token (syntactic) level that the routing histogram does
+not resolve. This is the empirical hook DeepSeekMoE (Dai et al. 2024, §4) uses to argue for
+finer $E$.
 
-Mixtral's design choice — few large experts — has predictable strengths and weaknesses:
+**Comparison to OLMoE.** Muennighoff et al. 2024
+([arXiv 2409.02060](https://arxiv.org/abs/2409.02060), §4) train OLMoE-1B-7B with $E = 64$,
+$K = 8$ — Mixtral's recipe scaled to many small experts but without DeepSeekMoE's shared
+experts. They report (Table 6) that this fine-grained-coarse variant beats Mixtral 8x7B at
+matched active parameters on most benchmarks, with the biggest gap on multitask reasoning.
+The OLMoE ablation (§5.1) attributes the gain to the finer granularity — same conclusion as
+DeepSeekMoE's, but reached with the Mixtral-style aux-loss design.
 
-**Strengths.** Operationally simple. Eight experts fit cleanly into 8-way expert parallelism on
-a single node. Routing decisions are coarse enough that imbalance is rare and the auxiliary
-loss is well-conditioned. Implementations exist in vLLM, llama.cpp, HuggingFace Transformers
-without bespoke kernels.
+**Independent reproduction at scale.** Mixtral 8x22B (Mistral AI, April 2024) keeps the same
+recipe with $d_{model} = 6144$, $d_{ff} = 16384$, 56 layers, 141B total, 39B active. The
+public configuration confirms the $E = 8$, $K = 2$ choice scales to the next size class
+without architectural changes. No formal ablation paper accompanies this release.
 
-**Weaknesses.** Each expert has to cover a large slice of input space, so specialization is
-shallow. Common-knowledge work gets redundantly stored across all 8 experts. DeepSeekMoE later
-made these costs explicit and proposed the fine-grained-plus-shared-experts fix; see the
-[DeepSeekMoE entry](/llm-arch-kb/ffn-moe/deepseek-moe/) for the alternative.
+**Auxiliary-loss sensitivity.** The Mistral team has not published an $\alpha$ sweep. The
+Switch authors (Fedus et al. 2021, §3.2) sweep $\alpha \in [10^{-4}, 10^{-1}]$ and find a wide
+plateau around $10^{-2}$; the Mixtral default $\alpha = 0.02$ sits in this plateau. ST-MoE
+(Zoph et al. 2022, §3.1) confirms the same plateau at top-2 with $E = 32$. There is no
+public Mixtral-specific re-ablation of $\alpha$ to point to.
 
-Mixtral 8x7B reports (Table 4 in the paper) matching or beating Llama 2 70B on most benchmarks
-at 13B active parameters per token — a ~5× compute reduction at inference. The tradeoff is
-total parameter count: 47B in Mixtral vs 70B in dense Llama 2, but the MoE has to be loaded in
-full for serving.
+**Routing instability.** A practitioner-side measurement from the Hugging Face team
+([Mixtral fine-tuning notes](https://huggingface.co/blog/mixtral)) reports that long-tail
+fine-tuning data can collapse the gate to using only 2–3 of 8 experts unless the auxiliary
+loss is kept on. This matches the Switch result (Fedus et al. 2021, §3.1) that the aux loss
+is load-bearing during distribution shift, not only during pretraining.
 
-<p class="section-eyebrow">§ 4 · Why no production decoder in v1 uses this exact design</p>
-## Where the field went
-
-The Llama series stayed dense. DeepSeek went to fine-grained MoE with shared experts (V2/V3).
-Kimi K2 ships a different but similarly fine-grained variant. Gemma 3 is dense. The 8-expert
-top-2 design that Mixtral established remains the canonical "intro MoE" recipe but the
-production frontier has largely moved past it.
-
-That said, the design's *operational* qualities — simple parallelism, predictable balance,
-off-the-shelf tooling — are why it remains a common second-tier choice for open-weights
-post-training MoE conversions (where retraining the gating is expensive).
+I don't know of a public ablation isolating the renormalize-over-$K$ choice vs softmax-over-
+$E$-then-mask. The Sparse-MoE 2017 form and the Mixtral form should differ in the gate's
+gradient when the top-$K$ logits are not the dominant entries; whether this matters at the
+$E = 8$, $K = 2$ regime has not been measured in any paper I can cite.
 
 <Summary>
-**Mixtral MoE in one breath.** Eight full SwiGLU experts per layer, top-2 routing, standard
-auxiliary balance loss. Simple, operationally clean, and the design that taught most
-practitioners what production MoE is. DeepSeekMoE's fine-grained-plus-shared variant is
-strictly better on quality-per-active-parameter, but Mixtral remains the canonical baseline.
+**Mixtral MoE in one breath.** Eight full SwiGLU experts per layer, top-2 routing with softmax
+renormalized over the selected pair, standard Switch-style $\alpha \cdot E \cdot \sum f_i P_i$
+auxiliary balance loss. The coarsest viable production-MoE point: simple expert parallelism,
+well-conditioned gate, off-the-shelf tooling. DeepSeekMoE's fine-grained-plus-shared variant
+beats it on quality-per-active-parameter, but Mixtral 8x7B remains the canonical baseline and
+taught most practitioners what "production MoE" means.
 </Summary>
